@@ -34,27 +34,32 @@ Three properties make it usable in a payment flow rather than just a lab:
 ```mermaid
 flowchart LR
     subgraph Browser
-        A["deepcheck.js<br/>behavioral SDK"]
-    end
-    subgraph Backend["FastAPI backend"]
-        B["POST /api/analyze"]
-        C["Feature extraction<br/>6 signals"]
-        D["Random Forest"]
-        E["Isolation Forest"]
-        F["LSTM"]
-        G["Ensemble<br/>+ SHAP"]
-    end
-    H[("PostgreSQL")]
-    subgraph Frontend["React frontend"]
-        I["Payment demo"]
-        J["SOC dashboard"]
+        A[deepcheck.js SDK]
+        I[Payment demo]
+        J[SOC dashboard]
     end
 
-    A -->|"every 2s"| B --> C
-    C --> D & E & F
-    D & E & F --> G
+    subgraph Backend
+        B[POST /api/analyze]
+        C[Feature extraction]
+        D[Random Forest]
+        E[Isolation Forest]
+        F[LSTM]
+        G[Ensemble + SHAP]
+    end
+
+    H[(PostgreSQL)]
+
+    A -->|every 2s| B
+    B --> C
+    C --> D
+    C --> E
+    C --> F
+    D --> G
+    E --> G
+    F --> G
     G --> H
-    G -->|"score + label + SHAP"| A
+    G -->|score + label + SHAP| A
     A --> I
     H --> J
 ```
