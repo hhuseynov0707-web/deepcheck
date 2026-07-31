@@ -35,6 +35,11 @@ dist-ssr/
 .env.*
 !.env.example
 
+# --- Pitch materials ---
+# Contains funding figures, valuation and team details intended for specific
+# investors and applications, not for a public repository.
+pitch/
+
 # --- Internal security documents ---
 # AUDIT.md is a working document describing unpatched attack paths against the
 # live system (client-side enforcement bypass, unauthenticated session
