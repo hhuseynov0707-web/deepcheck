@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  DeepCheck API - optional AWS Lambda deployment path (see lambda_handler.py).
+  This is not the deployment used by `docker-compose up`; the primary, tested
+  deployment in this repository runs on Docker Compose with Uvicorn
+  (see ../docker-compose.yml and entrypoint.sh). Deploy this template only if
+  you specifically want to host the API on Lambda + API Gateway instead.
+
+  Note: torch + shap are large dependencies. Build this with
+  `sam build --use-container` and prefer a container-image package type if
+  the zip-based build exceeds Lambda's deployment size limits.
+
+Parameters:
+  DatabaseUrl:
+    Type: String
+    Description: >
+      PostgreSQL connection string for a reachable instance (e.g. RDS or
+      Aurora Serverless). Lambda has no bundled database, unlike the
+      docker-compose `db` service.
+    NoEcho: true
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 1024
+    Runtime: python3.11
+
+Resources:
+  DeepCheckApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_handler.handler
+      CodeUri: .
+      Environment:
+        Variables:
+          DATABASE_URL: !Ref DatabaseUrl
+      Events:
+        RootApi:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
+        ProxyApi:
+          Type: Api
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL for the DeepCheck API
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"

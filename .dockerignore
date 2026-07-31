@@ -1,0 +1,23 @@
+# Keep the build context small and prevent host artifacts from shadowing
+# what the image builds. Stale .pyc files compiled by a different Python
+# version are a particularly nasty source of "works on my machine".
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.pytest_cache/
+
+node_modules/
+dist/
+
+.git/
+.gitignore
+.env
+.env.*
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+*.log

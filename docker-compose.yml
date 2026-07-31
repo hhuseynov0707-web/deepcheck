@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: deepcheck-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: deepcheck
+      POSTGRES_PASSWORD: deepcheck
+      POSTGRES_DB: deepcheck
+    ports:
+      - "5432:5432"
+    volumes:
+      - deepcheck-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deepcheck -d deepcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: deepcheck-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://deepcheck:deepcheck@db:5432/deepcheck
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: deepcheck-frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app/frontend
+      - ./sdk:/app/sdk
+      - /app/frontend/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+
+volumes:
+  deepcheck-db-data:
