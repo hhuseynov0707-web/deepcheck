@@ -213,7 +213,7 @@ deepcheck/
 ├── frontend/src/
 │   ├── pages/Demo.jsx        Payment demo with live scoring
 │   └── pages/Dashboard.jsx   SOC dashboard, D3 charts
-└── landing/index.html        Product landing page
+└── docs/index.html           Product landing page (served by GitHub Pages)
 ```
 
 **Stack:** FastAPI · PostgreSQL · scikit-learn · PyTorch · SHAP · React · Vite · Tailwind · D3
