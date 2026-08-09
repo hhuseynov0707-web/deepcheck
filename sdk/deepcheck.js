@@ -18,15 +18,38 @@
   const HESITATION_THRESHOLD_MS = 400; // gaps longer than this count as "hesitation"
   // How much history each flush carries, so a couple of quiet seconds (e.g.
   // the user is only typing, not moving the mouse) don't reset every feature
-  // to "no data" -- only mouse/click/scroll/focus/key are rolled; hesitation
-  // gaps are one-shot events, sent once and not re-sent.
+  // to "no data". EVERY buffer is rolled over this window, hesitation
+  // included -- see the note on state.hesitationIntervals below.
   const ROLLING_WINDOW_MS = 10000;
+
+  // Must stay <= the server-side max_length caps in backend/main.py's
+  // AnalyzeRequest. Exceeding them makes FastAPI reject the entire flush with
+  // 422, which used to be indistinguishable from a clean score on the client
+  // (see the !res.ok handling in flushBuffer). Trimming here keeps a
+  // high-polling-rate mouse -- or a bot deliberately flooding mousemove --
+  // from silently blinding the detector.
+  const LIMITS = {
+    mouse: 2000,
+    click: 500,
+    scroll: 1000,
+    hesitation: 500,
+    focus: 200,
+    key: 1000,
+  };
 
   function createState() {
     return {
       mouseTrajectory: [],
       clickTiming: [],
       scrollEvents: [],
+      // Stored as {gap, t} rather than bare numbers so this buffer can be
+      // pruned to ROLLING_WINDOW_MS like every other channel. It used to be
+      // cleared outright on each flush, which meant hesitation was measured
+      // over a 2s window at serving time while train_model.py measures it
+      // across a full ~10s session -- the single largest train/serve skew in
+      // the pipeline, leaving tereddut_skoru pinned to its neutral fallback
+      // for the large majority of real flushes. `t` is stripped before send;
+      // the API contract is still a plain list of gap durations.
       hesitationIntervals: [],
       focusChanges: [],
       keyEvents: [],
@@ -35,12 +58,26 @@
     };
   }
 
+  // One id per page load, generated up front. Previously the id came only
+  // from the server's response to the first successful flush: until that
+  // response landed, every flush posted session_id: null and the server
+  // minted a NEW session for each one, so a slow first request (model warm-up)
+  // or any transient failure scattered duplicate orphan sessions across the
+  // SOC dashboard.
+  function generateSessionId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return `dc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   let state = createState();
   let config = {
     sessionId: null,
     apiUrl: "http://localhost:8000",
     intervalMs: DEFAULT_INTERVAL_MS,
     onUpdate: null,
+    onError: null,
   };
   let timerId = null;
   let started = false;
@@ -54,7 +91,7 @@
     if (state.lastEventAt !== null) {
       const gap = t - state.lastEventAt;
       if (gap >= HESITATION_THRESHOLD_MS) {
-        state.hesitationIntervals.push(gap);
+        state.hesitationIntervals.push({ gap, t });
       }
     }
     state.lastEventAt = t;
@@ -97,6 +134,13 @@
     return list.filter((item) => getT(item) >= cutoff);
   }
 
+  // Keep the most recent `max` entries: the newest behavior is the most
+  // diagnostic, and dropping from the head preserves the tail the features
+  // are actually computed over.
+  function capTail(list, max) {
+    return list.length > max ? list.slice(list.length - max) : list;
+  }
+
   function flushBuffer() {
     const t = now();
 
@@ -113,31 +157,32 @@
     if (state.lastEventAt !== null) {
       const idleGap = t - state.lastEventAt;
       if (idleGap >= HESITATION_THRESHOLD_MS) {
-        state.hesitationIntervals.push(idleGap);
+        state.hesitationIntervals.push({ gap: idleGap, t });
         state.lastEventAt = t;
       }
     }
 
-    const payload = {
-      session_id: config.sessionId,
-      mouse_trajectory: state.mouseTrajectory,
-      click_timing: state.clickTiming,
-      scroll_events: state.scrollEvents,
-      hesitation_intervals: state.hesitationIntervals,
-      focus_changes: state.focusChanges,
-      key_events: state.keyEvents,
-    };
-
-    // Roll the continuous-signal buffers forward (keep last ROLLING_WINDOW_MS)
-    // instead of wiping them, so a brief quiet tick doesn't zero out the next
-    // request's feature vector. Hesitation gaps are one-shot: sent once, then
-    // cleared, since they don't carry their own timestamp to prune by.
+    // Roll every continuous-signal buffer forward (keep last
+    // ROLLING_WINDOW_MS) instead of wiping it, so a brief quiet tick doesn't
+    // zero out the next request's feature vector. This happens BEFORE the
+    // payload is built so what goes on the wire is exactly the window the
+    // features are meant to describe.
     state.mouseTrajectory = pruneToWindow(state.mouseTrajectory, t, (m) => m.t);
     state.clickTiming = pruneToWindow(state.clickTiming, t, (c) => c.t);
     state.scrollEvents = pruneToWindow(state.scrollEvents, t, (s) => s.t);
     state.keyEvents = pruneToWindow(state.keyEvents, t, (k) => k.t);
     state.focusChanges = pruneToWindow(state.focusChanges, t, (f) => f);
-    state.hesitationIntervals = [];
+    state.hesitationIntervals = pruneToWindow(state.hesitationIntervals, t, (h) => h.t);
+
+    const payload = {
+      session_id: config.sessionId,
+      mouse_trajectory: capTail(state.mouseTrajectory, LIMITS.mouse),
+      click_timing: capTail(state.clickTiming, LIMITS.click),
+      scroll_events: capTail(state.scrollEvents, LIMITS.scroll),
+      hesitation_intervals: capTail(state.hesitationIntervals, LIMITS.hesitation).map((h) => h.gap),
+      focus_changes: capTail(state.focusChanges, LIMITS.focus),
+      key_events: capTail(state.keyEvents, LIMITS.key),
+    };
 
     // Nothing collected yet at all — skip the request
     const hasData =
@@ -154,14 +199,31 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     })
-      .then((res) => res.json())
+      // An error response is JSON too, so parsing it unconditionally used to
+      // hand FastAPI's error body straight to onUpdate as if it were a score.
+      // The consumer then read `risk_score` off it, got undefined, and fell
+      // back to a clean value -- a 422/500/503 rendered as "Gerçek Kullanıcı".
+      // Any non-2xx is now an explicit failure and never reaches onUpdate.
+      .then((res) => {
+        if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
+        return res.json();
+      })
       .then((result) => {
+        if (typeof result.risk_score !== "number" || !isFinite(result.risk_score)) {
+          throw new Error("DeepCheck API geçersiz yanıt döndürdü");
+        }
         if (result.session_id) config.sessionId = result.session_id;
         if (typeof config.onUpdate === "function") config.onUpdate(result);
         window.dispatchEvent(new CustomEvent("deepcheck:update", { detail: result }));
       })
       .catch((err) => {
         console.error("[DeepCheck] analyze isteği başarısız:", err);
+        // Surfaced so the host page can fail CLOSED. Silence here is what let
+        // a dead backend read as a clean session.
+        if (typeof config.onError === "function") config.onError(err);
+        window.dispatchEvent(
+          new CustomEvent("deepcheck:error", { detail: { message: String(err && err.message) } })
+        );
       });
   }
 
@@ -184,6 +246,7 @@
   function init(options) {
     if (started) return;
     config = { ...config, ...(options || {}) };
+    if (!config.sessionId) config.sessionId = generateSessionId();
     state = createState();
     started = true;
 

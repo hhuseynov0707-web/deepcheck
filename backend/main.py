@@ -1,9 +1,10 @@
 import logging
 import math
+import os
 import statistics
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -11,6 +12,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import scorer
@@ -29,7 +31,25 @@ from models import BehaviorData, Session
 # visible for analysis.
 SMOOTHING_WINDOW = 5
 
+# The dashboard re-fetches both of these every 3s per open viewer, and neither
+# table is ever pruned. Unbounded reads meant the payload grew for the whole
+# life of the deployment -- fine on a laptop for ten minutes, not fine for a
+# demo stand running all day in front of visitors.
+SESSIONS_PAGE_LIMIT = 200
+HISTORY_LIMIT = 200
+
 logger = logging.getLogger("deepcheck")
+
+
+def utcnow() -> datetime:
+    """Timezone-aware UTC.
+
+    The columns are DateTime(timezone=True) and their server_default is
+    Postgres' now(), so writing a naive datetime.utcnow() mixed an
+    offset-less application clock into a tz-aware column. datetime.utcnow()
+    is also deprecated from Python 3.12 on.
+    """
+    return datetime.now(timezone.utc)
 
 
 @asynccontextmanager
@@ -44,10 +64,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="DeepCheck API", lifespan=lifespan)
 
+# Comma-separated origin allowlist, e.g.
+# CORS_ORIGINS="https://demo.example.com,https://soc.example.com".
+# Defaults to "*" so the local docker-compose demo keeps working untouched.
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    # Wildcard origin and credentials are mutually exclusive under the CORS
+    # spec: a browser refuses a credentialed response carrying
+    # `Access-Control-Allow-Origin: *`. The previous combination happened to
+    # be harmless only because nothing sends cookies yet -- it would have
+    # broken silently the day auth was added. Credentials are enabled only
+    # once a real origin allowlist is configured.
+    allow_credentials="*" not in CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -163,10 +194,16 @@ async def analyze(payload: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
             status_code=500, detail="Davranış analizi tamamlanamadı"
         ) from None
 
+    # Atomic get-or-create. The previous read-then-add pattern raised an
+    # unhandled IntegrityError (-> HTTP 500) whenever two flushes for the same
+    # brand-new session arrived concurrently: both SELECTs returned None, both
+    # INSERTs ran, the second violated the primary key. That is not
+    # hypothetical -- the SDK fires every 2s and the first request pays model
+    # warm-up, so overlap at session start is the common case, not the rare one.
+    await db.execute(
+        pg_insert(Session).values(id=session_id).on_conflict_do_nothing(index_elements=["id"])
+    )
     session = await db.get(Session, session_id)
-    if session is None:
-        session = Session(id=session_id)
-        db.add(session)
 
     recent_result = await db.execute(
         select(BehaviorData.risk_score)
@@ -190,7 +227,7 @@ async def analyze(payload: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
     session.confidence = result["confidence"]
     session.shap_explanation = result["shap_explanation"]
     session.response_time_ms = result["response_time_ms"]
-    session.last_seen_at = datetime.utcnow()
+    session.last_seen_at = utcnow()
 
     features = result["features"]
     behavior_row = BehaviorData(
@@ -229,12 +266,16 @@ async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
     if session is None:
         raise HTTPException(status_code=404, detail="Oturum bulunamadı")
 
+    # Newest HISTORY_LIMIT rows, then flipped back to chronological order for
+    # the chart. Selecting ascending without a limit re-sent the session's
+    # entire history on every 3s dashboard poll.
     result = await db.execute(
         select(BehaviorData)
         .where(BehaviorData.session_id == session_id)
-        .order_by(BehaviorData.created_at.asc())
+        .order_by(BehaviorData.created_at.desc())
+        .limit(HISTORY_LIMIT)
     )
-    history = result.scalars().all()
+    history = list(reversed(result.scalars().all()))
 
     return {
         "session_id": session.id,
@@ -263,7 +304,9 @@ async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
 
 @app.get("/api/sessions")
 async def list_sessions(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Session).order_by(Session.last_seen_at.desc()))
+    result = await db.execute(
+        select(Session).order_by(Session.last_seen_at.desc()).limit(SESSIONS_PAGE_LIMIT)
+    )
     sessions = result.scalars().all()
     return [
         {
@@ -290,5 +333,5 @@ async def health():
     return {
         "status": "sağlıklı" if model_loaded else "model yüklenmedi",
         "model_loaded": model_loaded,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utcnow().isoformat(),
     }

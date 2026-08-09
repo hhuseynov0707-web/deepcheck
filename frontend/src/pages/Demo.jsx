@@ -24,19 +24,27 @@ export default function Demo() {
   const [expiry, setExpiry] = useState("");
   const [cvv, setCvv] = useState("");
   const [risk, setRisk] = useState(null);
+  const [scoreUnavailable, setScoreUnavailable] = useState(false);
   const [status, setStatus] = useState("idle"); // idle | loading | success
   const [showVerifyModal, setShowVerifyModal] = useState(false);
 
   useEffect(() => {
     if (!window.DeepCheck) {
       console.error("[Demo] DeepCheck SDK yüklenemedi.");
+      // A missing SDK is not a clean session -- it is the absence of any
+      // evidence at all, which is precisely how an automated client presents.
+      setScoreUnavailable(true);
       return;
     }
 
     window.DeepCheck.init({
       apiUrl: API_URL,
       intervalMs: 2000,
-      onUpdate: (result) => setRisk(result),
+      onUpdate: (result) => {
+        setRisk(result);
+        setScoreUnavailable(false);
+      },
+      onError: () => setScoreUnavailable(true),
     });
 
     return () => window.DeepCheck.stop();
@@ -46,10 +54,23 @@ export default function Demo() {
   const total = ORDER.subtotal + tax;
   const cardType = detectCardType(cardNumber);
 
-  const riskScore = risk?.risk_score ?? 0;
-  const isBlocked = riskScore >= 80;
-  const needsVerification = riskScore >= 60 && riskScore < 80;
-  const showWarning = riskScore >= 40 && riskScore < 60;
+  // `risk?.risk_score ?? 0` used to mean: no SDK, blocked script, dead
+  // backend, or a rejected payload all collapsed to 0 -- "Gerçek Kullanıcı",
+  // payment allowed. The gate defaulted to open exactly in the situations an
+  // attacker can create at will. An unknown score is now treated as unknown
+  // and routed to step-up verification rather than waved through.
+  //
+  // NOTE: this is still a client-side control and remains defeatable by
+  // anyone editing the page; it is the demo's UX layer, not an authorization
+  // boundary. The real gate belongs on the server, next to the charge (see
+  // the /api/verdict design). This change removes the trivially-triggered
+  // fail-open, it does not make the browser trustworthy.
+  const hasScore =
+    !scoreUnavailable && typeof risk?.risk_score === "number" && Number.isFinite(risk.risk_score);
+  const riskScore = hasScore ? risk.risk_score : null;
+  const isBlocked = riskScore !== null && riskScore >= 80;
+  const needsVerification = riskScore === null || (riskScore >= 60 && riskScore < 80);
+  const showWarning = riskScore !== null && riskScore >= 40 && riskScore < 60;
 
   function processPayment() {
     setStatus("loading");
@@ -80,8 +101,12 @@ export default function Demo() {
   return (
     <div className="min-h-[calc(100vh-64px)] px-4 py-10">
       <div className="max-w-4xl mx-auto flex items-center justify-end mb-4">
-        {risk ? (
-          <RiskBadge riskScore={risk.risk_score} size="lg" />
+        {hasScore ? (
+          <RiskBadge riskScore={riskScore} size="lg" />
+        ) : scoreUnavailable ? (
+          <div className="rounded-full border border-zinc-700 bg-zinc-800/60 px-4 py-2 text-sm text-zinc-300">
+            Risk skoru alınamadı — ek doğrulama uygulanacak
+          </div>
         ) : (
           <div className="text-sm text-zinc-400">Risk skoru hesaplanıyor...</div>
         )}
@@ -215,7 +240,7 @@ export default function Demo() {
             )}
           </form>
 
-          {risk && (
+          {hasScore && (
             <p className="font-mono text-xs text-zinc-500 text-center">
               Yanıt süresi: {risk.response_time_ms} ms · Güven: {(risk.confidence * 100).toFixed(0)}%
             </p>

@@ -74,12 +74,15 @@ Endpointlər:
 - `GET /api/health` → sistem sağlamlığı
 
 ### backend/scorer.py
-Çıxarılan featurelər:
-- `scroll_variance` — scroll sürətinin dəyişkənliyi
-- `click_entropy` — kliklərin entropiyası
-- `avg_hesitation` — ortalama duraksama müddəti (ms)
-- `mouse_speed_delta` — mouse sürətinin dəyişimi
-- `interaction_rhythm` — etkileşim ritmi
+Çıxarılan 6 feature (kanonik ad və sıra `backend/lstm_model.py`-dakı
+`FEATURE_NAMES`-dədir — scorer, train_model və SHAP etiketləri hamısı oradan
+oxuyur, buradakı siyahı onun sənədləşdirilməsidir):
+- `scroll_hizi_varyansi` — scroll sürətinin variansı
+- `tereddut_skoru` — hərəkətdən əvvəlki ortalama duraksama (ms / 1500)
+- `etkilesim_entropisi` — hadisə aralıqlarının entropiyası, **kanal başına** ölçülür
+- `ivme_degisimi` — mouse **təcilinin** variansı (sürət deltası deyil)
+- `tiklama_yogunlugu` — son 5 saniyədəki klik sıxlığı
+- `odak_degisimi` — tab/pəncərənin neçə dəfə fokusu itirdiyi
 
 Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 

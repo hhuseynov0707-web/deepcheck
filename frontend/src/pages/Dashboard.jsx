@@ -25,7 +25,12 @@ export default function Dashboard() {
         if (!cancelled) {
           setSessions(data);
           setError(null);
-          if (!selectedId && data.length > 0) setSelectedId(data[0].session_id);
+          // Functional update instead of reading `selectedId` from the
+          // closure: depending on it forced this effect to tear down and
+          // restart the 3s poll on every click in the session list, which
+          // both dropped the current polling cycle and re-fetched immediately
+          // on each selection.
+          if (data.length > 0) setSelectedId((prev) => prev ?? data[0].session_id);
         }
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -38,7 +43,7 @@ export default function Dashboard() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedId]);
+  }, []);
 
   useEffect(() => {
     if (!selectedId) return;
