@@ -25,7 +25,16 @@ CLICK_DENSITY_WINDOW_MS = 5000
 # ~0.0 regardless of how human or robotic the movement actually was. This
 # divisor maps a natural-human trajectory's acceleration variance to ~0.45,
 # matching the training distribution's human mean (see train_model.py).
-ACCELERATION_VARIANCE_DIVISOR = 2.2e-6
+# Calibrated against real browser mouse traces captured by tools/bot-harness,
+# which measured acceleration variance between 8.6e-5 and 1.6e-3. The previous
+# value of 2.2e-6 was two to three orders of magnitude below that, so every
+# real trace clipped to 1.0 and the feature distinguished nothing -- a
+# straight-line constant-velocity bot scored identically to a bezier-eased one.
+# This divisor puts those bots in the lower third with headroom above.
+#
+# NOTE: calibrated from bot traces only. Real human traces are needed to
+# confirm humans land above this range rather than inside it.
+ACCELERATION_VARIANCE_DIVISOR = 5.0e-3
 
 # When a feature can't be mathematically computed because a request carries
 # too little raw signal (e.g. a 2s window where the user was only typing, not
@@ -49,6 +58,11 @@ ACCELERATION_VARIANCE_DIVISOR = 2.2e-6
 # simple counts (clicks in window, focus-loss count) that are always
 # well-defined, including as a legitimate 0 -- "zero clicks happened" is
 # real information, not a missing measurement, so no neutral fallback applies.
+# Once a window carries at least this many tracked events, the session has
+# told us enough that silence in any ONE channel is itself a measurement
+# rather than missing data.
+SESSION_ACTIVITY_THRESHOLD = 12
+
 NEUTRAL_DEFAULTS = {
     "scroll_hizi_varyansi": 0.17,
     "tereddut_skoru": 0.45,
@@ -167,6 +181,26 @@ def extract_features(raw: dict) -> dict:
     focus_changes = raw.get("focus_changes") or []
     key_events = raw.get("key_events") or []
 
+    # A feature with no samples means one of two very different things, and
+    # scoring them the same is what let a bot with no cursor pass as human.
+    #
+    #   quiet session  -- the page just loaded, nothing has happened anywhere.
+    #                     There is genuinely nothing to measure, so neutral is
+    #                     correct; guessing "bot" would punish a user for not
+    #                     having acted yet.
+    #   active session -- plenty happened, just not in THIS channel. That is a
+    #                     measurement: no scrolling across a busy window, or no
+    #                     cursor movement alongside 120 keystrokes, is exactly
+    #                     what automation looks like.
+    #
+    # Only the first deserves the neutral default. The second gets 0.0, the
+    # bot-ward end of every one of these features.
+    tracked_events = len(mouse_trajectory) + len(click_timing) + len(scroll_events) + len(key_events)
+    session_is_active = tracked_events >= SESSION_ACTIVITY_THRESHOLD
+
+    def _absent(feature: str) -> float:
+        return 0.0 if session_is_active else NEUTRAL_DEFAULTS[feature]
+
     # scroll_hizi_varyansi: variance of scroll speed, normalized.
     # Needs >=2 scroll samples to compute a variance at all -- with fewer,
     # there is no measurement to make, so fall back to neutral (not 0.0).
@@ -178,7 +212,7 @@ def extract_features(raw: dict) -> dict:
     if len(scroll_speeds) >= 2:
         scroll_hizi_varyansi = float(np.clip(_safe_variance(scroll_speeds) / 5.0, 0.0, 1.0))
     else:
-        scroll_hizi_varyansi = NEUTRAL_DEFAULTS["scroll_hizi_varyansi"]
+        scroll_hizi_varyansi = _absent("scroll_hizi_varyansi")
 
     # tereddut_skoru: normalized average pause before actions (ms / 1500).
     # An empty list here usually means too few tracked events fired to even
@@ -186,7 +220,7 @@ def extract_features(raw: dict) -> dict:
     if hesitation_intervals:
         tereddut_skoru = float(np.clip(np.mean(hesitation_intervals) / 1500.0, 0.0, 1.0))
     else:
-        tereddut_skoru = NEUTRAL_DEFAULTS["tereddut_skoru"]
+        tereddut_skoru = _absent("tereddut_skoru")
 
     # etkilesim_entropisi: entropy of event spacing across mouse+click+scroll+
     # keydown, measured PER CHANNEL and then combined -- not by merging all
@@ -211,7 +245,7 @@ def extract_features(raw: dict) -> dict:
         weights = [w for _, w in available]
         etkilesim_entropisi = float(np.average(entropies, weights=weights))
     else:
-        etkilesim_entropisi = NEUTRAL_DEFAULTS["etkilesim_entropisi"]
+        etkilesim_entropisi = _absent("etkilesim_entropisi")
 
     # ivme_degisimi: variance of mouse acceleration (d(speed)/dt), not just speed delta.
     # Needs >=3 trajectory points (>=2 acceleration samples) to compute at all.
@@ -230,7 +264,7 @@ def extract_features(raw: dict) -> dict:
     if len(accelerations) >= 2:
         ivme_degisimi = float(np.clip(_safe_variance(accelerations) / ACCELERATION_VARIANCE_DIVISOR, 0.0, 1.0))
     else:
-        ivme_degisimi = NEUTRAL_DEFAULTS["ivme_degisimi"]
+        ivme_degisimi = _absent("ivme_degisimi")
 
     # tiklama_yogunlugu: click density in the most recent 5s window
     click_times = [c.get("t", 0) for c in click_timing]
