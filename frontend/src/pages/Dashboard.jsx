@@ -20,7 +20,7 @@ export default function Dashboard() {
     async function fetchSessions() {
       try {
         const res = await fetch(`${API_URL}/api/sessions`);
-        if (!res.ok) throw new Error("Sessionlar alınamadı");
+        if (!res.ok) throw new Error("Oturumlar alınamadı");
         const data = await res.json();
         if (!cancelled) {
           setSessions(data);
@@ -51,7 +51,7 @@ export default function Dashboard() {
     async function fetchDetail() {
       try {
         const res = await fetch(`${API_URL}/api/score/${selectedId}`);
-        if (!res.ok) throw new Error("Session detayı alınamadı");
+        if (!res.ok) throw new Error("Oturum detayı alınamadı");
         const data = await res.json();
         if (!cancelled) setSelectedDetail(data);
       } catch (err) {
@@ -82,9 +82,9 @@ export default function Dashboard() {
     <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">SOC Dashboard</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-zinc-50">SOC Panosu</h1>
           <p className="text-zinc-400 text-sm mt-1">
-            Tüm session'lar gerçek zamanlı izleniyor · her {REFRESH_MS / 1000} saniyede yenilenir
+            Tüm oturumlar gerçek zamanlı izleniyor · her {REFRESH_MS / 1000} saniyede yenilenir
           </p>
         </div>
         {error && (
@@ -111,13 +111,13 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-3">
-          <h2 className="text-lg font-semibold tracking-tight text-zinc-50">Session Listesi</h2>
+          <h2 className="text-lg font-semibold tracking-tight text-zinc-50">Oturum Listesi</h2>
           <SessionTable sessions={sessions} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
 
         <div className="space-y-6">
           <div className="bg-[#18181b] border border-zinc-800 rounded-lg p-5 shadow-xl shadow-black/50">
-            <h2 className="text-lg font-semibold tracking-tight text-zinc-50 mb-3">Seçili Session</h2>
+            <h2 className="text-lg font-semibold tracking-tight text-zinc-50 mb-3">Seçili Oturum</h2>
             {selectedDetail ? (
               <div className="space-y-3">
                 <p className="font-mono text-xs text-zinc-500 break-all">
@@ -130,7 +130,7 @@ export default function Dashboard() {
                 </p>
               </div>
             ) : (
-              <p className="text-zinc-400 text-sm">Bir session seçin.</p>
+              <p className="text-zinc-400 text-sm">Bir oturum seçin.</p>
             )}
           </div>
 
@@ -150,7 +150,7 @@ export default function Dashboard() {
         {selectedDetail?.history?.length > 0 ? (
           <RiskChart history={selectedDetail.history} />
         ) : (
-          <p className="text-zinc-400 text-sm">Bu session için henüz veri yok.</p>
+          <p className="text-zinc-400 text-sm">Bu oturum için henüz veri yok.</p>
         )}
       </div>
     </div>

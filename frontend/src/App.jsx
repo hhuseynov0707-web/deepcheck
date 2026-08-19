@@ -20,7 +20,7 @@ function NavBar() {
           Ödeme Demo
         </Link>
         <Link className={linkClass("/dashboard")} to="/dashboard">
-          SOC Dashboard
+          SOC Panosu
         </Link>
       </div>
     </nav>

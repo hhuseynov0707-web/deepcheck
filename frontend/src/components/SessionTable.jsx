@@ -128,7 +128,7 @@ export default function SessionTable({ sessions = [], selectedId, onSelect }) {
   if (sessions.length === 0) {
     return (
       <div className="rounded-lg border border-zinc-800 bg-[#18181b] px-4 py-10 text-center text-sm text-zinc-400">
-        Henüz session bulunmuyor.
+        Henüz oturum bulunmuyor.
       </div>
     );
   }

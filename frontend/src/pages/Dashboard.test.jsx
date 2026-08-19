@@ -78,7 +78,7 @@ describe("Dashboard", () => {
     render(<Dashboard />);
 
     await waitFor(() =>
-      expect(screen.getByRole("alert")).toHaveTextContent("Sessionlar alınamadı"),
+      expect(screen.getByRole("alert")).toHaveTextContent("Oturumlar alınamadı"),
     );
   });
 });
