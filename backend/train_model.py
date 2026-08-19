@@ -28,6 +28,7 @@ from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+from load_traces import load_real_dataset
 from lstm_model import FEATURE_NAMES, NUM_FEATURES, SEQUENCE_LENGTH, BehaviorLSTM
 from scorer import extract_features
 
@@ -399,6 +400,29 @@ def train_lstm(X_train, y_train, X_test, y_test, epochs: int = 8, batch_size: in
 def main():
     print(f"Generating {N_ROWS} synthetic behavior rows...")
     X, y = generate_synthetic_dataset()
+
+    # Mix in real captured traces when any exist. Bot traces come from
+    # tools/bot-harness driving the demo page with real automation; human
+    # traces are collected from real people through the SDK. Both are already
+    # in feature space via the same extract_features() the API uses, so they
+    # concatenate directly. Absent a data directory this is a no-op and the
+    # run is exactly as before.
+    X_real, y_real, stats = load_real_dataset()
+    if X_real is not None:
+        real_bots = int((y_real == 1).sum())
+        real_humans = int((y_real == 0).sum())
+        print(f"Adding {len(X_real)} real rows ({real_humans} human, {real_bots} bot)")
+        for key in sorted(stats):
+            print(f"  {key}: {stats[key]}")
+        if real_humans == 0:
+            print("  NOTE: no real human traces yet — the human class is still")
+            print("  entirely synthetic. Collect real sessions before claiming")
+            print("  the model is trained on real data.")
+        X = np.vstack([X, X_real])
+        y = np.concatenate([y, y_real])
+    else:
+        print("No real traces found — training on synthetic data only.")
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
