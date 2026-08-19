@@ -11,8 +11,24 @@ from a distribution we wrote" is not.
 
 ## Run it
 
+From the **repository root**, not your home directory:
+
 ```bash
 cd tools/bot-harness
+npm install
+npm run capture -- --sessions 25 --duration 12000
+```
+
+On Windows the same commands work in both `cmd.exe` and PowerShell. Two things
+to watch for:
+
+- `#` is **not** a comment in `cmd.exe`. Anything after it on the line is passed
+  through as arguments, so leave trailing notes off the command.
+- Use `python` rather than `python3` for the loader; `python3` is usually
+  unavailable on Windows.
+
+```
+cd C:\path\to\deepcheck\tools\bot-harness
 npm install
 npm run capture -- --sessions 25 --duration 12000
 ```

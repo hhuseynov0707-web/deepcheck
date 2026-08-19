@@ -12,7 +12,7 @@
  *   node capture.js --sessions 25 --duration 12000
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, createWriteStream } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,21 +99,32 @@ async function waitForServer(url, timeoutMs = 90000) {
 
 async function startVite() {
   console.log("starting Vite dev server...");
-  // detached puts Vite in its own process group so the whole tree can be taken
-  // down at once. Vite spawns children that survive a SIGTERM aimed only at the
-  // parent, and any survivor keeps this process's event loop alive forever --
-  // a finished capture then looks like a hang.
+  // Vite spawns children that outlive a signal aimed only at the parent, and
+  // any survivor keeps this process's event loop alive forever -- a finished
+  // capture then looks like a hang. Killing the whole tree is the fix, but the
+  // mechanism differs by platform.
+  //
+  // On Windows npm is npm.cmd, which spawn() will not resolve without a shell,
+  // and there are no process groups, so `detached` buys nothing there.
+  const isWindows = process.platform === "win32";
   const proc = spawn("npm", ["run", "dev", "--", "--port", "5199", "--host", "127.0.0.1"], {
     cwd: path.join(REPO, "frontend"),
     stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
+    detached: !isWindows,
+    shell: isWindows,
   });
   proc.stdout.on("data", () => {});
   proc.stderr.on("data", () => {});
 
   const stop = () => {
     try {
-      process.kill(-proc.pid, "SIGTERM");
+      if (isWindows) {
+        // /T walks the child tree, which is the only way to reach the
+        // grandchildren npm.cmd spawned.
+        execFileSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+      } else {
+        process.kill(-proc.pid, "SIGTERM");
+      }
     } catch {
       try {
         proc.kill("SIGTERM");
