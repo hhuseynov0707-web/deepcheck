@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 
 const DEFAULT_VISIBLE = 5;
 
@@ -11,15 +11,24 @@ const CATEGORIES = [
   { key: "gercek", label: "Gerçek Kullanıcı", match: (s) => s.risk_score < 40, bar: "bg-emerald-500", text: "text-emerald-400" },
 ];
 
+// Built once instead of per row per render -- constructing a formatter is the
+// expensive part, and the dashboard re-renders every 3 seconds.
+const TIME_FORMAT = new Intl.DateTimeFormat("tr-TR", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 function formatTime(iso) {
   if (!iso) return "-";
-  return new Date(iso).toLocaleTimeString("tr-TR");
+  return TIME_FORMAT.format(new Date(iso));
 }
 
 function SessionCard({ session, accent, isSelected, onSelect }) {
   return (
     <button
       onClick={() => onSelect?.(session.session_id)}
+      aria-pressed={isSelected}
       className={`text-left overflow-hidden bg-[#18181b] border rounded-lg transition-colors duration-200 ease-out ${
         isSelected ? "border-zinc-600" : "border-zinc-800 hover:border-zinc-700"
       }`}
@@ -41,6 +50,21 @@ function SessionCard({ session, accent, isSelected, onSelect }) {
   );
 }
 
+// Each poll hands us freshly parsed session objects, so the default shallow
+// compare never matches and every card re-renders on a 3s tick even when
+// nothing changed. Compare the fields the card actually draws instead.
+const MemoSessionCard = memo(SessionCard, (prev, next) => {
+  return (
+    prev.isSelected === next.isSelected &&
+    prev.onSelect === next.onSelect &&
+    prev.accent === next.accent &&
+    prev.session.session_id === next.session.session_id &&
+    prev.session.risk_score === next.session.risk_score &&
+    prev.session.label === next.session.label &&
+    prev.session.last_seen_at === next.session.last_seen_at
+  );
+});
+
 function CategorySection({ category, items, selectedId, onSelect, expanded, onToggle }) {
   const isExpanded = Boolean(expanded);
   const visible = isExpanded ? items : items.slice(0, DEFAULT_VISIBLE);
@@ -55,7 +79,7 @@ function CategorySection({ category, items, selectedId, onSelect, expanded, onTo
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {visible.map((s) => (
-          <SessionCard
+          <MemoSessionCard
             key={s.session_id}
             session={s}
             accent={category}
@@ -66,7 +90,8 @@ function CategorySection({ category, items, selectedId, onSelect, expanded, onTo
       </div>
       {items.length > DEFAULT_VISIBLE && (
         <button
-          onClick={onToggle}
+          onClick={() => onToggle(category.key)}
+          aria-expanded={isExpanded}
           className="mt-3 w-full text-center bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-zinc-100 text-xs font-medium uppercase tracking-wider rounded-md py-2 transition-colors duration-200 ease-out"
         >
           {isExpanded ? "Daralt" : `Tümünü Göster (${items.length})`}
@@ -79,6 +104,27 @@ function CategorySection({ category, items, selectedId, onSelect, expanded, onTo
 export default function SessionTable({ sessions = [], selectedId, onSelect }) {
   const [expandedCategories, setExpandedCategories] = useState({});
 
+  const toggleCategory = useCallback((key) => {
+    setExpandedCategories((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const grouped = useMemo(() => {
+    // Parse each timestamp once. Comparing with `new Date(a) - new Date(b)`
+    // inside the comparator allocates two Date objects per comparison.
+    const withTime = sessions.map((s) => ({
+      session: s,
+      seenAt: s.last_seen_at ? new Date(s.last_seen_at).getTime() : 0,
+    }));
+
+    return CATEGORIES.map((category) => ({
+      category,
+      items: withTime
+        .filter((entry) => category.match(entry.session))
+        .sort((a, b) => b.seenAt - a.seenAt)
+        .map((entry) => entry.session),
+    })).filter((g) => g.items.length > 0);
+  }, [sessions]);
+
   if (sessions.length === 0) {
     return (
       <div className="rounded-lg border border-zinc-800 bg-[#18181b] px-4 py-10 text-center text-sm text-zinc-400">
@@ -86,13 +132,6 @@ export default function SessionTable({ sessions = [], selectedId, onSelect }) {
       </div>
     );
   }
-
-  const grouped = CATEGORIES.map((category) => ({
-    category,
-    items: sessions
-      .filter(category.match)
-      .sort((a, b) => new Date(b.last_seen_at) - new Date(a.last_seen_at)),
-  })).filter((g) => g.items.length > 0);
 
   return (
     <div className="space-y-5">
@@ -104,9 +143,7 @@ export default function SessionTable({ sessions = [], selectedId, onSelect }) {
           selectedId={selectedId}
           onSelect={onSelect}
           expanded={expandedCategories[category.key]}
-          onToggle={() =>
-            setExpandedCategories((prev) => ({ ...prev, [category.key]: !prev[category.key] }))
-          }
+          onToggle={toggleCategory}
         />
       ))}
     </div>

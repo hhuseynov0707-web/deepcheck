@@ -25,7 +25,11 @@ export default function Dashboard() {
         if (!cancelled) {
           setSessions(data);
           setError(null);
-          if (!selectedId && data.length > 0) setSelectedId(data[0].session_id);
+          // Functional update so this effect does not depend on selectedId.
+          // Reading it from the closure would re-subscribe the poll on every
+          // selection, resetting the 3s refresh clock each time a card is
+          // clicked.
+          setSelectedId((prev) => prev ?? data[0]?.session_id ?? null);
         }
       } catch (err) {
         if (!cancelled) setError(err.message);
@@ -38,10 +42,10 @@ export default function Dashboard() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedId]);
+  }, []);
 
   useEffect(() => {
-    if (!selectedId) return;
+    if (!selectedId) return undefined;
     let cancelled = false;
 
     async function fetchDetail() {
@@ -84,7 +88,10 @@ export default function Dashboard() {
           </p>
         </div>
         {error && (
-          <span className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-sm text-rose-400">
+          <span
+            role="alert"
+            className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-1.5 text-sm text-rose-400"
+          >
             {error}
           </span>
         )}

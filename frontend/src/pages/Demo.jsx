@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import CardTypeIcon from "../components/CardTypeIcon.jsx";
 import RiskBadge from "../components/RiskBadge.jsx";
@@ -14,9 +14,19 @@ const ORDER = {
   taxRate: 0.2,
 };
 
+// Constructing an Intl formatter is the expensive part; this module-level
+// instance replaces four constructions per render.
+const CURRENCY_FORMAT = new Intl.NumberFormat("tr-TR", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
 function formatCurrency(value) {
-  return new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return CURRENCY_FORMAT.format(value);
 }
+
+const INPUT_CLASS =
+  "w-full bg-[#09090b] text-zinc-100 border border-zinc-800 rounded-md p-3 font-mono text-sm tracking-widest focus:outline-none focus:border-zinc-700 transition-colors duration-200 ease-out placeholder-zinc-600";
 
 export default function Demo() {
   const [cardNumber, setCardNumber] = useState("");
@@ -26,6 +36,17 @@ export default function Demo() {
   const [risk, setRisk] = useState(null);
   const [status, setStatus] = useState("idle"); // idle | loading | success
   const [showVerifyModal, setShowVerifyModal] = useState(false);
+  const paymentTimersRef = useRef([]);
+
+  function clearPaymentTimers() {
+    paymentTimersRef.current.forEach((id) => window.clearTimeout(id));
+    paymentTimersRef.current = [];
+  }
+
+  // The payment simulation chains two timeouts across 3.5s. Navigating to the
+  // dashboard mid-payment would otherwise leave them running to set state on
+  // an unmounted component.
+  useEffect(() => () => clearPaymentTimers(), []);
 
   useEffect(() => {
     if (!window.DeepCheck) {
@@ -52,11 +73,18 @@ export default function Demo() {
   const showWarning = riskScore >= 40 && riskScore < 60;
 
   function processPayment() {
+    // The submit button re-enables as soon as the status flips to "success",
+    // so a second payment can start while the previous run's "back to idle"
+    // timer is still pending. Letting it fire would blank the new payment's
+    // status mid-flight.
+    clearPaymentTimers();
     setStatus("loading");
-    window.setTimeout(() => {
-      setStatus("success");
-      window.setTimeout(() => setStatus("idle"), 2500);
-    }, 1000);
+    paymentTimersRef.current.push(
+      window.setTimeout(() => {
+        setStatus("success");
+        paymentTimersRef.current.push(window.setTimeout(() => setStatus("idle"), 2500));
+      }, 1000),
+    );
   }
 
   function handleSubmit(e) {
@@ -74,9 +102,6 @@ export default function Demo() {
     processPayment();
   }
 
-  const inputClass =
-    "w-full bg-[#09090b] text-zinc-100 border border-zinc-800 rounded-md p-3 font-mono text-sm tracking-widest focus:outline-none focus:border-zinc-700 transition-colors duration-200 ease-out placeholder-zinc-600";
-
   return (
     <div className="min-h-[calc(100vh-64px)] px-4 py-10">
       <div className="max-w-4xl mx-auto flex items-center justify-end mb-4">
@@ -88,7 +113,7 @@ export default function Demo() {
       </div>
 
       {showWarning && (
-        <div className="max-w-4xl mx-auto mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
+        <div role="status" aria-live="polite" className="max-w-4xl mx-auto mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
           Davranışınız normal dışı görünüyor, lütfen dikkatli devam edin.
         </div>
       )}
@@ -128,15 +153,17 @@ export default function Demo() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Numarası</label>
+              <label htmlFor="card-number" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Numarası</label>
               <div className="relative">
                 <input
                   type="text"
+                  id="card-number"
+                  autoComplete="cc-number"
                   inputMode="numeric"
                   placeholder="1234 5678 9012 3456"
                   value={cardNumber}
                   onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
-                  className={`${inputClass} pr-14`}
+                  className={`${INPUT_CLASS} pr-14`}
                   required
                 />
                 <div className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -146,39 +173,45 @@ export default function Demo() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Üzerindeki İsim</label>
+              <label htmlFor="card-name" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Üzerindeki İsim</label>
               <input
                 type="text"
+                id="card-name"
+                autoComplete="cc-name"
                 placeholder="AD SOYAD"
                 value={cardName}
                 onChange={(e) => setCardName(e.target.value.toUpperCase())}
-                className={inputClass}
+                className={INPUT_CLASS}
                 required
               />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Son Kullanma Tarihi</label>
+                <label htmlFor="card-expiry" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Son Kullanma Tarihi</label>
                 <input
                   type="text"
+                  id="card-expiry"
+                  autoComplete="cc-exp"
                   inputMode="numeric"
                   placeholder="AA/YY"
                   value={expiry}
                   onChange={(e) => setExpiry(formatExpiry(e.target.value))}
-                  className={inputClass}
+                  className={INPUT_CLASS}
                   required
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">CVV</label>
+                <label htmlFor="card-cvv" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">CVV</label>
                 <input
                   type="text"
+                  id="card-cvv"
+                  autoComplete="cc-csc"
                   inputMode="numeric"
                   placeholder="123"
                   value={cvv}
                   onChange={(e) => setCvv(formatCvv(e.target.value))}
-                  className={inputClass}
+                  className={INPUT_CLASS}
                   required
                 />
               </div>
@@ -202,17 +235,21 @@ export default function Demo() {
               {status === "loading" ? "İşleniyor..." : `₺${formatCurrency(total)} Onayla`}
             </button>
 
-            {isBlocked && (
-              <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
-                İşlem Reddedildi — Şüpheli Davranış Tespit Edildi
-              </p>
-            )}
+            {/* Single live region: the outcome of a payment attempt has to be
+                announced, not just shown. */}
+            <div role="status" aria-live="polite">
+              {isBlocked && (
+                <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+                  İşlem Reddedildi — Şüpheli Davranış Tespit Edildi
+                </p>
+              )}
 
-            {status === "success" && (
-              <p className="text-center rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
-                Ödeme başarıyla alındı (demo).
-              </p>
-            )}
+              {!isBlocked && status === "success" && (
+                <p className="text-center rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
+                  Ödeme başarıyla alındı (demo).
+                </p>
+              )}
+            </div>
           </form>
 
           {risk && (
