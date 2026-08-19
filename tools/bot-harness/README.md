@@ -17,8 +17,16 @@ serves the demo page from `frontend/`, which has its own:
 ```bash
 cd frontend && npm install
 cd ../tools/bot-harness && npm install
+npx playwright install chromium
 npm run capture -- --sessions 25 --duration 12000
 ```
+
+The `playwright` npm package does not ship the browser binaries — they are a
+separate ~190MB download. Ask for `chromium` specifically: a bare
+`npx playwright install` also pulls Firefox and WebKit, which this harness
+never launches. Machines with a pre-baked browser under
+`PLAYWRIGHT_BROWSERS_PATH` can skip the step; the harness finds those and says
+which binary it picked on startup.
 
 If you would rather run the demo yourself, skip the frontend install here and
 point the harness at a page you already have running:

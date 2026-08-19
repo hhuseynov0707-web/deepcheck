@@ -286,8 +286,15 @@ async function main() {
     server = await startVite();
     url = server.url;
   } else if (!(await waitForServer(url, 10000))) {
-    console.error(`cannot reach ${url}`);
-    process.exit(1);
+    throw userError(
+      `Nothing is serving ${url}.\n\n` +
+        `--url means "use a demo page I am already running". If you did not\n` +
+        `start one, drop the flag and the harness will start Vite itself:\n\n` +
+        `  npm run capture -- --sessions 25 --duration 12000\n\n` +
+        `To keep using --url, start the demo in another terminal first:\n\n` +
+        `  cd ${path.join(REPO, "frontend")}\n` +
+        `  npm run dev`,
+    );
   }
 
   mkdirSync(args.out, { recursive: true });
@@ -297,7 +304,27 @@ async function main() {
 
   const executablePath = resolveChromium();
   console.log(`chromium: ${executablePath ?? "(playwright default)"}`);
-  const browser = await chromium.launch({ headless: !args.headed, executablePath });
+
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: !args.headed, executablePath });
+  } catch (err) {
+    // The playwright npm package does not ship the browser binaries; they are
+    // a separate ~190MB download. Point at chromium specifically -- a bare
+    // `playwright install` also pulls Firefox and WebKit, which this harness
+    // never launches.
+    if (/Executable doesn't exist|please run the following command/i.test(err.message)) {
+      server?.stop();
+      throw userError(
+        `Playwright has no browser installed.\n\n` +
+          `Install just the one this harness uses (~190MB), then retry:\n\n` +
+          `  npx playwright install chromium\n\n` +
+          `A bare "npx playwright install" also downloads Firefox and WebKit,\n` +
+          `which this harness never launches.`,
+      );
+    }
+    throw err;
+  }
 
   let rows = 0;
   const perProfile = {};
