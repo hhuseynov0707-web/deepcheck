@@ -13,7 +13,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, createWriteStream } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
@@ -83,9 +83,20 @@ Profiles:
 ${Object.entries(PROFILES).map(([k, v]) => `  ${k.padEnd(15)} ${v.description}`).join("\n")}
 `;
 
-async function waitForServer(url, timeoutMs = 90000) {
+/**
+ * An error the operator can act on. Its stack trace is noise -- the message is
+ * the whole point -- so main() prints it without one.
+ */
+function userError(message) {
+  const err = new Error(message);
+  err.userFacing = true;
+  return err;
+}
+
+async function waitForServer(url, timeoutMs = 90000, hasExited = () => null) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (hasExited()) return false;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
       if (res.ok) return true;
@@ -98,29 +109,61 @@ async function waitForServer(url, timeoutMs = 90000) {
 }
 
 async function startVite() {
+  const frontend = path.join(REPO, "frontend");
+  // Run Vite's own entry with this Node binary rather than going through npm.
+  // Spawning `npm` needs a shell on Windows (npm is npm.cmd), and shell + an
+  // args array is deprecated for injection reasons. Calling the JS entry
+  // directly sidesteps both and behaves identically on every platform.
+  const viteBin = path.join(frontend, "node_modules", "vite", "bin", "vite.js");
+
+  if (!existsSync(viteBin)) {
+    throw userError(
+      `Frontend dependencies are not installed.\n\n` +
+        `  Expected: ${viteBin}\n\n` +
+        `This harness serves the demo page from the frontend, which needs its\n` +
+        `own install. Run this once, then retry:\n\n` +
+        `  cd ${frontend}\n` +
+        `  npm install\n\n` +
+        `Alternatively, start the demo yourself and point the harness at it:\n` +
+        `  npm run capture -- --url http://localhost:3000/demo`,
+    );
+  }
+
   console.log("starting Vite dev server...");
+
   // Vite spawns children that outlive a signal aimed only at the parent, and
   // any survivor keeps this process's event loop alive forever -- a finished
   // capture then looks like a hang. Killing the whole tree is the fix, but the
-  // mechanism differs by platform.
-  //
-  // On Windows npm is npm.cmd, which spawn() will not resolve without a shell,
-  // and there are no process groups, so `detached` buys nothing there.
+  // mechanism differs by platform: POSIX has process groups, Windows does not.
   const isWindows = process.platform === "win32";
-  const proc = spawn("npm", ["run", "dev", "--", "--port", "5199", "--host", "127.0.0.1"], {
-    cwd: path.join(REPO, "frontend"),
+  const proc = spawn(process.execPath, [viteBin, "--port", "5199", "--host", "127.0.0.1"], {
+    cwd: frontend,
     stdio: ["ignore", "pipe", "pipe"],
     detached: !isWindows,
-    shell: isWindows,
   });
-  proc.stdout.on("data", () => {});
-  proc.stderr.on("data", () => {});
+
+  // Keep Vite's output. Silently discarding it turns any startup failure into
+  // an unhelpful timeout with the real cause invisible.
+  const log = [];
+  const remember = (chunk) => {
+    log.push(chunk.toString());
+    if (log.length > 40) log.shift();
+  };
+  proc.stdout.on("data", remember);
+  proc.stderr.on("data", remember);
+
+  let exited = null;
+  proc.on("error", (err) => {
+    exited = `failed to start: ${err.message}`;
+  });
+  proc.on("exit", (code, signal) => {
+    exited = `exited early (code ${code}, signal ${signal})`;
+  });
 
   const stop = () => {
     try {
       if (isWindows) {
-        // /T walks the child tree, which is the only way to reach the
-        // grandchildren npm.cmd spawned.
+        // /T walks the child tree; Windows has no process group to signal.
         execFileSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
       } else {
         process.kill(-proc.pid, "SIGTERM");
@@ -138,9 +181,13 @@ async function startVite() {
   };
 
   const url = "http://127.0.0.1:5199/demo";
-  if (!(await waitForServer(url))) {
+  if (!(await waitForServer(url, 90000, () => exited))) {
     stop();
-    throw new Error("Vite did not come up on port 5199 within 90s");
+    const detail = log.join("").trim();
+    throw userError(
+      `Vite did not come up on port 5199${exited ? ` -- ${exited}` : " within 90s"}.\n\n` +
+        (detail ? `Vite output:\n${detail}\n` : "Vite produced no output.\n"),
+    );
   }
   console.log(`Vite ready at ${url}`);
   return { url, stop };
@@ -306,7 +353,7 @@ async function main() {
 main().then(
   () => process.exit(0),
   (err) => {
-    console.error(err);
+    console.error(err.userFacing ? `\n${err.message}\n` : err);
     process.exit(1);
   },
 );

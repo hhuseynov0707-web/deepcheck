@@ -11,12 +11,20 @@ from a distribution we wrote" is not.
 
 ## Run it
 
-From the **repository root**, not your home directory:
+Two installs are needed, not one. The harness has its own dependencies, and it
+serves the demo page from `frontend/`, which has its own:
 
 ```bash
-cd tools/bot-harness
-npm install
+cd frontend && npm install
+cd ../tools/bot-harness && npm install
 npm run capture -- --sessions 25 --duration 12000
+```
+
+If you would rather run the demo yourself, skip the frontend install here and
+point the harness at a page you already have running:
+
+```bash
+npm run capture -- --url http://localhost:3000/demo
 ```
 
 On Windows the same commands work in both `cmd.exe` and PowerShell. Two things
