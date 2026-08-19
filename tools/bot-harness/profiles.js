@@ -18,6 +18,10 @@ const CARD = {
 };
 
 const FIELDS = ["#card-number", "#card-name", "#card-expiry", "#card-cvv"];
+// The verification modal carries its own submit button, so this selector
+// goes ambiguous as soon as the modal opens. The payment form's button is
+// first in DOM order.
+const SUBMIT = 'button[type="submit"]';
 const VALUES = [CARD.number, CARD.name, CARD.expiry, CARD.cvv];
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, Math.max(0, ms)));
@@ -45,7 +49,7 @@ function logNormal(rng, median, sigma) {
 }
 
 async function centreOf(page, selector) {
-  const box = await page.locator(selector).boundingBox();
+  const box = await page.locator(selector).first().boundingBox();
   if (!box) throw new Error(`no bounding box for ${selector}`);
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 }
@@ -91,7 +95,7 @@ export const PROFILES = {
       for (let i = 0; i < FIELDS.length; i++) {
         await page.locator(FIELDS[i]).pressSequentially(VALUES[i], { delay: 0 });
       }
-      await page.locator('button[type="submit"]').dispatchEvent("click");
+      await page.locator(SUBMIT).first().dispatchEvent("click");
       await sleep(300);
     },
   },
@@ -130,7 +134,7 @@ export const PROFILES = {
         }
       }
 
-      const submit = await centreOf(page, 'button[type="submit"]');
+      const submit = await centreOf(page, SUBMIT);
       await page.mouse.move(submit.x, submit.y);
       await page.mouse.click(submit.x, submit.y);
       await sleep(300);
@@ -172,7 +176,7 @@ export const PROFILES = {
         }
       }
 
-      const submit = await centreOf(page, 'button[type="submit"]');
+      const submit = await centreOf(page, SUBMIT);
       await page.mouse.move(submit.x, submit.y);
       await page.mouse.click(submit.x, submit.y);
       await sleep(300);
@@ -229,7 +233,7 @@ export const PROFILES = {
         if (i === 2) await tabAway(600 + rng() * 700);
       }
 
-      const submit = await centreOf(page, 'button[type="submit"]');
+      const submit = await centreOf(page, SUBMIT);
       for (const p of bezierPath(cursor, submit, rng, 30)) {
         await page.mouse.move(p.x, p.y);
         await sleep(logNormal(rng, 9, 0.45));

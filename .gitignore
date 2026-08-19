@@ -75,3 +75,11 @@ yarn-error.log*
 # default. Publishing them is a separate decision that needs consent covering
 # publication, not just collection.
 data/human-traces/
+
+# Attack reports record which bot profiles currently defeat the detector.
+# Same reasoning as AUDIT.md: useful locally, a roadmap for an attacker if
+# published. Findings belong in AUDIT.md until they are closed.
+data/attack-reports/
+
+# Local SQLite databases used when running the backend outside Docker.
+*.db

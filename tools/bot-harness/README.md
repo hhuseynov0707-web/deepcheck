@@ -113,6 +113,27 @@ once you have real human traces to compare against.
 `scorer.extract_features()` — the same function the API calls at request time.
 No train/serve skew.
 
+## Testing whether the detector actually works
+
+`capture.js` stubs `/api/analyze` because it wants clean traces. `attack.js`
+does the opposite: it points the same profiles at a **real** backend and reports
+whether the payment went through.
+
+```bash
+cd backend && python train_model.py
+DATABASE_URL="sqlite+aiosqlite:///./attack.db" uvicorn main:app --port 8000
+
+cd tools/bot-harness && node attack.js --api http://localhost:8000
+```
+
+For each profile it reports the scores the backend returned and which outcome
+the page reached — allowed, warned, verification, or blocked. Run it after any
+change to `scorer.py`, the feature set, or the model: it is the only test that
+answers the question the product exists to answer.
+
+Findings go in `AUDIT.md`, which is git-ignored. A public list of which bot
+shapes get through is a roadmap for anyone attacking the live system.
+
 ## The human half
 
 This harness only produces the bot class. Human traces have to come from real
