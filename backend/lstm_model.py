@@ -59,12 +59,29 @@ class BehaviorLSTM(nn.Module):
         return self.classifier(last_step)
 
 
-def build_sequence_from_features(feature_vector: list[float]) -> torch.Tensor:
-    """Repeats a single feature snapshot across the sequence length.
+def build_sequence_from_features(
+    feature_vector: list[float], history: list[list[float]] | None = None
+) -> torch.Tensor:
+    """Build the LSTM's input window for one scoring call.
 
-    Real deployments would keep a rolling window of per-second snapshots;
-    for a single /api/analyze call we only have the latest aggregate, so we
-    tile it across the window to still exercise the temporal model.
+    The window is the session's most recent SEQUENCE_LENGTH flushes, oldest
+    first, ending with the flush being scored. `history` is the prior
+    per-flush feature vectors in chronological order -- BehaviorData persists
+    exactly these six columns, so a live session's real window is already
+    available and only needed reading.
+
+    A session with less history than the window is left-padded with its oldest
+    available observation. On a first flush that degenerates to tiling the
+    current vector, which is correct there: no past exists to look at. Tiling
+    on EVERY flush, which this did unconditionally before, left the model with
+    no temporal signal at all -- an LSTM over a constant sequence is just an
+    expensive MLP wearing a recurrent coat.
     """
-    seq = torch.tensor([feature_vector] * SEQUENCE_LENGTH, dtype=torch.float32)
+    window = [list(row) for row in (history or [])][-(SEQUENCE_LENGTH - 1) :]
+    window.append(list(feature_vector))
+
+    if len(window) < SEQUENCE_LENGTH:
+        window = [list(window[0])] * (SEQUENCE_LENGTH - len(window)) + window
+
+    seq = torch.tensor(window, dtype=torch.float32)
     return seq.unsqueeze(0)  # (1, SEQUENCE_LENGTH, NUM_FEATURES)

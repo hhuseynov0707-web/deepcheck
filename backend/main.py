@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import scorer
+from lstm_model import SEQUENCE_LENGTH
 from database import get_db, init_db
 from models import BehaviorData, Session
 
@@ -44,6 +45,10 @@ SMOOTHING_WINDOW = 5
 # 19s -- long enough to cover a payment attempt, short enough that a
 # misflagged human recovers inside a minute.
 RISK_DECAY_PER_FLUSH = 0.93
+
+# How many prior flushes the LSTM's window looks back over. One less than the
+# model's SEQUENCE_LENGTH, because the flush being scored fills the last slot.
+LSTM_HISTORY_WINDOW = SEQUENCE_LENGTH - 1
 
 
 def blend_session_score(previous, recent, current):
@@ -173,6 +178,19 @@ async def analyze(payload: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
         "key_events": [k.model_dump() for k in payload.key_events],
     }
 
+    # The LSTM scores a window of the session's recent flushes. BehaviorData
+    # already persists each flush's six features, so the real window is a
+    # query away -- previously the current flush was tiled across every
+    # timestep, leaving the model no temporal signal to read. Oldest first,
+    # so the sequence runs forward in time.
+    history_result = await db.execute(
+        select(*(getattr(BehaviorData, name) for name in scorer.FEATURE_NAMES))
+        .where(BehaviorData.session_id == session_id)
+        .order_by(BehaviorData.created_at.desc())
+        .limit(LSTM_HISTORY_WINDOW)
+    )
+    feature_history = [list(row) for row in reversed(history_result.all())]
+
     try:
         # compute_risk is ~50ms of pure CPU (sklearn + SHAP + torch). Called
         # directly in this async handler it blocks the single event-loop
@@ -180,7 +198,7 @@ async def analyze(payload: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
         # /api/health -- measured event-loop stalls up to 1.5s at 20
         # concurrent flushes, capping a worker at ~13 req/s. Running it in the
         # threadpool keeps the loop free to accept and finish other work.
-        result = await run_in_threadpool(scorer.compute_risk, raw)
+        result = await run_in_threadpool(scorer.compute_risk, raw, feature_history)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception:

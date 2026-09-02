@@ -289,7 +289,7 @@ def extract_features(raw: dict) -> dict:
     }
 
 
-def compute_risk(raw: dict) -> dict:
+def compute_risk(raw: dict, feature_history: list[list[float]] | None = None) -> dict:
     start = time.perf_counter()
     bundle = get_bundle()
 
@@ -316,7 +316,12 @@ def compute_risk(raw: dict) -> dict:
     iso_anomaly = float(np.clip(0.5 - iso_raw, 0.0, 1.0))
 
     with torch.no_grad():
-        seq = build_sequence_from_features([features[name] for name in FEATURE_NAMES])
+        # The LSTM scores the session's recent window, not a single flush
+        # tiled to look like one. feature_history is the prior flushes'
+        # feature vectors, oldest first; main.py reads them from BehaviorData.
+        seq = build_sequence_from_features(
+            [features[name] for name in FEATURE_NAMES], feature_history
+        )
         lstm_proba = float(bundle.lstm(seq).item())
 
     fraud_probability = float(np.clip(0.5 * rf_proba + 0.2 * iso_anomaly + 0.3 * lstm_proba, 0.0, 1.0))

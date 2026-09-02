@@ -277,23 +277,15 @@ def test_headless_bot_scores_high():
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known regression, deliberately not papered over. Rescaling "
-        "ACCELERATION_VARIANCE_DIVISOR to match real browser traces (2.2e-6 -> "
-        "5.0e-3) dropped this fixture from >80 to 74.1 -- still 'Yüksek Risk', "
-        "but below the block threshold. The cause is not the rescale: the "
-        "synthetic generator produces mouse dynamics on a different numeric "
-        "scale from real browsers, and INVERTED -- synthetic humans average "
-        "0.000 ivme_degisimi while synthetic bots average 0.095, the opposite "
-        "of what real traces show. The old divisor hid this by saturating both "
-        "classes at 1.0. Against real bot traffic the rescale is a large net "
-        "win (3 of 4 profiles now intervened on, up from 1 of 4). This stays "
-        "xfail(strict) so it flags the moment the generator is fixed or the "
-        "model is retrained on real traces. See AUDIT.md."
-    ),
-)
+# Recovered 2026-09-02. This was xfail(strict) after the acceleration rescale
+# dropped the fixture from >80 to 74.1; giving the LSTM real session history
+# instead of one flush tiled across every timestep brought it back to 80.2.
+# Strict xfail is what surfaced the recovery -- the suite failed on XPASS the
+# moment it started passing again.
+#
+# The underlying generator problem it pointed at is NOT resolved: synthetic
+# mouse dynamics remain inverted against real browsers (see AUDIT.md). This
+# assertion passing does not mean that is fixed.
 def test_scripted_motion_bot_scores_high():
     raw = _scripted_motion_bot_session()
     result = scorer.compute_risk(raw)
