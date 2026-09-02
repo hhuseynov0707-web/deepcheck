@@ -28,10 +28,17 @@ from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
+from load_traces import load_real_dataset
 from lstm_model import FEATURE_NAMES, NUM_FEATURES, SEQUENCE_LENGTH, BehaviorLSTM
 from scorer import extract_features
 
-N_ROWS = 50_000
+# Sessions, not flushes. Each yields SEQUENCE_LENGTH flushes, so this is
+# 60k flush rows for the tabular models and 6k sequences for the LSTM --
+# comparable generation cost to the old 50k isolated rows.
+N_SESSIONS = 6_000
+
+# Matches the SDK's flush cadence (sdk/deepcheck.js DEFAULT_INTERVAL_MS).
+FLUSH_INTERVAL_MS = 2000
 HESITATION_THRESHOLD_MS = 400  # must match sdk/deepcheck.js's HESITATION_THRESHOLD_MS
 
 # Fraction of each class simulated as the "other" persona -- sophisticated
@@ -289,31 +296,35 @@ def _simulate_session(persona: str, base_t: int) -> dict:
     }
 
 
-def generate_synthetic_dataset(n_rows: int = N_ROWS):
-    is_bot = rng.integers(0, 2, size=n_rows)
-    X = np.empty((n_rows, len(FEATURE_NAMES)))
+def generate_synthetic_dataset(n_sessions: int = N_SESSIONS):
+    """Simulate whole sessions rather than isolated flushes.
 
-    for i in range(n_rows):
-        base_t = 1_700_000_000_000 + int(rng.integers(0, 10**9))
+    Returns (X_seq, y) with X_seq shaped
+    (n_sessions, SEQUENCE_LENGTH, len(FEATURE_NAMES)).
+
+    Each session is ONE persona observed across consecutive flush windows, so
+    its timesteps vary the way a real session's do -- same user, different
+    two-second slices. That variation is the signal the LSTM exists to read
+    and previously never saw: the old pipeline scored one flush and tiled it
+    across every timestep with +/-0.02 noise, which is a constant sequence.
+    """
+    is_bot = rng.integers(0, 2, size=n_sessions)
+    X_seq = np.empty((n_sessions, SEQUENCE_LENGTH, len(FEATURE_NAMES)))
+
+    for i in range(n_sessions):
+        # The persona is a property of the session, not of a single flush.
         if is_bot[i]:
             persona = "bot_sophisticated" if rng.random() < CONTAMINATION_RATE else "bot"
         else:
             persona = "human_rushed" if rng.random() < CONTAMINATION_RATE else "human"
-        raw = _simulate_session(persona, base_t)
-        features = extract_features(raw)
-        X[i] = [features[name] for name in FEATURE_NAMES]
 
-    y = is_bot
-    return X, y
+        base_t = 1_700_000_000_000 + int(rng.integers(0, 10**9))
+        for step in range(SEQUENCE_LENGTH):
+            raw = _simulate_session(persona, base_t + step * FLUSH_INTERVAL_MS)
+            features = extract_features(raw)
+            X_seq[i, step] = [features[name] for name in FEATURE_NAMES]
 
-
-def build_sequences(X: np.ndarray) -> np.ndarray:
-    """Tiles each aggregate feature row across SEQUENCE_LENGTH timesteps with
-    small per-step jitter, simulating a rolling 10s behavior window."""
-    n = X.shape[0]
-    noise = rng.normal(0, 0.02, size=(n, SEQUENCE_LENGTH, NUM_FEATURES))
-    seq = np.repeat(X[:, None, :], SEQUENCE_LENGTH, axis=1) + noise
-    return np.clip(seq, 0.0, 1.0)
+    return X_seq, is_bot
 
 
 def train_tabular_models(X_train, y_train, X_test, y_test):
@@ -358,11 +369,14 @@ def train_tabular_models(X_train, y_train, X_test, y_test):
     return scaler, rf, iso_forest
 
 
-def train_lstm(X_train, y_train, X_test, y_test, epochs: int = 8, batch_size: int = 256):
+def train_lstm(seq_train_arr, y_train, seq_test_arr, y_test, epochs: int = 8, batch_size: int = 256):
+    """seq_*_arr are (n_sessions, SEQUENCE_LENGTH, n_features) -- already
+    real sequences, no tiling.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    seq_train = torch.tensor(build_sequences(X_train), dtype=torch.float32)
-    seq_test = torch.tensor(build_sequences(X_test), dtype=torch.float32)
+    seq_train = torch.tensor(seq_train_arr, dtype=torch.float32)
+    seq_test = torch.tensor(seq_test_arr, dtype=torch.float32)
     y_train_t = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
     y_test_t = torch.tensor(y_test, dtype=torch.float32).unsqueeze(1)
 
@@ -397,17 +411,54 @@ def train_lstm(X_train, y_train, X_test, y_test, epochs: int = 8, batch_size: in
 
 
 def main():
-    print(f"Generating {N_ROWS} synthetic behavior rows...")
-    X, y = generate_synthetic_dataset()
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+    print(f"Generating {N_SESSIONS} synthetic sessions x {SEQUENCE_LENGTH} flushes...")
+    X_seq, y = generate_synthetic_dataset()
+
+    # Split by SESSION, not by flush. Flushes from one session are highly
+    # correlated -- same persona, same random draws -- so letting some land in
+    # train and others in test would leak, and every reported score would be
+    # optimistic.
+    seq_train, seq_test, y_train, y_test = train_test_split(
+        X_seq, y, test_size=0.2, random_state=42, stratify=y
     )
 
+    # The tabular models score one flush at a time, exactly as the API does,
+    # so every flush is a training row. The session's label repeats across its
+    # own flushes.
+    X_train = seq_train.reshape(-1, len(FEATURE_NAMES))
+    X_test = seq_test.reshape(-1, len(FEATURE_NAMES))
+    y_train_flat = np.repeat(y_train, SEQUENCE_LENGTH)
+    y_test_flat = np.repeat(y_test, SEQUENCE_LENGTH)
+
+    # Mix in real captured traces when any exist. These are flush-level rows,
+    # so they join the tabular training set; the LSTM keeps to synthetic
+    # sequences until enough real multi-flush sessions are collected to matter.
+    X_real, y_real, stats = load_real_dataset()
+    if X_real is not None:
+        real_bots = int((y_real == 1).sum())
+        real_humans = int((y_real == 0).sum())
+        print(f"Adding {len(X_real)} real flush rows ({real_humans} human, {real_bots} bot)")
+        for key in sorted(stats):
+            print(f"  {key}: {stats[key]}")
+        if real_humans == 0:
+            print("  NOTE: no real human traces yet -- the human class is still")
+            print("  entirely synthetic. Collect real sessions before claiming")
+            print("  the model is trained on real data.")
+        X_train = np.vstack([X_train, X_real])
+        y_train_flat = np.concatenate([y_train_flat, y_real])
+    else:
+        print("No real traces found -- training on synthetic data only.")
+
+    print(f"  tabular: {len(X_train)} train / {len(X_test)} test flush rows")
+    print(f"  lstm:    {len(seq_train)} train / {len(seq_test)} test sequences")
+
     print("Training RandomForest + IsolationForest...")
-    scaler, rf, iso_forest = train_tabular_models(X_train, y_train, X_test, y_test)
+    scaler, rf, iso_forest = train_tabular_models(
+        X_train, y_train_flat, X_test, y_test_flat
+    )
 
     print("Training LSTM...")
-    lstm = train_lstm(X_train, y_train, X_test, y_test)
+    lstm = train_lstm(seq_train, y_train, seq_test, y_test)
 
     joblib.dump(
         {

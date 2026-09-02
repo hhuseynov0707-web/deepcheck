@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:16-alpine
@@ -33,6 +31,22 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # On a clean clone model.pkl does not exist, so entrypoint.sh trains it on
+    # first boot -- 50k rows through Random Forest, Isolation Forest and LSTM.
+    # Without this the frontend came up immediately and showed fetch errors
+    # until training finished. start_period keeps failures from counting while
+    # that runs; the container flips to healthy as soon as /api/health reports
+    # the model loaded. /api/health answers 200 with model_loaded:false when
+    # the model is missing, so the check asserts that field rather than merely
+    # that the port is listening.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import json,urllib.request; assert json.load(urllib.request.urlopen('http://localhost:8000/api/health'))['model_loaded']"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 600s
 
   frontend:
     build:
@@ -49,7 +63,8 @@ services:
       - ./sdk:/app/sdk
       - /app/frontend/node_modules
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     command: npm run dev -- --host 0.0.0.0 --port 3000
 
 volumes:

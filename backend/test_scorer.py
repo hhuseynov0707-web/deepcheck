@@ -15,6 +15,7 @@ gets blocked.
 """
 
 import numpy as np
+import pytest
 
 import scorer
 
@@ -276,6 +277,15 @@ def test_headless_bot_scores_high():
     )
 
 
+# Recovered 2026-09-02. This was xfail(strict) after the acceleration rescale
+# dropped the fixture from >80 to 74.1; giving the LSTM real session history
+# instead of one flush tiled across every timestep brought it back to 80.2.
+# Strict xfail is what surfaced the recovery -- the suite failed on XPASS the
+# moment it started passing again.
+#
+# The underlying generator problem it pointed at is NOT resolved: synthetic
+# mouse dynamics remain inverted against real browsers (see AUDIT.md). This
+# assertion passing does not mean that is fixed.
 def test_scripted_motion_bot_scores_high():
     raw = _scripted_motion_bot_session()
     result = scorer.compute_risk(raw)
@@ -344,3 +354,104 @@ def _run_all():
 
 if __name__ == "__main__":
     _run_all()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the 2026-08-19 adversarial finding: three of four bot
+# profiles completed payments against the real scorer. Two causes are covered
+# here -- neutral fallbacks rewarding silence, and a saturated acceleration
+# feature. See AUDIT.md.
+# ---------------------------------------------------------------------------
+
+
+def _busy_session_with_no_mouse() -> dict:
+    """A session doing plenty -- just not with a mouse.
+
+    This is the naive_script profile: it fills the form with synthetic
+    keystrokes and clicks via element.click(), so coordinates arrive as (0,0)
+    and the trajectory is empty. Nothing about this is neutral.
+    """
+    keys = [{"t": BASE_T + i * 12} for i in range(120)]
+    clicks = [{"x": 0, "y": 0, "t": BASE_T + i * 400} for i in range(6)]
+    return {
+        "session_id": "busy-no-mouse",
+        "mouse_trajectory": [],
+        "click_timing": clicks,
+        "scroll_events": [],
+        "hesitation_intervals": [],
+        "focus_changes": [],
+        "key_events": keys,
+    }
+
+
+def _quiet_session() -> dict:
+    """Barely anything has happened yet -- a page that just loaded.
+
+    Here the fallbacks are correct: there is genuinely no measurement to make,
+    and guessing "bot" would punish a user for not having acted yet.
+    """
+    return {
+        "session_id": "quiet",
+        "mouse_trajectory": [{"x": 10, "y": 10, "t": BASE_T}],
+        "click_timing": [],
+        "scroll_events": [],
+        "hesitation_intervals": [],
+        "focus_changes": [],
+        "key_events": [],
+    }
+
+
+def test_silence_in_a_busy_session_is_not_scored_as_neutral():
+    """Absence of evidence must not be scored as evidence of humanity.
+
+    A bot that moves no mouse and never scrolls was previously handed the
+    neutral defaults on exactly the two features that would expose it.
+    """
+    features = scorer.extract_features(_busy_session_with_no_mouse())
+
+    assert features["ivme_degisimi"] < scorer.NEUTRAL_DEFAULTS["ivme_degisimi"], (
+        "a busy session with no mouse movement at all should not receive the "
+        "same acceleration score as a human who simply has not moved yet"
+    )
+    assert features["scroll_hizi_varyansi"] < scorer.NEUTRAL_DEFAULTS["scroll_hizi_varyansi"], (
+        "a busy session that never scrolls should not receive the neutral "
+        "scroll score"
+    )
+
+
+def test_quiet_session_still_gets_neutral_fallbacks():
+    """The fallback is right when there is genuinely nothing to measure.
+
+    Guard against over-correcting: a freshly loaded page must not be treated
+    as a bot just because it has not produced data yet.
+    """
+    features = scorer.extract_features(_quiet_session())
+
+    assert features["ivme_degisimi"] == scorer.NEUTRAL_DEFAULTS["ivme_degisimi"]
+    assert features["scroll_hizi_varyansi"] == scorer.NEUTRAL_DEFAULTS["scroll_hizi_varyansi"]
+
+
+def test_acceleration_feature_does_not_saturate_on_real_mouse_data():
+    """Real browser mouse traces measured 1e-4 to 1.6e-3 acceleration variance.
+
+    The divisor was 2.2e-6, so every real trace clipped to 1.0 and the feature
+    carried no information -- a straight-line bot and a bezier-eased bot were
+    indistinguishable. Both must now land below the ceiling, and the smoother
+    one must score lower than the jerkier one.
+    """
+    smooth = {"mouse_trajectory": [
+        {"x": 100 + i * 3, "y": 100 + i * 2, "t": BASE_T + i * 10} for i in range(40)
+    ]}
+    jerky = {"mouse_trajectory": [
+        {"x": 100 + i * 3 + (13 * i) % 11, "y": 100 + i * 2 + (7 * i) % 9, "t": BASE_T + i * 10}
+        for i in range(40)
+    ]}
+
+    smooth_score = scorer.extract_features(smooth)["ivme_degisimi"]
+    jerky_score = scorer.extract_features(jerky)["ivme_degisimi"]
+
+    assert jerky_score < 1.0, "jerky real-scale mouse data still saturates the feature"
+    assert smooth_score < jerky_score, (
+        "a perfectly smooth path must score lower than a jerky one; if both "
+        "clip to the ceiling the feature discriminates nothing"
+    )

@@ -5,8 +5,11 @@ FROM node:20-alpine
 # for local (non-Docker) development.
 WORKDIR /app/frontend
 
-COPY frontend/package.json ./
-RUN npm install
+# Copy the lockfile too, and install from it: npm ci resolves the exact
+# versions recorded there instead of re-resolving the ^ ranges, so the
+# image matches a local install.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 
 COPY frontend/ .
 COPY sdk/ /app/sdk/

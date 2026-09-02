@@ -67,3 +67,19 @@ desktop.ini
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# --- Captured behavior traces ---
+# Bot traces (data/bot-traces/) are machine output from tools/bot-harness and
+# are safe to commit. Human traces are behavioural recordings of identifiable
+# people -- personal data under KVKK -- so they stay out of the repository by
+# default. Publishing them is a separate decision that needs consent covering
+# publication, not just collection.
+data/human-traces/
+
+# Attack reports record which bot profiles currently defeat the detector.
+# Same reasoning as AUDIT.md: useful locally, a roadmap for an attacker if
+# published. Findings belong in AUDIT.md until they are closed.
+data/attack-reports/
+
+# Local SQLite databases used when running the backend outside Docker.
+*.db

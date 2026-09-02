@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import scorer
+from lstm_model import SEQUENCE_LENGTH
 from database import get_db, init_db
 from models import BehaviorData, Session
 
@@ -28,6 +29,38 @@ from models import BehaviorData, Session
 # stays the raw, unsmoothed per-flush value so the underlying signal is still
 # visible for analysis.
 SMOOTHING_WINDOW = 5
+
+# Median smoothing is symmetric; risk is not. Being slow to flag protects a
+# human from one odd window -- that is why the median is here and it still
+# applies. But applied in both directions it also lets a bot clear its own
+# record simply by continuing: in the 2026-08-19 adversarial audit every bot
+# profile was correctly flagged at its peak (72-82) and had decayed below the
+# intervention thresholds by the time it submitted the payment. One reached
+# 81.9, squarely "Bot Tespit Edildi", and paid at 47.6.
+#
+# So the session's score is floored by its own decayed peak: evidence
+# accumulates rather than averaging away, and a session that has demonstrated
+# bot behaviour has to genuinely behave for a while to be cleared, not merely
+# carry on. 0.93 per flush at the SDK's 2s cadence halves a score in roughly
+# 19s -- long enough to cover a payment attempt, short enough that a
+# misflagged human recovers inside a minute.
+RISK_DECAY_PER_FLUSH = 0.93
+
+# How many prior flushes the LSTM's window looks back over. One less than the
+# model's SEQUENCE_LENGTH, because the flush being scored fills the last slot.
+LSTM_HISTORY_WINDOW = SEQUENCE_LENGTH - 1
+
+
+def blend_session_score(previous, recent, current):
+    """The session's official risk score for this flush.
+
+    previous -- the session's last official score, or None for a new session
+    recent   -- the last few raw per-flush scores
+    current  -- this flush's raw score
+    """
+    smoothed = statistics.median(list(recent) + [current])
+    decayed_peak = (previous or 0.0) * RISK_DECAY_PER_FLUSH
+    return round(max(smoothed, decayed_peak), 1)
 
 logger = logging.getLogger("deepcheck")
 
@@ -145,6 +178,19 @@ async def analyze(payload: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
         "key_events": [k.model_dump() for k in payload.key_events],
     }
 
+    # The LSTM scores a window of the session's recent flushes. BehaviorData
+    # already persists each flush's six features, so the real window is a
+    # query away -- previously the current flush was tiled across every
+    # timestep, leaving the model no temporal signal to read. Oldest first,
+    # so the sequence runs forward in time.
+    history_result = await db.execute(
+        select(*(getattr(BehaviorData, name) for name in scorer.FEATURE_NAMES))
+        .where(BehaviorData.session_id == session_id)
+        .order_by(BehaviorData.created_at.desc())
+        .limit(LSTM_HISTORY_WINDOW)
+    )
+    feature_history = [list(row) for row in reversed(history_result.all())]
+
     try:
         # compute_risk is ~50ms of pure CPU (sklearn + SHAP + torch). Called
         # directly in this async handler it blocks the single event-loop
@@ -152,7 +198,7 @@ async def analyze(payload: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
         # /api/health -- measured event-loop stalls up to 1.5s at 20
         # concurrent flushes, capping a worker at ~13 req/s. Running it in the
         # threadpool keeps the loop free to accept and finish other work.
-        result = await run_in_threadpool(scorer.compute_risk, raw)
+        result = await run_in_threadpool(scorer.compute_risk, raw, feature_history)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception:
@@ -182,7 +228,11 @@ async def analyze(payload: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
     recent_scores = [
         row[0] for row in recent_result.all() if row[0] is not None and math.isfinite(row[0])
     ]
-    smoothed_score = round(statistics.median(recent_scores + [result["risk_score"]]), 1)
+    smoothed_score = blend_session_score(
+        previous=session.risk_score,
+        recent=recent_scores,
+        current=result["risk_score"],
+    )
     smoothed_label = scorer.get_label(smoothed_score)
 
     session.risk_score = smoothed_score

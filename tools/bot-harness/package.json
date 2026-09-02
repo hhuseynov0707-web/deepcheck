@@ -1,0 +1,13 @@
+{
+  "name": "deepcheck-bot-harness",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Captures real bot behaviour traces by driving the DeepCheck demo page with browser automation",
+  "scripts": {
+    "capture": "node capture.js"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
