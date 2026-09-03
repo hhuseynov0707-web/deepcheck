@@ -40,7 +40,24 @@ HESITATION_THRESHOLD_MS = 400  # must match sdk/deepcheck.js's HESITATION_THRESH
 # would be cleanly separable, which is a modeling smell, not a real result.
 CONTAMINATION_RATE = 0.10
 
-rng = np.random.default_rng(42)
+SEED = 42
+
+rng = np.random.default_rng(SEED)
+
+# Seed PyTorch too. Seeding only NumPy left the LSTM's weight initialisation,
+# dropout masks and batch shuffling (torch.randperm) fully random, so every
+# training run produced a different network while the RF and Isolation Forest
+# came out bit-identical -- and the repository claimed the artifacts were
+# "fully reproducible from train_model.py (fixed seed 42)", which was true of
+# two models out of three.
+#
+# This is not cosmetic. Two runs of the identical script differed by 0.55 in
+# LSTM output on a headless-bot payload (0.98 vs 0.43), which moved the final
+# score from 85.1 to 68.6 and flipped test_headless_bot_scores_high from pass
+# to fail. A model whose quality depends on an unrecorded random draw cannot
+# be debugged, compared across machines, or trusted to reproduce a result.
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
 
 def _hesitation_intervals(event_times: list[int], flush_checkpoint: int | None = None) -> list[int]:
