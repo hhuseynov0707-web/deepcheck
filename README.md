@@ -123,11 +123,16 @@ Interaction entropy is computed per channel and then combined, rather than by me
 Those ten features feed three models whose outputs are blended:
 
 ```
-fraud_probability = 0.5 × RandomForest + 0.2 × IsolationForest + 0.3 × LSTM
+support           = temporal_support(flush)          # 0-1
+lstm_weight       = 0.3 × support
+rf_weight         = 0.5 + (0.3 − lstm_weight)        # LSTM's unearned share
+fraud_probability = rf_weight × RF + 0.2 × IsolationForest + lstm_weight × LSTM
 risk_score        = 100 × fraud_probability
 ```
 
 The Isolation Forest is trained only on human behavior, so it flags anomalies rather than learning a bot signature — which matters for automation that doesn't resemble anything in the training set.
+
+**The LSTM only votes when it has something to read.** When a flush is too sparse to slice into windows, `build_sequence()` falls back to tiling one snapshot across all timesteps — a *constant* series, from which the network's output is an arbitrary function of the feature vector rather than a reading of anything temporal. This was measured, not theorised: two runs of the identical training script (differing only in an unseeded RNG) gave LSTM outputs of 0.98 and 0.43 on the same headless-bot payload, and at a fixed 0.3 weight that arbitrary draw was worth 16 risk points — enough to flip the verdict across the blocking threshold. Scaling the weight by `temporal_support` and handing the remainder to the Random Forest takes that swing to **0.0 points** on tiled flushes while keeping the LSTM's full contribution on rich ones. The three weights always sum to 1.0.
 
 A session's reported score is the **median of its last 5 flushes**, not the instantaneous value. One incidental pause in an otherwise robotic session shouldn't flip the verdict; an anomaly has to persist to move it. Smoothing only means anything because a session now has exactly one authenticated writer — when the session id came from the client, a flagged session could be walked back down from 86.7 to 50.6 just by flooding it with human-shaped payloads.
 

@@ -33,7 +33,16 @@ HESITATION_THRESHOLD_MS = 400
 # enough events for the variance/entropy/autocorrelation estimators.
 SEQUENCE_WINDOW_FRACTION = 0.4
 MIN_EVENTS_FOR_SEQUENCE = 12
-MIN_SPAN_MS_FOR_SEQUENCE = 500
+# What makes a flush sliceable is having enough events per window, not lasting
+# a long time. This was 500ms, which conflated the two and threw away real
+# structure: a 60-keystroke injection burst spanning 177ms was refused
+# windowing despite putting ~24 events in every window, so the LSTM lost its
+# vote on one of the most clear-cut bot payloads there is. The remaining span
+# requirement only rules out a flush that is effectively a single instant,
+# where every window would hold the same events and the sequence would be
+# constant anyway. With MIN_EVENTS_FOR_SEQUENCE events and a 0.4 window, the
+# events-per-window floor (~5) is already implied.
+MIN_SPAN_MS_FOR_SEQUENCE = 50
 
 # Minimum sample counts before the kinematics features are treated as
 # measurements rather than noise. Estimating an autocorrelation or a mean
@@ -73,6 +82,15 @@ MIN_SCROLL_SPEED_SAMPLES = 4  # scrolling is naturally sparser than pointer moti
 # vector is mostly neutral fallbacks rather than measurement.
 MIN_EVENTS_FOR_CONFIDENT_VERDICT = 25
 MIN_SPAN_MS_FOR_CONFIDENT_VERDICT = 1500
+
+# Ensemble weights. The LSTM's share is scaled by temporal_support() and any
+# part it does not earn goes to the Random Forest, so these three always sum
+# to 1.0 at scoring time. RF carries the largest base share because it reads
+# the aggregate features directly; the Isolation Forest is a smaller
+# anomaly-only contribution trained on humans alone.
+RF_WEIGHT = 0.5
+ISO_WEIGHT = 0.2
+LSTM_WEIGHT = 0.3
 
 # Empirically calibrated: raw variance(acceleration) from real mouse coordinates
 # lands around 1e-6 to 1e-7 (px/ms^2, squared) for natural human jitter, since
@@ -588,6 +606,39 @@ def build_sequence(raw: dict, features: dict) -> torch.Tensor:
     return seq.unsqueeze(0)  # (1, SEQUENCE_LENGTH, NUM_FEATURES)
 
 
+def temporal_support(raw: dict) -> float:
+    """How much genuine temporal structure the LSTM's input carries, in [0, 1].
+
+    build_sequence() falls back to tiling one aggregate snapshot across all
+    timesteps when a flush is too short or sparse to slice. That fallback
+    keeps the tensor shape valid, but it hands the LSTM a *constant* series:
+    there is no temporal signal in it, so whatever the network outputs is an
+    arbitrary function of the feature vector rather than a reading of how
+    behaviour evolved.
+
+    That is not a theoretical concern. Two training runs of the identical
+    script -- differing only in the unseeded torch RNG -- produced LSTM
+    outputs of 0.98 and 0.43 on the same headless-bot payload, because that
+    payload is tiled. At the LSTM's fixed 0.3 ensemble weight, an arbitrary
+    draw was worth 16 risk points on exactly the inputs where the model knows
+    least. Seeding makes that reproducible; it does not make it meaningful.
+
+    So the LSTM's weight is scaled by this value and the remainder handed to
+    the Random Forest, which reads the aggregate features directly and does
+    not depend on windowing. Zero when the sequence is tiled, ramping to full
+    confidence at twice the minimum event count -- continuous across the
+    windowing threshold, so there is no cliff for a session to sit on.
+    """
+    times = _event_times(raw)
+    span = (times[-1] - times[0]) if len(times) >= 2 else 0
+
+    if len(times) < MIN_EVENTS_FOR_SEQUENCE or span < MIN_SPAN_MS_FOR_SEQUENCE:
+        return 0.0
+
+    surplus = (len(times) - MIN_EVENTS_FOR_SEQUENCE) / MIN_EVENTS_FOR_SEQUENCE
+    return float(np.clip(surplus, 0.0, 1.0))
+
+
 def signal_sufficiency(raw: dict) -> float:
     """How much real evidence this flush carries, in [0, 1].
 
@@ -637,7 +688,22 @@ def compute_risk(raw: dict) -> dict:
         seq = build_sequence(raw, features)
         lstm_proba = float(bundle.lstm(seq).item())
 
-    fraud_probability = float(np.clip(0.5 * rf_proba + 0.2 * iso_anomaly + 0.3 * lstm_proba, 0.0, 1.0))
+    # Trust the LSTM in proportion to how much temporal structure it actually
+    # received; hand whatever weight it does not earn to the Random Forest,
+    # which reads the aggregate feature vector directly and needs no window.
+    # The three weights always sum to 1.0, so the score stays on the same
+    # scale regardless of how the split lands.
+    support = temporal_support(raw)
+    lstm_weight = LSTM_WEIGHT * support
+    rf_weight = RF_WEIGHT + (LSTM_WEIGHT - lstm_weight)
+
+    fraud_probability = float(
+        np.clip(
+            rf_weight * rf_proba + ISO_WEIGHT * iso_anomaly + lstm_weight * lstm_proba,
+            0.0,
+            1.0,
+        )
+    )
     # np.clip propagates NaN rather than clamping it, so an upstream NaN would
     # survive the clip above. Degrade to "unknown" (0.5) instead of persisting
     # a value that cannot be serialized or compared.
@@ -678,4 +744,5 @@ def compute_risk(raw: dict) -> dict:
         "response_time_ms": response_time_ms,
         "features": features,
         "signal_sufficiency": signal_sufficiency(raw),
+        "temporal_support": round(support, 3),
     }

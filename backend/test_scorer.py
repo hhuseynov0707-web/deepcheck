@@ -484,3 +484,72 @@ def test_signal_sufficiency_separates_thin_from_rich_sessions():
     # The policy layer (main.py) refuses to auto-approve below
     # MIN_SIGNAL_FOR_AUTO_APPROVE, which is how a signal-starved bot is
     # stopped without inventing a confident score for it.
+
+
+# ---------------------------------------------------------------------------
+# Ensemble robustness
+# ---------------------------------------------------------------------------
+
+
+class _ConstantLSTM:
+    """Stands in for the trained LSTM, returning a fixed probability."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def __call__(self, seq):
+        import torch
+
+        return torch.tensor([[self.value]], dtype=torch.float32)
+
+
+def _score_with_lstm(raw, value):
+    """Scores `raw` with the LSTM forced to output `value`."""
+    bundle = scorer.get_bundle()
+    original = bundle.lstm
+    bundle.lstm = _ConstantLSTM(value)
+    try:
+        return scorer.compute_risk(raw)["risk_score"]
+    finally:
+        bundle.lstm = original
+
+
+def test_lstm_cannot_swing_a_verdict_it_has_no_data_for():
+    """A tiled (structureless) sequence must not let the LSTM move the score.
+
+    This is the concrete failure it guards against: two runs of the same
+    training script, differing only in an unseeded RNG, produced LSTM outputs
+    of 0.98 and 0.43 on a headless-bot payload. Because that payload is too
+    sparse to window, the LSTM was reading a constant series -- yet at a fixed
+    0.3 weight it moved the score from 85.1 to 68.6, flipping the verdict
+    across the blocking threshold on an arbitrary draw.
+    """
+    raw = _headless_bot_session()
+    assert scorer.temporal_support(raw) == 0.0, "fixture is expected to be tiled"
+
+    low = _score_with_lstm(raw, 0.0)
+    high = _score_with_lstm(raw, 1.0)
+    assert abs(high - low) < 1.0, (
+        f"LSTM swung a structureless verdict by {abs(high - low):.1f} points "
+        f"({low} -> {high}); its weight should be ~0 when temporal_support is 0"
+    )
+
+
+def test_lstm_still_contributes_when_it_has_real_temporal_structure():
+    """The damping must not silently disable the LSTM everywhere."""
+    raw = _natural_human_session(seed=0)
+    assert scorer.temporal_support(raw) > 0.5, "fixture should be well-windowed"
+
+    low = _score_with_lstm(raw, 0.0)
+    high = _score_with_lstm(raw, 1.0)
+    assert (high - low) > 15.0, (
+        f"LSTM contributed only {high - low:.1f} points on a rich session; "
+        f"expected close to its full {scorer.LSTM_WEIGHT * 100:.0f}-point share"
+    )
+
+
+def test_ensemble_weights_always_sum_to_one():
+    for support in (0.0, 0.25, 0.5, 1.0):
+        lstm_w = scorer.LSTM_WEIGHT * support
+        rf_w = scorer.RF_WEIGHT + (scorer.LSTM_WEIGHT - lstm_w)
+        assert abs((rf_w + scorer.ISO_WEIGHT + lstm_w) - 1.0) < 1e-9

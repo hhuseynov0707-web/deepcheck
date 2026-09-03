@@ -113,8 +113,15 @@ Hədd altında feature `NEUTRAL_DEFAULTS`-a düşür.
 
 Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 
-Əlavə olaraq `signal_sufficiency` (0-1) qaytarılır: flush-un nə qədər real dəlil daşıdığı.
-Aşağı olduqda `/api/transaction` avtomatik təsdiq etmir, step-up tələb edir.
+Əlavə olaraq iki etibarlılıq ölçüsü qaytarılır:
+- `signal_sufficiency` (0-1) — flush-un nə qədər real dəlil daşıdığı. Aşağı olduqda
+  `/api/transaction` avtomatik təsdiq etmir, step-up tələb edir.
+- `temporal_support` (0-1) — LSTM-in girişində nə qədər real zaman strukturu var.
+  Flush pəncərələrə bölünə bilməyəndə `build_sequence()` sabit vektor verir; orada
+  LSTM-in çıxışı mənalı deyil. Ona görə LSTM-in ansambl çəkisi bu dəyərə vurulur,
+  qazanmadığı pay isə Random Forest-ə keçir (üç çəkinin cəmi həmişə 1.0).
+  Səbəb ölçülüb: seed edilməmiş LSTM-in iki fərqli run-u eyni payload-da 0.98 və 0.43
+  vermişdi — sabit 0.3 çəki ilə bu, 16 xal fərq və verdikt dəyişikliyi demək idi.
 
 ### backend/lstm_model.py
 - PyTorch ilə LSTM — davranışı zaman seriyası kimi analiz edir
@@ -129,6 +136,8 @@ Aşağı olduqda `/api/transaction` avtomatik təsdiq etmir, step-up tələb edi
 - Personalar: `human`, `human_rushed`, `human_sparse` (az siqnallı real flush),
   `bot`, `bot_sophisticated`, `bot_evasive` (insanı təqlid edən adversarial bot)
 - RF + Isolation Forest + LSTM train edir, `model.pkl` saxlayır
+- `SEED = 42` həm NumPy, həm PyTorch üçün tətbiq olunur — əks halda LSTM hər run-da
+  fərqli çıxır və nəticələr təkrarlanmır (bu, real bir bug idi)
 - `python train_model.py --print-neutral-defaults` → `NEUTRAL_DEFAULTS` dəyərlərini
   yenidən hesablayır (persona dəyişəndə mütləq yenilənməlidir)
 
