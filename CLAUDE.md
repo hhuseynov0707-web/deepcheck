@@ -136,6 +136,12 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 - Personalar: `human`, `human_rushed`, `human_sparse` (az siqnallı real flush),
   `bot`, `bot_sophisticated`, `bot_evasive` (insanı təqlid edən adversarial bot)
 - RF + Isolation Forest + LSTM train edir, `model.pkl` saxlayır
+- `--seed N` ilə fərqli draw-larda train etmək olar (LSTM-in seed-lər arası
+  sabitliyini ölçmək üçün; ümumi dəqiqlik bunu tamamilə gizlədir)
+- Sınanıb rədd edilib: LSTM-i seyrək ardıcıllıqlarla train etmək onu seyrək
+  girişlərdə **daha pis** edir (tiled dəqiqlik 0.8603 → 0.7539, RF 0.9838 → 0.9524).
+  Səbəb strukturaldır — tiled ardıcıllıq sabit seriyadır, aqreqat feature
+  vektorundan artıq heç nə daşımır, ona görə LSTM orada RF-in zəif dublikatıdır.
 - `SEED = 42` həm NumPy, həm PyTorch üçün tətbiq olunur — əks halda LSTM hər run-da
   fərqli çıxır və nəticələr təkrarlanmır (bu, real bir bug idi)
 - `python train_model.py --print-neutral-defaults` → `NEUTRAL_DEFAULTS` dəyərlərini

@@ -42,22 +42,35 @@ CONTAMINATION_RATE = 0.10
 
 SEED = 42
 
-rng = np.random.default_rng(SEED)
 
-# Seed PyTorch too. Seeding only NumPy left the LSTM's weight initialisation,
-# dropout masks and batch shuffling (torch.randperm) fully random, so every
-# training run produced a different network while the RF and Isolation Forest
-# came out bit-identical -- and the repository claimed the artifacts were
-# "fully reproducible from train_model.py (fixed seed 42)", which was true of
-# two models out of three.
-#
-# This is not cosmetic. Two runs of the identical script differed by 0.55 in
-# LSTM output on a headless-bot payload (0.98 vs 0.43), which moved the final
-# score from 85.1 to 68.6 and flipped test_headless_bot_scores_high from pass
-# to fail. A model whose quality depends on an unrecorded random draw cannot
-# be debugged, compared across machines, or trusted to reproduce a result.
-torch.manual_seed(SEED)
-torch.cuda.manual_seed_all(SEED)
+def set_seed(seed: int) -> None:
+    """Seeds every generator this module uses: NumPy *and* PyTorch.
+
+    Seeding only NumPy left the LSTM's weight initialisation, dropout masks
+    and batch shuffling (torch.randperm) fully random, so every training run
+    produced a different network while the RF and Isolation Forest came out
+    bit-identical -- and the repository claimed the artifacts were "fully
+    reproducible from train_model.py (fixed seed 42)", which was true of two
+    models out of three.
+
+    This is not cosmetic. Two runs of the identical script differed by 0.55 in
+    LSTM output on a headless-bot payload (0.98 vs 0.43), moving the final
+    score from 85.1 to 68.6 and flipping test_headless_bot_scores_high from
+    pass to fail.
+
+    Exposed via --seed so the same script can be trained under different draws
+    on purpose: cross-seed agreement is the thing that has to be *measured*,
+    because aggregate accuracy hides this completely -- those two runs agreed
+    to within 1% overall while disagreeing by 0.55 on a specific input.
+    """
+    global rng
+    rng = np.random.default_rng(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+rng = np.random.default_rng(SEED)
+set_seed(SEED)
 
 
 def _hesitation_intervals(event_times: list[int], flush_checkpoint: int | None = None) -> list[int]:
@@ -428,6 +441,34 @@ def _simulate_session(persona: str, base_t: int) -> dict:
     }
 
 
+# Negative result, kept as a warning: training the LSTM on *more* sparse
+# sequences makes it worse at them.
+#
+# The obvious move, when the LSTM is unreliable on flushes too thin to window,
+# is to feed it more of them -- truncating 22% of simulated sessions to an
+# early-flush view (2-15 events), which is realistic since a 2s flush at
+# session start genuinely is a truncated session. Measured on an identical
+# evaluation set, that made LSTM accuracy on tiled input fall from 0.8603 to
+# 0.7539, and dragged RandomForest accuracy from 0.9838 to 0.9524 -- the RF
+# being the component that actually decides sparse verdicts. Cross-seed
+# stability barely moved (0.0874 vs 0.0871 from weight decay alone).
+#
+# The reason is structural rather than a tuning failure. build_sequence()
+# tiles a thin flush into a *constant* series, which carries exactly the
+# information already in the aggregate feature vector and nothing more. On
+# such input the LSTM is not a temporal model at all -- it is a weaker,
+# higher-variance duplicate of the Random Forest, which reads that same vector
+# directly and scores 0.90-0.92 against the LSTM's 0.75-0.86. Extra sparse
+# examples cannot teach it something the input does not contain; they only add
+# genuinely ambiguous rows (a sparse human and a sparse bot can be identical),
+# which teach every model to hedge and cost accuracy on the sparse cases that
+# *are* decidable, such as a headless script with no pointer events at all.
+#
+# So the LSTM's weight is scaled to zero on tiled input (scorer.temporal_support)
+# and handed to the Random Forest. That is not a workaround for an untrained
+# network; it is the measured better answer.
+
+
 def _pick_persona(is_bot: int) -> str:
     """Persona mix per class.
 
@@ -532,7 +573,12 @@ def train_lstm(seq_train_np, y_train, seq_test_np, y_test, epochs: int = 8, batc
     y_test_t = torch.tensor(y_test, dtype=torch.float32).unsqueeze(1)
 
     model = BehaviorLSTM().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    # weight_decay: an unregularised net is free to fit whatever function it
+    # likes in regions the data does not constrain, which is exactly where the
+    # cross-seed disagreement lived. L2 pulls every draw toward the same
+    # smaller-norm solution, so independent seeds land closer together on
+    # inputs they were never really taught about.
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
     criterion = nn.BCELoss()
 
     n_train = seq_train.shape[0]
@@ -596,14 +642,23 @@ def report_per_persona_recall(rf, scaler, X_test, y_test, personas_test) -> None
 
 
 def main():
-    import sys
+    import argparse
 
-    if "--print-neutral-defaults" in sys.argv:
+    parser = argparse.ArgumentParser(description="Train the DeepCheck models.")
+    parser.add_argument("--seed", type=int, default=SEED, help="RNG seed (default 42)")
+    parser.add_argument("--rows", type=int, default=N_ROWS, help="synthetic rows")
+    parser.add_argument("--out-suffix", default="", help="suffix for artifact filenames")
+    parser.add_argument("--print-neutral-defaults", action="store_true")
+    args = parser.parse_args()
+
+    set_seed(args.seed)
+
+    if args.print_neutral_defaults:
         print_neutral_defaults()
         return
 
-    print(f"Generating {N_ROWS} synthetic behavior rows...")
-    X, S, y, personas = generate_synthetic_dataset()
+    print(f"Generating {args.rows} synthetic behavior rows (seed={args.seed})...")
+    X, S, y, personas = generate_synthetic_dataset(args.rows)
     idx = np.arange(len(y))
     (X_train, X_test, S_train, S_test, y_train, y_test, idx_train, idx_test) = train_test_split(
         X, S, y, idx, test_size=0.2, random_state=42, stratify=y
@@ -624,10 +679,10 @@ def main():
             "iso_forest": iso_forest,
             "feature_names": FEATURE_NAMES,
         },
-        "model.pkl",
+        f"model{args.out_suffix}.pkl",
     )
-    torch.save(lstm.state_dict(), "lstm_model.pt")
-    print("Saved model.pkl and lstm_model.pt")
+    torch.save(lstm.state_dict(), f"lstm_model{args.out_suffix}.pt")
+    print(f"Saved model{args.out_suffix}.pkl and lstm_model{args.out_suffix}.pt")
 
 
 if __name__ == "__main__":
