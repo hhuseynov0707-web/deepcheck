@@ -29,7 +29,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 from lstm_model import FEATURE_NAMES, NUM_FEATURES, SEQUENCE_LENGTH, BehaviorLSTM
-from scorer import extract_features
+from scorer import build_sequence, extract_features
 
 N_ROWS = 50_000
 HESITATION_THRESHOLD_MS = 400  # must match sdk/deepcheck.js's HESITATION_THRESHOLD_MS
@@ -58,6 +58,57 @@ def _hesitation_intervals(event_times: list[int], flush_checkpoint: int | None =
         if trailing_gap >= HESITATION_THRESHOLD_MS:
             gaps.append(trailing_gap)
     return gaps
+
+
+def _ballistic_path(
+    n_points: int,
+    t: int,
+    x: float,
+    y: float,
+    speed: float = 1.0,
+    tremor: float = 1.2,
+) -> tuple[list[dict], int, float, float]:
+    """Human-like pointer motion: target-directed sub-movements with a
+    minimum-jerk velocity profile, plus fine tremor.
+
+    This replaced an `x += rng.normal(6, 6)` random walk, which was the single
+    biggest weakness in the whole detector. That walk emits *independent* steps,
+    so its speed series has no autocorrelation and its direction re-rolls every
+    sample -- meaning the previous "human" training persona was, structurally,
+    exactly what a two-line attacker script produces. An end-to-end replay of
+    such a script against /api/analyze scored 9/100 ("Gercek Kullanici"): the
+    model could not separate them because in training they genuinely were the
+    same process.
+
+    Real hand movement is not a random walk. It is a sequence of ballistic
+    reaches: aim at a target, accelerate smoothly, decelerate into it, dwell,
+    then correct. The minimum-jerk profile below (10p^3 - 15p^4 + 6p^5, the
+    standard model from the motor-control literature) reproduces the
+    slow-fast-slow speed envelope, which gives high speed autocorrelation and
+    high direction consistency -- the structure hiz_otokorelasyonu and
+    yon_tutarliligi measure, and the thing an attacker must now actually model
+    rather than approximate with noise.
+    """
+    points: list[dict] = []
+    while len(points) < n_points:
+        target_x = x + rng.normal(0, 180)
+        target_y = y + rng.normal(0, 120)
+        steps = int(rng.integers(6, 14))
+        x0, y0 = x, y
+        for i in range(1, steps + 1):
+            if len(points) >= n_points:
+                break
+            p = i / steps
+            # Minimum-jerk position profile: 0 at p=0, 1 at p=1, zero velocity
+            # and acceleration at both ends.
+            s = 10 * p**3 - 15 * p**4 + 6 * p**5
+            x = x0 + (target_x - x0) * s + rng.normal(0, tremor)
+            y = y0 + (target_y - y0) * s + rng.normal(0, tremor)
+            t += max(int(rng.uniform(12, 28) / speed), 1)
+            points.append({"x": x, "y": y, "t": t})
+        # Dwell at the target before the next reach (read, aim, decide).
+        t += int(rng.uniform(60, 300) / speed)
+    return points, t, x, y
 
 
 def _simulate_session(persona: str, base_t: int) -> dict:
@@ -187,6 +238,81 @@ def _simulate_session(persona: str, base_t: int) -> dict:
             key_events.append({"t": t})
             all_times.append(t)
 
+    elif persona == "human_sparse":
+        # A real but signal-starved flush: the first 2s window of a session,
+        # or a quiet moment where the user typed a few characters and moved
+        # the pointer slightly. The SDK flushes every 2 seconds, so this is
+        # not an edge case -- it is what the *beginning of every session*
+        # looks like before the 10s rolling window fills up.
+        #
+        # Without this persona the model had never seen a feature vector made
+        # mostly of neutral fallbacks from a human. Every estimator needs a
+        # minimum sample count (see scorer.py), so a 5-mousemove/5-keystroke
+        # flush falls back to neutral almost everywhere -- and the forest,
+        # extrapolating into a region no training point occupied, scored that
+        # all-neutral vector 85.3 ("Bot Tespit Edildi"). Teaching it that
+        # humans routinely produce thin flushes is what makes "not much data"
+        # land mid-scale instead of on a confident accusation.
+        n_points = int(rng.integers(2, 9))
+        x, y = rng.uniform(150, 250), rng.uniform(150, 250)
+        mouse_trajectory, t, x, y = _ballistic_path(n_points, t, x, y)
+        all_times.extend(m["t"] for m in mouse_trajectory)
+
+        if rng.random() < 0.5:
+            t += int(rng.uniform(300, 900))
+            click_timing.append({"x": x, "y": y, "t": t})
+            all_times.append(t)
+
+        n_keys = int(rng.integers(0, 8))
+        for _ in range(n_keys):
+            t += int(rng.lognormal(mean=5.0, sigma=0.5))
+            key_events.append({"t": t})
+            all_times.append(t)
+
+    elif persona == "bot_evasive":
+        # The adversarial persona: an attacker who has read how the detector
+        # works and fakes human-looking *marginal* statistics -- Gaussian
+        # position jitter, uniformly random inter-event delays, lognormal
+        # typing rhythm, and hesitation values invented outright. This is not
+        # hypothetical: it is a transcription of a working evasion that scored
+        # 9/100 ("Gercek Kullanici", confidence 0.91) against this API before
+        # the kinematics features existed.
+        #
+        # What it cannot cheaply fake is structure. Every step is drawn
+        # independently, so the speed series has ~zero autocorrelation and
+        # consecutive move vectors point in unrelated directions, whereas the
+        # ballistic human persona is strongly correlated in both. Training on
+        # this persona is what teaches the model to use that difference
+        # instead of the marginals the attacker controls.
+        n_points = int(rng.integers(20, 40))
+        x, y = rng.uniform(150, 250), rng.uniform(150, 250)
+        for _ in range(n_points):
+            x += rng.normal(6, 6)  # IID steps -- no momentum, no target
+            y += rng.normal(4, 5)
+            t += int(rng.uniform(50, 150))  # uniform, not heavy-tailed
+            mouse_trajectory.append({"x": x, "y": y, "t": t})
+            all_times.append(t)
+
+        n_clicks = 0 if rng.random() < 0.15 else int(rng.integers(2, 5))
+        for _ in range(n_clicks):
+            t += int(rng.uniform(300, 900))
+            click_timing.append({"x": x, "y": y, "t": t})
+            all_times.append(t)
+
+        n_keys = int(rng.integers(20, 40))
+        for _ in range(n_keys):
+            t += int(rng.lognormal(mean=5.0, sigma=0.5))  # copied human rhythm
+            key_events.append({"t": t})
+            all_times.append(t)
+
+        if rng.random() < 0.5:
+            sy = 0
+            for _ in range(int(rng.integers(3, 6))):
+                sy += int(rng.uniform(40, 150))
+                t += int(rng.uniform(60, 180))
+                scroll_events.append({"scrollY": sy, "t": t})
+                all_times.append(t)
+
     elif persona == "human_rushed":
         # NOTE: with tighter dt (faster movement) but similar jitter
         # magnitude to "human", this persona's acceleration variance came out
@@ -197,12 +323,12 @@ def _simulate_session(persona: str, base_t: int) -> dict:
         # but still human" range, below "human" but not off the scale.
         n_points = int(rng.integers(0, 3)) if rng.random() < 0.30 else int(rng.integers(6, 15))
         x, y = rng.uniform(150, 250), rng.uniform(150, 250)
-        for _ in range(n_points):
-            x += rng.normal(6, 4)
-            y += rng.normal(4, 3)
-            t += int(rng.uniform(60, 120))
-            mouse_trajectory.append({"x": x, "y": y, "t": t})
-            all_times.append(t)
+        # speed>1 shortens the inter-sample interval and tremor is slightly
+        # tighter: the same motor control, executed briskly.
+        mouse_trajectory, t, x, y = _ballistic_path(
+            n_points, t, x, y, speed=1.5, tremor=0.9
+        )
+        all_times.extend(m["t"] for m in mouse_trajectory)
         # NOTE: this used to be uniform(150, 400) -- numpy's upper bound is
         # exclusive, so this could NEVER reach HESITATION_THRESHOLD_MS (400),
         # meaning 100% of human_rushed samples got hesitation_intervals=[]
@@ -242,14 +368,10 @@ def _simulate_session(persona: str, base_t: int) -> dict:
         mostly_typing = rng.random() < 0.30
         n_points = int(rng.integers(0, 3)) if mostly_typing else int(rng.integers(10, 40))
         x, y = rng.uniform(150, 250), rng.uniform(150, 250)
-        for _ in range(n_points):
-            x += rng.normal(6, 6)
-            y += rng.normal(4, 5)
-            t += int(rng.uniform(50, 150))
-            mouse_trajectory.append({"x": x, "y": y, "t": t})
-            all_times.append(t)
-            if rng.random() < 0.05:  # natural pause while moving the mouse
-                t += int(rng.uniform(400, 1200))
+        mouse_trajectory, t, x, y = _ballistic_path(n_points, t, x, y)
+        all_times.extend(m["t"] for m in mouse_trajectory)
+        if mouse_trajectory and rng.random() < 0.35:  # natural pause mid-interaction
+            t += int(rng.uniform(400, 1200))
         # See note in human_rushed above; also sometimes zero (keyboard-only
         # Tab navigation is a real, legitimate human interaction pattern).
         n_clicks = 0 if rng.random() < 0.15 else int(rng.integers(1, 5))
@@ -289,31 +411,57 @@ def _simulate_session(persona: str, base_t: int) -> dict:
     }
 
 
+def _pick_persona(is_bot: int) -> str:
+    """Persona mix per class.
+
+    The bot side is deliberately weighted towards the two *evasive* variants
+    rather than the naive one. A dataset dominated by trivially-detectable
+    headless scripts inflates the headline accuracy while teaching the model
+    nothing about the attacker who actually gets through -- and the naive case
+    is already separable on almost any feature.
+    """
+    if is_bot:
+        r = rng.random()
+        if r < 0.25:
+            return "bot_evasive"
+        if r < 0.45:
+            return "bot_sophisticated"
+        return "bot"
+    r = rng.random()
+    # human_sparse is weighted heavily on purpose: thin flushes are common in
+    # production (every session starts with several), and under-representing
+    # them is what let the model treat "little evidence" as an accusation.
+    if r < 0.20:
+        return "human_sparse"
+    if r < 0.20 + CONTAMINATION_RATE:
+        return "human_rushed"
+    return "human"
+
+
 def generate_synthetic_dataset(n_rows: int = N_ROWS):
+    """Simulates raw sessions and returns (aggregate features, LSTM sequences,
+    labels, persona names).
+
+    Sequences are built by the *same* scorer.build_sequence() used at inference
+    time, from the same simulated raw session -- so the LSTM trains on real
+    windowed structure rather than on a tiled constant, and the training and
+    serving sequence construction cannot drift apart.
+    """
     is_bot = rng.integers(0, 2, size=n_rows)
     X = np.empty((n_rows, len(FEATURE_NAMES)))
+    S = np.empty((n_rows, SEQUENCE_LENGTH, NUM_FEATURES), dtype=np.float32)
+    personas: list[str] = []
 
     for i in range(n_rows):
         base_t = 1_700_000_000_000 + int(rng.integers(0, 10**9))
-        if is_bot[i]:
-            persona = "bot_sophisticated" if rng.random() < CONTAMINATION_RATE else "bot"
-        else:
-            persona = "human_rushed" if rng.random() < CONTAMINATION_RATE else "human"
+        persona = _pick_persona(int(is_bot[i]))
+        personas.append(persona)
         raw = _simulate_session(persona, base_t)
         features = extract_features(raw)
         X[i] = [features[name] for name in FEATURE_NAMES]
+        S[i] = build_sequence(raw, features).squeeze(0).numpy()
 
-    y = is_bot
-    return X, y
-
-
-def build_sequences(X: np.ndarray) -> np.ndarray:
-    """Tiles each aggregate feature row across SEQUENCE_LENGTH timesteps with
-    small per-step jitter, simulating a rolling 10s behavior window."""
-    n = X.shape[0]
-    noise = rng.normal(0, 0.02, size=(n, SEQUENCE_LENGTH, NUM_FEATURES))
-    seq = np.repeat(X[:, None, :], SEQUENCE_LENGTH, axis=1) + noise
-    return np.clip(seq, 0.0, 1.0)
+    return X, S, is_bot, personas
 
 
 def train_tabular_models(X_train, y_train, X_test, y_test):
@@ -358,11 +506,11 @@ def train_tabular_models(X_train, y_train, X_test, y_test):
     return scaler, rf, iso_forest
 
 
-def train_lstm(X_train, y_train, X_test, y_test, epochs: int = 8, batch_size: int = 256):
+def train_lstm(seq_train_np, y_train, seq_test_np, y_test, epochs: int = 8, batch_size: int = 256):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    seq_train = torch.tensor(build_sequences(X_train), dtype=torch.float32)
-    seq_test = torch.tensor(build_sequences(X_test), dtype=torch.float32)
+    seq_train = torch.tensor(seq_train_np, dtype=torch.float32)
+    seq_test = torch.tensor(seq_test_np, dtype=torch.float32)
     y_train_t = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
     y_test_t = torch.tensor(y_test, dtype=torch.float32).unsqueeze(1)
 
@@ -396,18 +544,61 @@ def train_lstm(X_train, y_train, X_test, y_test, epochs: int = 8, batch_size: in
     return model
 
 
+def print_neutral_defaults(n_rows: int = 6000) -> None:
+    """Prints the human/bot midpoint per feature, for scorer.NEUTRAL_DEFAULTS.
+
+    These constants must be regenerated whenever the personas change: they
+    encode "no evidence either way", and a stale value silently biases every
+    sparse session towards one class (which has happened before -- see the
+    NEUTRAL_DEFAULTS comment in scorer.py).
+    """
+    X, _, y, _ = generate_synthetic_dataset(n_rows)
+    human_mean = X[y == 0].mean(axis=0)
+    bot_mean = X[y == 1].mean(axis=0)
+    print("\nNEUTRAL_DEFAULTS = {")
+    for i, name in enumerate(FEATURE_NAMES):
+        midpoint = (human_mean[i] + bot_mean[i]) / 2
+        print(f'    "{name}": {midpoint:.2f},  # human {human_mean[i]:.2f} / bot {bot_mean[i]:.2f}')
+    print("}")
+
+
+def report_per_persona_recall(rf, scaler, X_test, y_test, personas_test) -> None:
+    """Accuracy broken down by persona.
+
+    The headline number is dominated by the easy naive-bot cases; what matters
+    is whether the *evasive* personas are caught, so they get their own line.
+    """
+    pred = rf.predict(scaler.transform(X_test))
+    print("\nPer-persona detection rate:")
+    for persona in sorted(set(personas_test)):
+        mask = np.array([p == persona for p in personas_test])
+        if not mask.any():
+            continue
+        correct = (pred[mask] == y_test[mask]).mean()
+        print(f"  {persona:20s} n={mask.sum():5d}  correct: {correct:.4f}")
+
+
 def main():
+    import sys
+
+    if "--print-neutral-defaults" in sys.argv:
+        print_neutral_defaults()
+        return
+
     print(f"Generating {N_ROWS} synthetic behavior rows...")
-    X, y = generate_synthetic_dataset()
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
+    X, S, y, personas = generate_synthetic_dataset()
+    idx = np.arange(len(y))
+    (X_train, X_test, S_train, S_test, y_train, y_test, idx_train, idx_test) = train_test_split(
+        X, S, y, idx, test_size=0.2, random_state=42, stratify=y
     )
+    personas_test = [personas[i] for i in idx_test]
 
     print("Training RandomForest + IsolationForest...")
     scaler, rf, iso_forest = train_tabular_models(X_train, y_train, X_test, y_test)
+    report_per_persona_recall(rf, scaler, X_test, y_test, personas_test)
 
-    print("Training LSTM...")
-    lstm = train_lstm(X_train, y_train, X_test, y_test)
+    print("\nTraining LSTM...")
+    lstm = train_lstm(S_train, y_train, S_test, y_test)
 
     joblib.dump(
         {

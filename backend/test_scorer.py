@@ -21,19 +21,48 @@ import scorer
 BASE_T = 1_751_470_045_000
 
 
+def _ballistic_mouse(rng, n_points, t, x, y, speed=1.0, tremor=1.2):
+    """Human-shaped pointer motion for fixtures.
+
+    Fixtures used to move the cursor with `x += rng.normal(6, 6)` -- an
+    independent random step each sample. That is not what a hand does: real
+    motion is target-directed and carries momentum, so consecutive speeds and
+    directions are strongly correlated. The distinction was invisible while
+    the detector only measured variance and entropy (a random walk and a real
+    reach have similar marginals), but it is the entire basis of the
+    kinematics features, and it is exactly what an attacker script produces.
+
+    So the IID walk is no longer a "human" fixture -- it is the documented
+    evasion, and it now has its own test asserting it gets *caught*
+    (test_iid_random_walk_bot_is_detected). Mirrors _ballistic_path() in
+    train_model.py.
+    """
+    points = []
+    while len(points) < n_points:
+        target_x = x + rng.normal(0, 180)
+        target_y = y + rng.normal(0, 120)
+        steps = int(rng.integers(6, 14))
+        x0, y0 = x, y
+        for i in range(1, steps + 1):
+            if len(points) >= n_points:
+                break
+            p = i / steps
+            s = 10 * p**3 - 15 * p**4 + 6 * p**5  # minimum-jerk profile
+            x = x0 + (target_x - x0) * s + rng.normal(0, tremor)
+            y = y0 + (target_y - y0) * s + rng.normal(0, tremor)
+            t += max(int(rng.uniform(12, 28) / speed), 1)
+            points.append({"x": x, "y": y, "t": t})
+        t += int(rng.uniform(60, 300) / speed)
+    return points, t, x, y
+
+
 def _natural_human_session(seed: int = 0) -> dict:
     """Natural, randomized human behavior: jittery mouse movement, a few
     clicks with real pauses before them, some scrolling, natural typing
     rhythm."""
     rng = np.random.default_rng(seed)
-    mouse = []
-    x, y = 200.0, 200.0
     t = BASE_T
-    for _ in range(25):
-        x += rng.normal(6, 6)
-        y += rng.normal(4, 5)
-        t += int(rng.uniform(50, 150))
-        mouse.append({"x": x, "y": y, "t": t})
+    mouse, t, x, y = _ballistic_mouse(rng, 25, t, 200.0, 200.0)
 
     clicks = []
     for _ in range(3):
@@ -344,3 +373,114 @@ def _run_all():
 
 if __name__ == "__main__":
     _run_all()
+
+
+# ---------------------------------------------------------------------------
+# Evasion regression tests
+#
+# These encode the attacks that actually worked against a running instance, so
+# a future change that reopens one fails here instead of in production.
+# ---------------------------------------------------------------------------
+
+
+def _iid_random_walk_bot_session(seed: int = 0) -> dict:
+    """The evasion that defeated the original detector.
+
+    A script emitting independent Gaussian position steps, uniformly random
+    delays and a copied lognormal typing rhythm. Every *marginal* statistic
+    looks human -- which is the point -- so the variance/entropy features
+    cannot separate it, and it scored 9.1/100 ("Gercek Kullanici", confidence
+    0.91) end-to-end against /api/analyze.
+
+    What gives it away is structure: IID steps have no speed autocorrelation
+    and no direction persistence, because nothing is aiming anywhere.
+    """
+    rng = np.random.default_rng(seed)
+    mouse = []
+    x, y = 200.0, 200.0
+    t = BASE_T
+    for _ in range(30):
+        x += rng.normal(6, 6)
+        y += rng.normal(4, 5)
+        t += int(rng.uniform(50, 150))
+        mouse.append({"x": x, "y": y, "t": t})
+
+    clicks = []
+    for _ in range(3):
+        t += int(rng.uniform(300, 900))
+        clicks.append({"x": x, "y": y, "t": t})
+
+    keys = []
+    for _ in range(30):
+        t += int(rng.lognormal(mean=5.0, sigma=0.5))
+        keys.append({"t": t})
+
+    return {
+        "mouse_trajectory": mouse,
+        "click_timing": clicks,
+        "scroll_events": [],
+        "hesitation_intervals": [int(rng.uniform(400, 1200)) for _ in range(3)],
+        "focus_changes": [],
+        "key_events": keys,
+    }
+
+
+def test_iid_random_walk_bot_is_detected():
+    """The headline evasion must not score as a real user again."""
+    for seed in range(5):
+        raw = _iid_random_walk_bot_session(seed=seed)
+        result = scorer.compute_risk(raw)
+        assert result["risk_score"] > 60, (
+            f"IID-random-walk evasion (seed={seed}) scored {result['risk_score']}, "
+            f"expected >60. This is the attack that previously scored 9.1 and was "
+            f"labelled 'Gercek Kullanici'. features={result['features']}"
+        )
+
+
+def test_evasion_is_driven_by_kinematics_features():
+    """The evasion should be caught *for the right reason*.
+
+    If it is ever detected only via the marginal features, the kinematics work
+    has silently stopped carrying its weight and the detector is one attacker
+    refinement away from being blind again.
+    """
+    raw = _iid_random_walk_bot_session(seed=0)
+    result = scorer.compute_risk(raw)
+    top_features = {item["feature"] for item in result["shap_explanation"]}
+    kinematics = {"hiz_otokorelasyonu", "yon_tutarliligi", "duraklama_dagilimi"}
+    assert top_features & kinematics, (
+        f"expected at least one kinematics feature among the top SHAP "
+        f"contributors, got {top_features}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Small-sample safety
+# ---------------------------------------------------------------------------
+
+
+def test_thin_flush_falls_back_to_neutral_not_accusation():
+    """Under-sampled estimators must not manufacture evidence.
+
+    A 5-mousemove / 5-keystroke flush is an ordinary first-2-seconds window,
+    not an anomaly. Every distribution-shape feature needs a minimum sample
+    count; below it the value is noise, and treating it as a measurement
+    scored exactly this shape of session 89.2 ("Bot Tespit Edildi").
+    """
+    raw = _sparse_typing_human_session()
+    features = scorer.extract_features(raw)
+    for name in ("hiz_otokorelasyonu", "yon_tutarliligi", "ivme_degisimi"):
+        assert features[name] == scorer.NEUTRAL_DEFAULTS[name], (
+            f"{name} was estimated from too few samples instead of falling "
+            f"back to neutral: {features[name]}"
+        )
+
+
+def test_signal_sufficiency_separates_thin_from_rich_sessions():
+    thin = scorer.signal_sufficiency(_sparse_typing_human_session())
+    rich = scorer.signal_sufficiency(_natural_human_session(seed=0))
+    assert thin < 0.5, f"sparse session reported signal_sufficiency={thin}"
+    assert rich > 0.8, f"rich session reported signal_sufficiency={rich}"
+    # The policy layer (main.py) refuses to auto-approve below
+    # MIN_SIGNAL_FOR_AUTO_APPROVE, which is how a signal-starved bot is
+    # stopped without inventing a confident score for it.

@@ -63,25 +63,58 @@ deepcheck-mvp/
 ### sdk/deepcheck.js
 - Brauzerdə işləyir, `<script>` tegi ilə əlavə edilir
 - Hər 2 saniyədə bir toplayır: mouse trajectory, click timing, scroll ritmi, hesitation intervalları
-- `POST /api/analyze` endpoint-ə JSON göndərir
-- `window.DeepCheck.init(sessionId)` ilə aktivləşdirilir
+- `init()` çağırılanda əvvəlcə `POST /api/session` ilə handshake edir və token alır
+- `POST /api/analyze` endpoint-ə `Authorization: Bearer <token>` ilə JSON göndərir
+- `window.DeepCheck.init({ apiUrl, intervalMs, onUpdate })` ilə aktivləşdirilir
+- `session_id` artıq clientdən göndərilmir — serverdən gəlir
+- `authorizedFetch(path, body)` — demo ödəmə axını bunun üzərindən gedir
+- Yalnız keydown **vaxtı** yazılır, heç vaxt `e.key` və ya sahə dəyəri yazılmır
 
 ### backend/main.py
 Endpointlər:
-- `POST /api/analyze` → davranış datasını alır, risk skoru qaytarır
-- `GET /api/score/{session_id}` → session tarixçəsi
-- `GET /api/sessions` → bütün sessionlar (dashboard üçün)
+- `POST /api/session` → server session_id yaradır və HMAC imzalı token qaytarır (auth yoxdur)
+- `POST /api/analyze` → davranış datasını alır, risk skoru qaytarır (**Bearer token tələb olunur**)
+- `POST /api/transaction` → **server tərəfli** qərar: onaylandi / dogrulama_gerekli / reddedildi (Bearer token)
+- `POST /api/transaction/verify` → step-up kodunu yoxlayır, tək istifadəlik, 5 cəhd limiti (Bearer token)
+- `GET /api/score/{session_id}` → session tarixçəsi (**operator açarı tələb olunur**)
+- `GET /api/sessions` → bütün sessionlar, dashboard üçün (**operator açarı tələb olunur**)
 - `GET /api/health` → sistem sağlamlığı
 
+ÖNƏMLİ: `session_id` heç vaxt clientdən qəbul edilmir — yalnız serverin imzaladığı tokendən çıxarılır.
+Bloklama qərarı brauzerdə deyil, `/api/transaction`-da verilir; frontenddəki `riskScore >= 80`
+yalnız görüntü üçündür.
+
+### backend/security.py
+- HMAC imzalı session token: `issue_session()` / `verify_session_token()`
+- Operator açarı yoxlaması (SOC dashboard endpointləri üçün)
+- Token-bucket rate limiter (per-IP), yaddaş sızmasına qarşı məhdudlaşdırılmış
+
 ### backend/scorer.py
-Çıxarılan featurelər:
-- `scroll_variance` — scroll sürətinin dəyişkənliyi
-- `click_entropy` — kliklərin entropiyası
-- `avg_hesitation` — ortalama duraksama müddəti (ms)
-- `mouse_speed_delta` — mouse sürətinin dəyişimi
-- `interaction_rhythm` — etkileşim ritmi
+Çıxarılan 10 feature (hamısı ~0-1 aralığında normalize olunur):
+
+Paylanma formu featureləri (attacker üçün ucuz təqlid edilir):
+- `scroll_hizi_varyansi` — scroll sürətinin dəyişkənliyi
+- `tereddut_skoru` — ortalama duraksama müddəti (ms)
+- `etkilesim_entropisi` — kanal başına event aralıqlarının entropiyası
+- `ivme_degisimi` — mouse ivməsinin varyansı
+- `tiklama_yogunlugu` — son 5 saniyədəki klik sıxlığı
+- `odak_degisimi` — tabın fokusu neçə dəfə itirdiyi
+
+Kinematik / zaman strukturu featureləri (təqlidi baha başa gəlir):
+- `hiz_otokorelasyonu` — sürətin öz keçmiş dəyəri ilə korrelyasiyası (real hərəkətdə ətalət var)
+- `yon_tutarliligi` — ardıcıl hərəkət vektorlarının istiqamət davamlılığı
+- `zaman_kuantasyonu` — eyni millisaniyə aralığının təkrarlanma nisbəti (skript taymerləri təkrarlayır)
+- `duraklama_dagilimi` — event aralıqlarının yayılması (insan pauzaları ağır quyruqludur)
+
+ÖNƏMLİ: hər feature-in etibarlı olması üçün minimum sample sayı tələb olunur
+(`MIN_AUTOCORRELATION_SAMPLES`, `MIN_ENTROPY_GAPS` və s.). Az sample-dan hesablanan
+statistika ölçmə deyil, küydür — onu dəlil kimi saymaq real istifadəçini bloklayır.
+Hədd altında feature `NEUTRAL_DEFAULTS`-a düşür.
 
 Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
+
+Əlavə olaraq `signal_sufficiency` (0-1) qaytarılır: flush-un nə qədər real dəlil daşıdığı.
+Aşağı olduqda `/api/transaction` avtomatik təsdiq etmir, step-up tələb edir.
 
 ### backend/lstm_model.py
 - PyTorch ilə LSTM — davranışı zaman seriyası kimi analiz edir
@@ -90,9 +123,14 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 
 ### backend/train_model.py
 - 50.000 sətirlik sintetik dataset yaradır
-- İnsan davranışı: təbii mouse variansı, scroll ritmi 0.3-0.8, hesitation 200-1500ms
-- Bot davranışı: piksel-mükəmməl kliklər, sıfır hesitation, sabit sürət
+- İnsan davranışı **ballistik hərəkət modeli** ilə simulyasiya olunur (minimum-jerk profili,
+  hədəfə yönəlmiş sub-movement-lər + titrəmə) — əvvəlki IID təsadüfi gəzişmə əvəzinə.
+  Bu vacibdir: IID gəzişmə məhz attacker skriptinin ürətdiyi şeydir.
+- Personalar: `human`, `human_rushed`, `human_sparse` (az siqnallı real flush),
+  `bot`, `bot_sophisticated`, `bot_evasive` (insanı təqlid edən adversarial bot)
 - RF + Isolation Forest + LSTM train edir, `model.pkl` saxlayır
+- `python train_model.py --print-neutral-defaults` → `NEUTRAL_DEFAULTS` dəyərlərini
+  yenidən hesablayır (persona dəyişəndə mütləq yenilənməlidir)
 
 ### frontend/src/pages/Demo.jsx
 - Türkcə ödəmə formu (Kart Numarası, Tutar, Onayla)
@@ -143,6 +181,8 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 ## Əsas Qaydalar
 
 1. **Hər UI mətni türkcə olmalıdır** — demo, dashboard, xəta mesajları, etiketlər
+1a. **Bloklama qərarı həmişə serverdə verilir.** Frontend yalnız göstərir, qərar vermir.
+1b. **`session_id` heç vaxt clientdən qəbul edilmir** — yalnız imzalı tokendən.
 2. Response time hər zaman loglanmalıdır — 50ms altında saxla
 3. SHAP explanation hər `/api/analyze` cavabında olmalıdır
 4. Docker Compose ilə `docker-compose up --build` əmri ilə hər şey işləməlidir
@@ -154,6 +194,10 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 ## Başlama Sırası
 
 ```bash
+# 0. (İstəyə bağlı) Secret-ləri təyin et — təyin edilməsə hər proses üçün
+#    təsadüfi yaradılır və xəbərdarlıq verilir (demo üçün işləyir, produksiya üçün yox)
+export DEEPCHECK_SECRET="..." DEEPCHECK_OPERATOR_KEY="..."
+
 # 1. Modeli train et
 cd backend && python train_model.py
 

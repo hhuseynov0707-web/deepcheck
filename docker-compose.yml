@@ -26,6 +26,18 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://deepcheck:deepcheck@db:5432/deepcheck
+      # Session-token signing key. Must be set explicitly: without it each
+      # uvicorn worker generates its own, so a token issued by one worker is
+      # rejected by the next request that lands on another. Replace both of
+      # these for anything other than a local demo.
+      DEEPCHECK_SECRET: ${DEEPCHECK_SECRET:-demo-only-session-secret-change-me}
+      # Gates the SOC dashboard read endpoints; must match the frontend's
+      # VITE_OPERATOR_KEY below.
+      DEEPCHECK_OPERATOR_KEY: ${DEEPCHECK_OPERATOR_KEY:-demo-only-operator-key-change-me}
+      DEEPCHECK_ALLOWED_ORIGINS: ${DEEPCHECK_ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Returns the step-up code in the API response so the demo is operable
+      # without an SMS provider. Set to 0 for a real deployment.
+      DEEPCHECK_DEMO_MODE: ${DEEPCHECK_DEMO_MODE:-1}
     ports:
       - "8000:8000"
     volumes:
@@ -42,6 +54,9 @@ services:
     restart: unless-stopped
     environment:
       VITE_API_URL: http://localhost:8000
+      # Must match the backend's DEEPCHECK_OPERATOR_KEY. This ends up in the
+      # frontend bundle, so it is a deployment gate, not user authentication.
+      VITE_OPERATOR_KEY: ${DEEPCHECK_OPERATOR_KEY:-demo-only-operator-key-change-me}
     ports:
       - "3000:3000"
     volumes:

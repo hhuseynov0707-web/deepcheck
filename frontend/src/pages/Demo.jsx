@@ -24,8 +24,14 @@ export default function Demo() {
   const [expiry, setExpiry] = useState("");
   const [cvv, setCvv] = useState("");
   const [risk, setRisk] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle | loading | success
+  const [status, setStatus] = useState("idle"); // idle | loading | success | denied
   const [showVerifyModal, setShowVerifyModal] = useState(false);
+  // Whatever the server said about this attempt -- shown verbatim so the UI
+  // cannot disagree with the decision that was actually enforced.
+  const [serverMessage, setServerMessage] = useState(null);
+  // No SMS provider in the MVP, so the backend hands back the step-up code
+  // when demo mode is on. Clearly labelled as a demo affordance in the modal.
+  const [demoCode, setDemoCode] = useState(null);
 
   useEffect(() => {
     if (!window.DeepCheck) {
@@ -47,31 +53,68 @@ export default function Demo() {
   const cardType = detectCardType(cardNumber);
 
   const riskScore = risk?.risk_score ?? 0;
+  // These drive the *display* only -- the banner, the disabled state, the
+  // colour of the badge. They are a hint, not a control: the same numbers are
+  // evaluated server-side in /api/transaction, which is what actually decides
+  // whether the payment goes through. Editing them in devtools changes what
+  // this page looks like and nothing about what the server permits.
   const isBlocked = riskScore >= 80;
   const needsVerification = riskScore >= 60 && riskScore < 80;
   const showWarning = riskScore >= 40 && riskScore < 60;
 
-  function processPayment() {
+  async function requestPayment() {
     setStatus("loading");
-    window.setTimeout(() => {
-      setStatus("success");
-      window.setTimeout(() => setStatus("idle"), 2500);
-    }, 1000);
+    setServerMessage(null);
+    try {
+      const res = await window.DeepCheck.authorizedFetch("/api/transaction", {
+        amount: total,
+      });
+      const data = await res.json();
+
+      if (data.decision === "onaylandi") {
+        setStatus("success");
+        setServerMessage(data.message);
+        window.setTimeout(() => setStatus("idle"), 2500);
+      } else if (data.decision === "dogrulama_gerekli") {
+        setStatus("idle");
+        setDemoCode(data.demo_code || null);
+        setServerMessage(data.message);
+        setShowVerifyModal(true);
+      } else {
+        setStatus("denied");
+        setServerMessage(data.message);
+      }
+    } catch (err) {
+      setStatus("idle");
+      setServerMessage("Sunucuya ulaşılamadı, lütfen tekrar deneyin.");
+    }
   }
 
   function handleSubmit(e) {
     e.preventDefault();
-    if (status === "loading" || isBlocked) return;
-    if (needsVerification) {
-      setShowVerifyModal(true);
-      return;
-    }
-    processPayment();
+    if (status === "loading") return;
+    // Deliberately not short-circuiting on isBlocked: the server is asked
+    // every time, so its verdict is the one the user sees.
+    requestPayment();
   }
 
-  function handleVerified() {
-    setShowVerifyModal(false);
-    processPayment();
+  async function handleVerified(code) {
+    try {
+      const res = await window.DeepCheck.authorizedFetch("/api/transaction/verify", {
+        code,
+      });
+      const data = await res.json();
+      if (res.ok && data.decision === "onaylandi") {
+        setShowVerifyModal(false);
+        setStatus("success");
+        setServerMessage(data.message);
+        window.setTimeout(() => setStatus("idle"), 2500);
+        return { ok: true };
+      }
+      return { ok: false, message: data.detail || data.message || "Doğrulama başarısız." };
+    } catch (err) {
+      return { ok: false, message: "Sunucuya ulaşılamadı." };
+    }
   }
 
   const inputClass =
@@ -186,7 +229,7 @@ export default function Demo() {
 
             <button
               type="submit"
-              disabled={status === "loading" || isBlocked}
+              disabled={status === "loading"}
               className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-medium py-3 px-4 rounded-md transition-colors duration-200 cursor-pointer text-sm tracking-wide shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-2"
             >
               {status === "loading" && (
@@ -202,15 +245,21 @@ export default function Demo() {
               {status === "loading" ? "İşleniyor..." : `₺${formatCurrency(total)} Onayla`}
             </button>
 
-            {isBlocked && (
+            {isBlocked && status !== "denied" && (
               <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
-                İşlem Reddedildi — Şüpheli Davranış Tespit Edildi
+                Yüksek risk — bu işlem sunucu tarafından reddedilecek.
+              </p>
+            )}
+
+            {status === "denied" && (
+              <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+                {serverMessage}
               </p>
             )}
 
             {status === "success" && (
               <p className="text-center rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
-                Ödeme başarıyla alındı (demo).
+                {serverMessage || "Ödeme başarıyla alındı (demo)."}
               </p>
             )}
           </form>
@@ -238,7 +287,11 @@ export default function Demo() {
       </div>
 
       {showVerifyModal && (
-        <VerificationModal onVerified={handleVerified} onClose={() => setShowVerifyModal(false)} />
+        <VerificationModal
+          onVerify={handleVerified}
+          demoCode={demoCode}
+          onClose={() => setShowVerifyModal(false)}
+        />
       )}
     </div>
   );

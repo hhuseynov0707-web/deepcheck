@@ -92,7 +92,9 @@ cd backend && python train_model.py
 
 ## How the scoring works
 
-Six behavioral features are extracted from each flush, every one normalized to roughly 0–1:
+Ten behavioral features are extracted from each flush, every one normalized to roughly 0–1.
+
+**Distribution-shape features** — cheap to compute, and cheap for an attacker to fake:
 
 | Feature | What it measures |
 |---|---|
@@ -103,9 +105,22 @@ Six behavioral features are extracted from each flush, every one normalized to r
 | `tiklama_yogunlugu` | Click density inside the most recent 5-second window |
 | `odak_degisimi` | How often the tab lost focus |
 
+**Kinematics and timing-structure features** — these exist because the six above are not enough. A script emitting `x += gauss(6, 6)` per step reproduces human-looking variance and entropy almost exactly, and such a replay scored **9.1/100 ("Gerçek Kullanıcı", confidence 0.91)** against this API. Independent per-step noise has human *marginals* but none of the structure real motor control produces:
+
+| Feature | What it measures |
+|---|---|
+| `hiz_otokorelasyonu` | Does speed correlate with its own previous value? Real motion carries momentum; IID jitter gives ~0 |
+| `yon_tutarliligi` | Direction persistence between consecutive moves. Target-directed motion keeps its heading; jitter re-rolls it every step; a linear script never turns at all |
+| `zaman_kuantasyonu` | How often the *same* millisecond gap repeats — scripted timers do, hands don't |
+| `duraklama_dagilimi` | Spread of inter-event gaps. Human pauses are heavy-tailed; fixed or uniform-random script delays are not |
+
+Reproducing these requires modelling human motor control rather than adding noise. The same replay that scored 9.1 now scores **88.5 ("Bot Tespit Edildi")**, driven by `hiz_otokorelasyonu` and `duraklama_dagilimi` in the SHAP attribution.
+
+**Every one of these features requires a minimum sample count before it counts as a measurement.** An autocorrelation over 4 points, or an entropy over 4 gaps (which saturates at exactly 1.0 whenever the few values it sees are distinct), is sampling noise. Treating thin estimates as evidence scored an ordinary 5-keystroke card-form session **89.2 — a blocked customer, not a bot**. Below the threshold a feature falls back to a neutral value instead, and the *policy* layer handles the resulting uncertainty (see `signal_sufficiency` below).
+
 Interaction entropy is computed per channel and then combined, rather than by merging every timestamp into one stream first. Merging is the obvious implementation and it is wrong: interleaving several independently-regular channels produces a sequence that looks irregular even when each channel is perfectly robotic on its own — a beat-frequency artifact that measured ~0.92 entropy for three channels that individually scored 0.0.
 
-Those six features feed three models whose outputs are blended:
+Those ten features feed three models whose outputs are blended:
 
 ```
 fraud_probability = 0.5 × RandomForest + 0.2 × IsolationForest + 0.3 × LSTM
@@ -114,7 +129,11 @@ risk_score        = 100 × fraud_probability
 
 The Isolation Forest is trained only on human behavior, so it flags anomalies rather than learning a bot signature — which matters for automation that doesn't resemble anything in the training set.
 
-A session's reported score is the **median of its last 5 flushes**, not the instantaneous value. One incidental pause in an otherwise robotic session shouldn't flip the verdict; an anomaly has to persist to move it.
+A session's reported score is the **median of its last 5 flushes**, not the instantaneous value. One incidental pause in an otherwise robotic session shouldn't flip the verdict; an anomaly has to persist to move it. Smoothing only means anything because a session now has exactly one authenticated writer — when the session id came from the client, a flagged session could be walked back down from 86.7 to 50.6 just by flooding it with human-shaped payloads.
+
+### Signal sufficiency
+
+Each response also carries `signal_sufficiency` (0–1): how much real evidence the flush actually contained. A near-empty payload makes most features fall back to neutral, so it scores mid-scale *by construction* — which is honest for a score but must not read as "cleared". The server refuses to auto-approve a payment below `MIN_SIGNAL_FOR_AUTO_APPROVE` and steps it up instead. This is what stops a signal-starved headless script without inventing a confident accusation against a quiet human, whose feature vector is genuinely identical.
 
 ### Risk bands
 
@@ -129,29 +148,45 @@ A session's reported score is the **median of its last 5 flushes**, not the inst
 
 ## API
 
-**`POST /api/analyze`** — submit a behavior window, get a score back.
+Every scoring call is authenticated. `POST /api/session` mints a session id and returns an HMAC-signed bearer token; the id is **never** accepted from the client, because that is what previously allowed anyone to write behaviour under someone else's session.
+
+**`POST /api/analyze`** — submit a behavior window, get a score back. Requires `Authorization: Bearer <token>`.
 
 ```json
 {
-  "session_id": "8f14e45f-ceea-467a-9f8c-2b1c3d4e5f6a",
+  "session_id": "kR7t2FpQ9wZ1xN4cB8vL6s",
   "risk_score": 73.4,
   "label": "Yüksek Risk",
   "confidence": 0.91,
   "shap_explanation": [
-    { "feature": "etkilesim_entropisi", "value": 0.12, "impact": 28.3 },
-    { "feature": "tereddut_skoru",      "value": 0.00, "impact": 24.1 },
-    { "feature": "ivme_degisimi",       "value": 0.98, "impact": 19.7 }
+    { "feature": "hiz_otokorelasyonu", "value": 0.38, "impact": 22.1 },
+    { "feature": "duraklama_dagilimi", "value": 0.21, "impact": 21.5 },
+    { "feature": "ivme_degisimi",      "value": 0.63, "impact": 17.1 }
   ],
-  "response_time_ms": 42.1
+  "response_time_ms": 42.1,
+  "signal_sufficiency": 1.0
 }
 ```
 
-| Endpoint | Purpose |
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/session` | — | Mint a session id + signed token |
+| `POST /api/analyze` | Bearer token | Score a behavior window |
+| `POST /api/transaction` | Bearer token | **Server-side** allow / step-up / deny decision |
+| `POST /api/transaction/verify` | Bearer token | Verify a step-up code (single-use, 5 attempts) |
+| `GET /api/score/{session_id}` | Operator key | Full history for one session |
+| `GET /api/sessions` | Operator key | All sessions, for the dashboard |
+| `GET /api/health` | — | Service and model status |
+
+### Enforcement happens on the server
+
+The risk score gates the payment in `POST /api/transaction`, not in the browser. The frontend's `riskScore >= 80` is presentation only — it changes what the page looks like, not what the server permits. This matters because blocking used to exist *solely* as a disabled button in React: an attacker simply didn't run the frontend, and the score was advisory.
+
+| Server decision | Meaning |
 |---|---|
-| `POST /api/analyze` | Score a behavior window |
-| `GET /api/score/{session_id}` | Full history for one session |
-| `GET /api/sessions` | All sessions, for the dashboard |
-| `GET /api/health` | Service and model status |
+| `onaylandi` | Approved |
+| `dogrulama_gerekli` | Step-up challenge issued (also when signal is too thin to judge) |
+| `reddedildi` | Blocked |
 
 ### SDK usage
 
@@ -189,10 +224,10 @@ This is **model scoring time** — feature extraction, all three models, and SHA
 ## Testing
 
 ```bash
-cd backend && python test_scorer.py
+cd backend && pytest test_scorer.py test_security.py
 ```
 
-Seven regression tests, each one a bug that actually happened and must not come back — a sparse typing session that used to be scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+27 regression tests, each one a bug or an attack that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, the IID-random-walk replay that scored 9.1, a forged session token, a poisoning attempt that keeps a valid signature and swaps the target id. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
 
 Training and inference share the same `extract_features()` code path: `train_model.py` simulates raw sessions and pushes them through the identical extraction used at serving time, so a change to a feature formula flows into the training data automatically and cannot drift apart.
 
@@ -234,7 +269,23 @@ This is a **competition MVP**, and worth reading as one.
 
 The detection pipeline, the SDK, and both interfaces work end to end and are what you see running. Current models are trained on synthetic behavior, so reported separation reflects the quality of that simulation rather than measured performance against real traffic — collecting labeled sessions from real users and off-the-shelf automation frameworks is the next substantive step, and no accuracy claim here should be taken as a production benchmark until then.
 
-The deployment is likewise sized for demonstration rather than production: hardening the API surface, moving risk enforcement fully server-side, and adding rate limiting are tracked work, not oversights.
+The deployment is sized for demonstration rather than production, and the security controls are honest about where that line falls. Session tokens, server-side enforcement, operator auth on the dashboard, rate limiting and the step-up challenge are all real and tested. But: the rate limiter and challenge store are in-process, so with multiple workers the effective limits multiply and a challenge issued by one worker cannot be verified by another — both need Redis or Postgres to be correct in production. The operator key ships in the frontend bundle, which makes it a deployment gate rather than per-user authentication; a real SOC dashboard needs an operator login.
+
+Most importantly, **none of this makes client-submitted telemetry trustworthy.** Session tokens stop forgery and cross-session tampering; they cannot stop an attacker from lying about their own behaviour, because the browser is theirs. The kinematics features raise the cost of that lie from "add Gaussian noise" to "model human motor control", which is a real increase but not a proof. Treat the score as one input to a server-side decision alongside signals the client does not control — IP/ASN reputation, TLS fingerprint, velocity — never as the decision itself.
+
+---
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEEPCHECK_SECRET` | *generated per process* | HMAC key for session tokens. **Must be set** for multi-worker or restart-stable deployments — otherwise each worker signs with a different key. |
+| `DEEPCHECK_OPERATOR_KEY` | *generated per process* | Gates the dashboard read endpoints; must match the frontend's `VITE_OPERATOR_KEY`. |
+| `DEEPCHECK_ALLOWED_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | CORS allowlist. Never `*`. |
+| `DEEPCHECK_DEMO_MODE` | `1` | Returns the step-up code in the API response (no SMS provider in the MVP). Set `0` in production. |
+| `DEEPCHECK_STORE_RAW_TELEMETRY` | `0` | Persist raw mouse/click/keystroke timing. Off by default: nothing reads it back, and it is behavioural biometric data. |
+
+Both secrets fall back to a per-process random value with a loud warning, so `docker-compose up` works with no configuration — that fallback is explicitly not safe for a real deployment.
 
 ---
 

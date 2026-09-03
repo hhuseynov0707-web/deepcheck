@@ -4,12 +4,14 @@
  *   <script src="/deepcheck.js"></script>
  *   <script>
  *     DeepCheck.init({
- *       sessionId: "optional-existing-id",
  *       apiUrl: "http://localhost:8000",
  *       intervalMs: 2000,
  *       onUpdate: (result) => console.log(result),
  *     });
  *   </script>
+ *
+ * The session id is issued by the server during init() and cannot be supplied
+ * by the caller -- see the handshake below.
  */
 (function (window) {
   "use strict";
@@ -44,6 +46,45 @@
   };
   let timerId = null;
   let started = false;
+  // Session identity now comes from the server. The SDK used to invent (or
+  // accept) a session id and put it in the request body, which meant any
+  // caller could write behaviour under any id -- including someone else's.
+  // The server mints the id and signs a token for it; this holds that token.
+  let sessionToken = null;
+  let handshakePromise = null;
+
+  function handshake() {
+    // Single-flight: several flushes can land while the first handshake is
+    // still in the air, and each one starting its own would create a pile of
+    // orphan sessions.
+    if (handshakePromise) return handshakePromise;
+
+    handshakePromise = fetch(`${config.apiUrl}/api/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error(`oturum alınamadı (HTTP ${res.status})`);
+        return res.json();
+      })
+      .then((data) => {
+        sessionToken = data.token;
+        config.sessionId = data.session_id;
+        return data.token;
+      })
+      .catch((err) => {
+        // Clear so the next flush retries rather than latching a failure.
+        handshakePromise = null;
+        throw err;
+      });
+
+    return handshakePromise;
+  }
+
+  function ensureToken() {
+    return sessionToken ? Promise.resolve(sessionToken) : handshake();
+  }
 
   function now() {
     return Date.now();
@@ -119,7 +160,6 @@
     }
 
     const payload = {
-      session_id: config.sessionId,
       mouse_trajectory: state.mouseTrajectory,
       click_timing: state.clickTiming,
       scroll_events: state.scrollEvents,
@@ -149,12 +189,29 @@
       payload.key_events.length;
     if (!hasData) return;
 
-    fetch(`${config.apiUrl}/api/analyze`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    })
-      .then((res) => res.json())
+    ensureToken()
+      .then((token) =>
+        fetch(`${config.apiUrl}/api/analyze`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(payload),
+        })
+      )
+      .then((res) => {
+        if (res.status === 401) {
+          // Token expired or the server restarted with a new signing key.
+          // Drop it and re-handshake on the next flush.
+          sessionToken = null;
+          handshakePromise = null;
+          throw new Error("oturum belirteci geçersiz, yeniden alınacak");
+        }
+        if (res.status === 429) throw new Error("istek sınırı aşıldı");
+        if (!res.ok) throw new Error(`analiz başarısız (HTTP ${res.status})`);
+        return res.json();
+      })
       .then((result) => {
         if (result.session_id) config.sessionId = result.session_id;
         if (typeof config.onUpdate === "function") config.onUpdate(result);
@@ -163,6 +220,24 @@
       .catch((err) => {
         console.error("[DeepCheck] analyze isteği başarısız:", err);
       });
+  }
+
+  /**
+   * Calls a DeepCheck endpoint with the session's bearer token attached.
+   * The demo's payment flow uses this so the *server* can tie the request to
+   * the session it scored, rather than the page asserting its own verdict.
+   */
+  function authorizedFetch(path, body) {
+    return ensureToken().then((token) =>
+      fetch(`${config.apiUrl}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(body || {}),
+      })
+    );
   }
 
   function attachListeners() {
@@ -187,6 +262,11 @@
     state = createState();
     started = true;
 
+    // Start the handshake immediately so the first flush has a token ready.
+    handshake().catch((err) =>
+      console.error("[DeepCheck] oturum başlatılamadı:", err)
+    );
+
     attachListeners();
     timerId = window.setInterval(flushBuffer, config.intervalMs);
   }
@@ -197,11 +277,13 @@
     if (timerId) window.clearInterval(timerId);
     timerId = null;
     started = false;
+    sessionToken = null;
+    handshakePromise = null;
   }
 
   function getSessionId() {
     return config.sessionId;
   }
 
-  window.DeepCheck = { init, stop, getSessionId };
+  window.DeepCheck = { init, stop, getSessionId, authorizedFetch };
 })(window);

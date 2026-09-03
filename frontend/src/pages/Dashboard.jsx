@@ -8,6 +8,18 @@ import SessionTable from "../components/SessionTable.jsx";
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const REFRESH_MS = 3000;
 
+// The SOC endpoints are operator-only now (they expose every session's verdict
+// and feature history). This key is read from the build environment, which is
+// honest about what it is: a deployment-level gate suitable for a demo, not
+// per-user authentication. A production dashboard needs a real operator login
+// and a server-side session -- anything shipped in a frontend bundle is
+// readable by whoever loads the page.
+const OPERATOR_KEY = import.meta.env.VITE_OPERATOR_KEY || "";
+
+function operatorHeaders() {
+  return { "X-Operator-Key": OPERATOR_KEY };
+}
+
 export default function Dashboard() {
   const [sessions, setSessions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -19,7 +31,8 @@ export default function Dashboard() {
 
     async function fetchSessions() {
       try {
-        const res = await fetch(`${API_URL}/api/sessions`);
+        const res = await fetch(`${API_URL}/api/sessions`, { headers: operatorHeaders() });
+        if (res.status === 401) throw new Error("Operatör anahtarı geçersiz veya eksik");
         if (!res.ok) throw new Error("Sessionlar alınamadı");
         const data = await res.json();
         if (!cancelled) {
@@ -46,7 +59,10 @@ export default function Dashboard() {
 
     async function fetchDetail() {
       try {
-        const res = await fetch(`${API_URL}/api/score/${selectedId}`);
+        const res = await fetch(`${API_URL}/api/score/${selectedId}`, {
+          headers: operatorHeaders(),
+        });
+        if (res.status === 401) throw new Error("Operatör anahtarı geçersiz veya eksik");
         if (!res.ok) throw new Error("Session detayı alınamadı");
         const data = await res.json();
         if (!cancelled) setSelectedDetail(data);

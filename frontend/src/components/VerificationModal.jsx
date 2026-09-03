@@ -1,17 +1,34 @@
 import { useState } from "react";
 
-export default function VerificationModal({ onVerified, onClose }) {
+/**
+ * Step-up verification dialog.
+ *
+ * The previous version "verified" the code with a setTimeout and always
+ * succeeded -- any six digits passed, and the whole step-up was theatre that
+ * an attacker could skip entirely by never opening the dialog. The code is
+ * now issued and checked by the backend (/api/transaction/verify), which also
+ * bounds the attempts, so this component only collects input and renders
+ * whatever the server decided.
+ */
+export default function VerificationModal({ onVerify, onClose, demoCode }) {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState("idle"); // idle | verifying | verified
+  const [error, setError] = useState(null);
 
-  function handleVerify(e) {
+  async function handleVerify(e) {
     e.preventDefault();
     if (status !== "idle" || code.length !== 6) return;
     setStatus("verifying");
-    window.setTimeout(() => {
+    setError(null);
+
+    const result = await onVerify(code);
+    if (result?.ok) {
       setStatus("verified");
-      window.setTimeout(() => onVerified(), 800);
-    }, 1500);
+      return;
+    }
+    setStatus("idle");
+    setCode("");
+    setError(result?.message || "Doğrulama başarısız.");
   }
 
   return (
@@ -34,6 +51,13 @@ export default function VerificationModal({ onVerified, onClose }) {
           Bu işlem için ek güvenlik doğrulaması gerekiyor. Telefonunuza gönderilen 6 haneli kodu girin.
         </p>
 
+        {demoCode && (
+          <p className="mb-4 rounded-md border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-300">
+            Demo modu — sunucunun ürettiği kod:{" "}
+            <span className="font-mono font-semibold tracking-widest">{demoCode}</span>
+          </p>
+        )}
+
         <form onSubmit={handleVerify} className="space-y-4">
           <input
             type="text"
@@ -46,6 +70,12 @@ export default function VerificationModal({ onVerified, onClose }) {
             className="w-full text-center tracking-[0.5em] text-lg font-mono bg-[#09090b] border border-zinc-800 rounded-md px-4 py-3 text-zinc-100 placeholder-zinc-600 outline-none focus:border-zinc-700 transition-colors duration-200 ease-out disabled:opacity-60"
             autoFocus
           />
+
+          {error && (
+            <p className="rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+              {error}
+            </p>
+          )}
 
           <button
             type="submit"

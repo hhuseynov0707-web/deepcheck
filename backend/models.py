@@ -45,6 +45,11 @@ class Session(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     shap_explanation: Mapped[dict] = mapped_column(JSON, default=list)
     response_time_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    # How much real evidence the latest flush carried (scorer.signal_sufficiency).
+    # The transaction endpoint steps up rather than auto-approving when this is
+    # low, so a session that simply was never observed cannot coast through on
+    # a mid-scale score built entirely from neutral fallbacks.
+    signal_sufficiency: Mapped[float] = mapped_column(Float, default=0.0)
 
     behavior_data: Mapped[list["BehaviorData"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
@@ -79,6 +84,13 @@ class BehaviorData(Base):
     ivme_degisimi: Mapped[float] = mapped_column(Float, default=0.0)
     tiklama_yogunlugu: Mapped[float] = mapped_column(Float, default=0.0)
     odak_degisimi: Mapped[float] = mapped_column(Float, default=0.0)
+    # Kinematics/timing features (see scorer.py). create_all() only adds these
+    # to tables it creates -- an existing deployment needs them added by
+    # migration, same caveat as the CheckConstraint above.
+    hiz_otokorelasyonu: Mapped[float] = mapped_column(Float, default=0.0)
+    yon_tutarliligi: Mapped[float] = mapped_column(Float, default=0.0)
+    zaman_kuantasyonu: Mapped[float] = mapped_column(Float, default=0.0)
+    duraklama_dagilimi: Mapped[float] = mapped_column(Float, default=0.0)
 
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
 

@@ -14,6 +14,35 @@ FEATURE_NAMES = [
     "ivme_degisimi",
     "tiklama_yogunlugu",
     "odak_degisimi",
+    # --- Evasion-resistant kinematics/timing features -------------------
+    # The four features above (variance/entropy style) are cheap for an
+    # attacker to fake: a script that emits `x += gauss(6, 6)` per step
+    # reproduces a "natural-looking" variance and entropy almost exactly,
+    # and previously scored 9/100 ("Gercek Kullanici") in an end-to-end
+    # replay against /api/analyze. The features below instead measure
+    # *structure* that independent per-step noise does not have:
+    #
+    #   hiz_otokorelasyonu  real pointer motion carries momentum, so speed
+    #                       is correlated with its own previous value.
+    #                       IID jitter has ~zero autocorrelation.
+    #   yon_tutarliligi     real motion is target-directed, so consecutive
+    #                       move vectors point roughly the same way. IID
+    #                       jitter picks a new direction every step (~0);
+    #                       a linear script never turns at all (~1).
+    #   zaman_kuantasyonu   scripted timers repeat the *same* millisecond
+    #                       gap over and over; human input effectively
+    #                       never does.
+    #   duraklama_dagilimi  human inter-event gaps are heavy-tailed
+    #                       (lognormal-ish, high spread); uniform-random
+    #                       or fixed script delays are not.
+    #
+    # Reproducing these requires modelling human motor control, not adding
+    # noise -- a materially higher bar. See scorer.py for the estimators
+    # and train_model.py for the personas they are trained against.
+    "hiz_otokorelasyonu",
+    "yon_tutarliligi",
+    "zaman_kuantasyonu",
+    "duraklama_dagilimi",
 ]
 
 # Per-timestep features fed into the LSTM
