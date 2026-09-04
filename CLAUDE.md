@@ -272,6 +272,10 @@ export DEEPCHECK_SECRET="..." DEEPCHECK_OPERATOR_KEY="..."
 cd backend && python train_model.py
 
 # 2. Hər şeyi qaldır
+# DİQQƏT: köhnə checkout-u yeniləyirsinizsə əvvəlcə volume-u silin.
+# create_all() mövcud cədvələ sütun ƏLAVƏ ETMİR — köhnə deepcheck-db-data ilə
+# yeni sütunlara toxunan hər sorğu "column does not exist" verir.
+docker-compose down -v
 docker-compose up --build
 
 # 3. Demo səhifəsi

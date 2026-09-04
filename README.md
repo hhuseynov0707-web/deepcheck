@@ -76,6 +76,15 @@ docker-compose up --build
 
 That's the whole thing. On first run the backend trains the models automatically (a few minutes — the model binaries are deliberately not committed, see [Model artifacts](#model-artifacts)).
 
+> **Upgrading an existing checkout?** Run `docker-compose down -v` first. The
+> schema gained columns (`evidence_state`, `reason_codes`, and the kinematics
+> and cross-channel features), and SQLAlchemy's `create_all()` only creates
+> tables it does not find — it never adds a column to a table that already
+> exists. Against a stale `deepcheck-db-data` volume every query touching the
+> new columns fails with *column does not exist*. Dropping the volume is fine
+> here because the data is demo telemetry; a real deployment needs a migration
+> (Alembic) instead.
+
 | Surface | URL |
 |---|---|
 | Payment demo | http://localhost:3000/demo |
