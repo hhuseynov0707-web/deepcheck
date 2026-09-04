@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DeepCheck — Real-Time Behavioral Bot Detection</title>
-  <meta name="description" content="DeepCheck is a behavioral AI SDK that separates humans from bots in real time — an explainable 0–100 risk score in under 50 ms, with zero friction for real users." />
+  <meta name="description" content="DeepCheck is a behavioral AI SDK that separates humans from bots in real time — an explainable 0–100 risk score in under 20 ms, with zero friction for real users." />
   <meta property="og:title" content="DeepCheck — Real-Time Behavioral Bot Detection" />
-  <meta property="og:description" content="An explainable 0–100 risk score in under 50 ms. No CAPTCHAs. No keystroke content captured. Just behavior." />
+  <meta property="og:description" content="An explainable 0–100 risk score in under 20 ms. No CAPTCHAs. No keystroke content captured. Just behavior." />
   <meta property="og:type" content="website" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2309090b'/%3E%3Cpath d='M9 17.5l4.5 4.5L23 10.5' stroke='%2310b981' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <style>
@@ -292,7 +292,7 @@
         <div class="demo-body">
           <div>
             <div class="score-row">
-              <span class="score-big human" id="demoScore">12.4</span>
+              <span class="score-big human" id="demoScore">11.6</span>
               <span class="score-label">Risk score<br />0–100</span>
             </div>
             <div class="score-track" style="margin-top:14px"><div class="score-fill" id="demoFill"></div></div>
@@ -305,25 +305,25 @@
           </div>
           <div class="shap">
             <div class="shap-row">
-              <span class="shap-name">etkilesim_entropisi</span>
-              <div class="shap-track"><div class="shap-fill" id="shap1" style="width:22%"></div></div>
-              <span class="shap-val" id="shapv1">8.2</span>
-            </div>
-            <div class="shap-row">
-              <span class="shap-name">tereddut_skoru</span>
-              <div class="shap-track"><div class="shap-fill" id="shap2" style="width:16%"></div></div>
-              <span class="shap-val" id="shapv2">6.1</span>
+              <span class="shap-name">duraklama_dagilimi</span>
+              <div class="shap-track"><div class="shap-fill" id="shap1" style="width:45%"></div></div>
+              <span class="shap-val" id="shapv1">17.2</span>
             </div>
             <div class="shap-row">
               <span class="shap-name">ivme_degisimi</span>
-              <div class="shap-track"><div class="shap-fill" id="shap3" style="width:11%"></div></div>
-              <span class="shap-val" id="shapv3">4.3</span>
+              <div class="shap-track"><div class="shap-fill" id="shap2" style="width:34%"></div></div>
+              <span class="shap-val" id="shapv2">13.1</span>
+            </div>
+            <div class="shap-row">
+              <span class="shap-name">zaman_kuantasyonu</span>
+              <div class="shap-track"><div class="shap-fill" id="shap3" style="width:29%"></div></div>
+              <span class="shap-val" id="shapv3">11.0</span>
             </div>
           </div>
         </div>
         <div class="demo-foot">
-          <span id="demoLatency">response_time: 41 ms</span>
-          <span id="demoConf">confidence: 0.94</span>
+          <span id="demoLatency">response_time: 14 ms</span>
+          <span id="demoConf">confidence: 0.88</span>
         </div>
       </div>
     </div>
@@ -332,8 +332,8 @@
   <section>
     <div class="container">
       <div class="stats">
-        <div class="stat"><div class="num">42<span> ms</span></div><div class="cap">Median model scoring time (p99: 47 ms)</div></div>
-        <div class="stat"><div class="num">6</div><div class="cap">Behavioral features per session window</div></div>
+        <div class="stat"><div class="num">15<span> ms</span></div><div class="cap">Median model scoring time (p99: 19 ms)</div></div>
+        <div class="stat"><div class="num">12</div><div class="cap">Behavioral features per session window</div></div>
         <div class="stat"><div class="num">3</div><div class="cap">Model ensemble — RF, Isolation Forest, LSTM</div></div>
         <div class="stat"><div class="num">0</div><div class="cap">Keystrokes or card data captured. Timing only.</div></div>
       </div>
@@ -356,12 +356,12 @@
         <div class="step">
           <div class="n">2</div>
           <h3>The ensemble decides</h3>
-          <p>Random Forest, Isolation Forest, and an LSTM sequence model each score the session; their weighted blend becomes a single fraud probability, robust to single-signal tricks.</p>
+          <p>Random Forest, Isolation Forest, and an LSTM sequence model each score the session. The LSTM&rsquo;s share is scaled by how much temporal structure its input actually carried, so a model with nothing to read cannot swing a verdict.</p>
         </div>
         <div class="step">
           <div class="n">3</div>
           <h3>Act on the score</h3>
-          <p>Your app gets the score, label, and SHAP explanation in real time — let genuine users through, challenge the suspicious, block confirmed bots automatically.</p>
+          <p>The <em>server</em> decides — allow, step up, or block — and returns a signed decision your payment backend can verify. The browser displays the outcome; it never holds the gate.</p>
         </div>
       </div>
       <div class="risk-scale">
@@ -389,12 +389,12 @@
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
           <h3>Real-time decisions</h3>
-          <p>Scores update every 2 seconds during the session, with model scoring measured at a 42 ms median — fast enough to gate the payment button itself.</p>
+          <p>Scores update every 2 seconds during the session, with model scoring measured at a 15 ms median — fast enough to gate the payment button itself.</p>
         </div>
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><path d="M4 19V5M4 19h16M8 15v-4M12 15V8M16 15v-6"/></svg></div>
           <h3>Explainable by design</h3>
-          <p>Every score ships with its SHAP feature attribution — your fraud team and your regulator both see exactly why a session was flagged.</p>
+          <p>Every decision ships plain-language reason codes alongside its SHAP attribution, plus an evidence state — so &ldquo;we could not observe enough to judge&rdquo; is said out loud instead of being dressed up as an accusation.</p>
         </div>
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg></div>
@@ -404,7 +404,7 @@
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"/></svg></div>
           <h3>Resists smart bots</h3>
-          <p>Trained against Selenium-style automation that simulates human motion — robotic regularity is detected per channel, so one faked signal is never enough.</p>
+          <p>Tested against a real Chromium browser, not just a simulator — an attack ladder from naive scripts to an adaptive bot that reads its own score back and retunes. Detection is measured on telemetry the detector did not generate.</p>
         </div>
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M8 21h8"/></svg></div>
@@ -482,16 +482,16 @@
     (function () {
       // Two alternating scenarios for the hero demo card
       const human = {
-        cls: "human", label: "GERÇEK KULLANICI", score: 12.4, conf: 0.94, latency: 41,
+        cls: "human", label: "GERÇEK KULLANICI", score: 11.6, conf: 0.88, latency: 14,
         fill: "var(--emerald)",
-        traj: { color: "#10b981", caption: "Mouse trajectory — natural micro-variance", jitter: true },
-        shap: [["etkilesim_entropisi", 8.2], ["tereddut_skoru", 6.1], ["ivme_degisimi", 4.3]],
+        traj: { color: "#10b981", caption: "Mouse trajectory — ballistic reach, natural tremor", jitter: true },
+        shap: [["duraklama_dagilimi", 17.2], ["ivme_degisimi", 13.1], ["zaman_kuantasyonu", 11.0]],
       };
       const bot = {
-        cls: "bot", label: "BOT TESPİT EDİLDİ", score: 94.1, conf: 0.97, latency: 38,
+        cls: "bot", label: "BOT TESPİT EDİLDİ", score: 90.4, conf: 0.90, latency: 15,
         fill: "var(--rose)",
-        traj: { color: "#f43f5e", caption: "Mouse trajectory — constant velocity, zero variance", jitter: false },
-        shap: [["etkilesim_entropisi", 28.3], ["tereddut_skoru", 24.1], ["ivme_degisimi", 19.7]],
+        traj: { color: "#f43f5e", caption: "Mouse trajectory — no momentum, direction re-rolls each step", jitter: false },
+        shap: [["hiz_otokorelasyonu", 16.1], ["ivme_degisimi", 13.3], ["duraklama_dagilimi", 10.8]],
       };
 
       const els = {

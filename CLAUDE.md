@@ -34,12 +34,22 @@ deepcheck-mvp/
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── main.py                # FastAPI app, endpointlər
+│   ├── main.py                # FastAPI app, endpointlər, server tərəfli qərar
+│   ├── security.py            # Session token, rate limit, imzalı qərar
 │   ├── database.py            # PostgreSQL bağlantısı (SQLAlchemy)
 │   ├── models.py              # DB modelləri
 │   ├── scorer.py              # Feature extraction + risk skoru
+│   ├── reasons.py             # Türkcə səbəb kodları + kanıt durumu
 │   ├── lstm_model.py          # PyTorch LSTM modeli
-│   └── train_model.py         # Sintetik data + model training
+│   ├── train_model.py         # Sintetik + real telemetriya training
+│   ├── benchmark.py           # Əlçatanlıq dilimləri, gecikmə ölçümü
+│   ├── test_scorer.py         # Davranış reqressiya testləri
+│   └── test_security.py       # Auth / rate limit / imza testləri
+├── lab/                       # Adversarial Bot Lab
+│   ├── bot_lab.py             # Real brauzer hücum nərdivanı (Playwright)
+│   ├── capture.py             # Etiketli real telemetriya toplayır
+│   ├── harness.html           # Real SDK yükləyən minimal ödəmə formu
+│   └── real_telemetry.json    # Toplanmış dataset (training-də istifadə olunur)
 └── frontend/
     ├── Dockerfile
     ├── package.json
@@ -78,6 +88,9 @@ Endpointlər:
 - `POST /api/transaction/verify` → step-up kodunu yoxlayır, tək istifadəlik, 5 cəhd limiti (Bearer token)
 - `GET /api/score/{session_id}` → session tarixçəsi (**operator açarı tələb olunur**)
 - `GET /api/sessions` → bütün sessionlar, dashboard üçün (**operator açarı tələb olunur**)
+- `POST /api/decision/verify` → imzalı qərar sənədini yoxlayır (auth yoxdur — sənəd
+  sahibinin onsuz da bildiyindən artıq heç nə açmır; aşağı axındakı ödəmə backend-i
+  üçün nəzərdə tutulub)
 - `GET /api/health` → sistem sağlamlığı
 
 ÖNƏMLİ: `session_id` heç vaxt clientdən qəbul edilmir — yalnız serverin imzaladığı tokendən çıxarılır.
@@ -112,9 +125,12 @@ göstərdi — iki zaman feature-i iki paylanma arasında **tərsinə** idi.
 - Token-bucket rate limiter (per-IP), yaddaş sızmasına qarşı məhdudlaşdırılmış
 - `sign_decision()` / `verify_decision()` — HMAC imzalı qərar sənədi.
   Aşağı axındakı ödəmə backend-i qərarı yoxlaya bilir, göndərənə inanmır.
+  İmza qərar + session + risk + məbləğ + `policy_version` (hazırda `2026.09`)
+  sahələrini birlikdə örtür, ona görə bir sahəni digər qərardan götürüb
+  əvəzləmək mümkün deyil. Sənədin ömrü `DECISION_TTL_SECONDS` (5 dəqiqə).
 
 ### backend/scorer.py
-Çıxarılan 10 feature (hamısı ~0-1 aralığında normalize olunur):
+Çıxarılan 12 feature (hamısı ~0-1 aralığında normalize olunur):
 
 Paylanma formu featureləri (attacker üçün ucuz təqlid edilir):
 - `scroll_hizi_varyansi` — scroll sürətinin dəyişkənliyi
@@ -129,6 +145,14 @@ Kinematik / zaman strukturu featureləri (təqlidi baha başa gəlir):
 - `yon_tutarliligi` — ardıcıl hərəkət vektorlarının istiqamət davamlılığı
 - `zaman_kuantasyonu` — eyni millisaniyə aralığının təkrarlanma nisbəti (skript taymerləri təkrarlayır)
 - `duraklama_dagilimi` — event aralıqlarının yayılması (insan pauzaları ağır quyruqludur)
+
+Kanallar arası sinxronizasiya (bir kanalı təkbaşına saxtalaşdırmaq kifayət etmir):
+- `tiklama_oncesi_hareket` — kliklərdən əvvəl imleç hərəkəti varmı? Skript klikində yoxdur
+- `kanal_gecis_gecikmesi` — əl klaviatura ilə fare arasında hərəkət edərkən itən vaxt
+
+Bu ikisi say/nisbət statistikasıdır — qəsdən belədir ki, seyrək flush-larda da etibarlı
+qalsın. Üçüncü namizəd (kanal eyni-zamanlılığı) ölçüldü: insan 0.07 / bot 0.07 — heç nə
+ayırmadığı üçün **silindi**.
 
 ÖNƏMLİ: hər feature-in etibarlı olması üçün minimum sample sayı tələb olunur
 (`MIN_AUTOCORRELATION_SAMPLES`, `MIN_ENTROPY_GAPS` və s.). Az sample-dan hesablanan
@@ -207,11 +231,18 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
   "label": "Yüksek Risk",
   "confidence": 0.91,
   "shap_explanation": [
-    {"feature": "click_entropy", "value": 0.12, "impact": 28.3},
-    {"feature": "avg_hesitation", "value": 0.0, "impact": 24.1},
-    {"feature": "mouse_speed_delta", "value": 0.98, "impact": 19.7}
+    {"feature": "hiz_otokorelasyonu", "value": 0.46, "impact": 16.1, "direction": "bot"},
+    {"feature": "ivme_degisimi", "value": 0.58, "impact": 13.3, "direction": "bot"},
+    {"feature": "duraklama_dagilimi", "value": 0.26, "impact": 10.8, "direction": "bot"}
   ],
-  "response_time_ms": 47
+  "reason_codes": {
+    "flagged": ["Fare hızında insan hareketine özgü süreklilik (ivmelenme) görülmüyor"],
+    "allowed": []
+  },
+  "evidence_state": "YUKSEK_GUVEN",
+  "evidence_state_label": "Yüksek güvenli otomasyon",
+  "signal_sufficiency": 1.0,
+  "response_time_ms": 15
 }
 ```
 

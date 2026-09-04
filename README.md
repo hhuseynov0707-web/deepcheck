@@ -240,16 +240,15 @@ Each decision also carries **Turkish reason codes** and an **evidence state** (`
 
 ## Performance
 
-Measured on a development machine against the shipped models, 60 runs after warm-up:
+Measured by `backend/benchmark.py` against the shipped models, 1500 scoring calls across all evaluation slices:
 
 | Metric | Value |
 |---|---|
-| Mean | 42.4 ms |
-| p50 | 42.3 ms |
-| p95 | 44.3 ms |
-| p99 | 47.1 ms |
+| p50 | 14.5 ms |
+| p95 | 16.6 ms |
+| p99 | 18.8 ms |
 
-This is **model scoring time** — feature extraction, all three models, and SHAP attribution. It excludes the database write and network transit, so it is not an end-to-end figure. Measure your own deployment before quoting a number.
+This is **model scoring time** — feature extraction, all three models, and SHAP attribution. It excludes the database write and network transit, so it is not an end-to-end figure. Re-run `benchmark.py` on your own hardware before quoting a number.
 
 ---
 
@@ -261,9 +260,11 @@ python benchmark.py                                    # accessibility slices + 
 python ../lab/bot_lab.py --api http://127.0.0.1:8000   # real-browser attack ladder
 ```
 
-44 regression tests, each one a bug or an attack that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, the IID-random-walk replay that scored 9.1, a forged session token, a poisoning attempt that keeps a valid signature and swaps the target id, a tampered decision artifact, and an under-sampled estimator inventing evidence.
+44 regression tests, each one a bug or an attack that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, the IID-random-walk replay that scored 9.1, a forged session token, a poisoning attempt that keeps a valid signature and swaps the target id, a tampered decision artifact, and an under-sampled estimator inventing evidence. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
 
-`benchmark.py` reports false-positive rate **per interaction style** (keyboard-only, slow typist, low-pointer, sparse first flush, rapid legitimate user) with 95% Wilson confidence intervals and explicit sample sizes — because a global accuracy number hides exactly the failure that matters, and "FPR under 1%" from a handful of sessions is not a measurement. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+`benchmark.py` reports false-positive rate **per interaction style** (keyboard-only, slow typist, low-pointer, sparse first flush, rapid legitimate user) with 95% Wilson confidence intervals and explicit sample sizes — because a global accuracy number hides exactly the failure that matters, and "FPR under 1%" from a handful of sessions is not a measurement. Current result: 0 blocked out of 250 in every legitimate slice, CI [0.00%, 1.51%].
+
+`lab/bot_lab.py` is the held-out adversary. Detection numbers measured in the simulator do not survive contact with a real browser, and the lab is what makes that visible rather than assumed.
 
 Training and inference share the same `extract_features()` code path: `train_model.py` simulates raw sessions and pushes them through the identical extraction used at serving time, so a change to a feature formula flows into the training data automatically and cannot drift apart.
 
@@ -275,12 +276,21 @@ Training and inference share the same `extract_features()` code path: `train_mod
 deepcheck/
 ├── sdk/deepcheck.js          Browser SDK — behavioral collection
 ├── backend/
-│   ├── main.py               FastAPI endpoints
+│   ├── main.py               FastAPI endpoints, server-side decisions
+│   ├── security.py           Session tokens, rate limiting, signed decisions
 │   ├── scorer.py             Feature extraction, ensemble, SHAP
+│   ├── reasons.py            Turkish reason codes + evidence state
 │   ├── lstm_model.py         PyTorch sequence model
-│   ├── train_model.py        Synthetic data generation + training
+│   ├── train_model.py        Synthetic + real-telemetry training
+│   ├── benchmark.py          Accessibility slices, attack detection, latency
 │   ├── test_scorer.py        Behavioral regression tests
+│   ├── test_security.py      Auth, rate-limit and signing tests
 │   └── models.py             SQLAlchemy schema
+├── lab/
+│   ├── bot_lab.py            Real-browser attack ladder (Playwright)
+│   ├── capture.py            Records labelled real-browser telemetry
+│   ├── harness.html          Minimal payment form loading the real SDK
+│   └── real_telemetry.json   Captured dataset (used in training)
 ├── frontend/src/
 │   ├── pages/Demo.jsx        Payment demo with live scoring
 │   └── pages/Dashboard.jsx   SOC dashboard, D3 charts
@@ -295,7 +305,7 @@ deepcheck/
 
 `model.pkl` and `lstm_model.pt` are **not committed**. They are regenerated by `train_model.py` (fixed seed, reproducible), `entrypoint.sh` builds them automatically if missing, and a ~10 MB binary in git history is permanent weight. Pickles are also version-fragile — they must be loaded by the same scikit-learn version that wrote them, so pinning the training environment matters more than shipping the file. See `backend/requirements.txt`.
 
-Training generates 50,000 synthetic sessions across four personas — natural humans, rushed-but-genuine humans, naive scripts, and human-mimicking bots — with 10% cross-contamination so the two classes are not trivially separable.
+Training generates 50,000 synthetic sessions across six personas — natural humans, rushed-but-genuine humans, sparse first-flush humans, naive scripts, human-mimicking bots, and `bot_evasive` (a transcription of an evasion that actually worked against this API) — with cross-contamination so the two classes are not trivially separable. Labelled **real-browser** telemetry from `lab/capture.py` is blended in on top, because the simulator alone teaches the wrong sign on the timing features.
 
 ---
 
