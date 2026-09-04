@@ -10,6 +10,7 @@ import numpy as np
 import shap
 import torch
 
+import reasons
 from lstm_model import (
     FEATURE_NAMES,
     SEQUENCE_LENGTH,
@@ -77,6 +78,17 @@ MIN_ACCELERATION_SAMPLES = 6  # i.e. >=8 trajectory points
 MIN_ENTROPY_GAPS = 5
 MIN_SCROLL_SPEED_SAMPLES = 4  # scrolling is naturally sparser than pointer motion
 
+# Cross-channel synchronization gates. These features are count/ratio
+# statistics (see _click_motion_ratio etc.), chosen precisely because they
+# stay valid at low sample counts -- but each still has a floor below which
+# the value is too coarse to act on.
+CLICK_MOTION_LOOKBACK_MS = 1500
+MIN_CLICKS_FOR_MOTION_RATIO = 2
+MIN_CHANNEL_TRANSITIONS = 5
+# Median keyboard<->pointer transition lag is normalized by this: a human
+# hand-move of ~250-700ms lands mid-scale, an instant scripted switch at ~0.
+TRANSITION_LAG_DIVISOR = 800.0
+
 # Thresholds for signal_sufficiency(). A full 2s SDK flush from an active user
 # carries dozens of events; these mark the point below which the feature
 # vector is mostly neutral fallbacks rather than measurement.
@@ -129,17 +141,19 @@ ACCELERATION_VARIANCE_DIVISOR = 2.2e-6
 # persona and prints the human/bot midpoint for each feature -- run it after
 # any change to the personas and paste the result here.
 NEUTRAL_DEFAULTS = {
-    "scroll_hizi_varyansi": 0.09,  # human 0.10 / bot 0.08
-    "tereddut_skoru": 0.54,  # human 0.54 / bot 0.54
-    "etkilesim_entropisi": 0.68,  # human 0.64 / bot 0.73
-    "ivme_degisimi": 0.64,  # human 0.84 / bot 0.44
+    "scroll_hizi_varyansi": 0.08,  # human 0.09 / bot 0.07
+    "tereddut_skoru": 0.53,  # human 0.52 / bot 0.54
+    "etkilesim_entropisi": 0.58,  # human 0.43 / bot 0.73
+    "ivme_degisimi": 0.62,  # human 0.82 / bot 0.43
     # (tiklama_yogunlugu and odak_degisimi are intentionally absent -- see the
     # note above. --print-neutral-defaults prints a midpoint for every feature;
     # only the ones that can genuinely be *unmeasurable* belong in this dict.)
-    "hiz_otokorelasyonu": 0.61,  # human 0.72 / bot 0.51
+    "hiz_otokorelasyonu": 0.60,  # human 0.70 / bot 0.51
     "yon_tutarliligi": 0.86,  # human 0.87 / bot 0.85
-    "zaman_kuantasyonu": 0.18,  # human 0.12 / bot 0.23
-    "duraklama_dagilimi": 0.32,  # human 0.45 / bot 0.18
+    "zaman_kuantasyonu": 0.18,  # human 0.13 / bot 0.24
+    "duraklama_dagilimi": 0.45,  # human 0.72 / bot 0.18
+    "tiklama_oncesi_hareket": 0.68,  # human 0.75 / bot 0.61
+    "kanal_gecis_gecikmesi": 0.39,  # human 0.49 / bot 0.30
 }
 
 LABELS = [
@@ -283,6 +297,66 @@ def _weighted_channel_mean(
     if not values:
         return None
     return float(np.average(values, weights=weights))
+
+
+def _click_motion_ratio(mouse: list[dict], clicks: list[dict]) -> float | None:
+    """Fraction of clicks preceded by pointer motion.
+
+    A person moves the cursor to a target and then clicks, so nearly every
+    human click has mousemove events just before it. A scripted click
+    (`element.click()`, `dispatchEvent`) fires with no pointer motion at all,
+    because nothing ever moved.
+
+    Deliberately a ratio of counts, not a distribution statistic. The
+    small-sample failure that produced the 89.2 false positive came from
+    estimating variances and entropies off 3-4 samples; a count of "did motion
+    precede this click" is a fact about each click rather than an estimate, so
+    it degrades gracefully. It is still gated below MIN_CLICKS_FOR_MOTION_RATIO
+    because a single click resolves only to 0.0 or 1.0, which is too coarse to
+    act on -- a real user whose last movement fell outside the window would
+    otherwise look fully scripted.
+    """
+    if len(clicks) < MIN_CLICKS_FOR_MOTION_RATIO:
+        return None
+    mouse_times = sorted(m.get("t", 0) for m in mouse)
+    if not mouse_times:
+        return 0.0  # clicks with no pointer motion anywhere: a real observation
+
+    import bisect
+
+    with_motion = 0
+    for click in clicks:
+        t = click.get("t", 0)
+        lo = bisect.bisect_left(mouse_times, t - CLICK_MOTION_LOOKBACK_MS)
+        hi = bisect.bisect_right(mouse_times, t)
+        if hi > lo:
+            with_motion += 1
+    return with_motion / len(clicks)
+
+
+def _channel_transition_lag(mouse: list[dict], keys: list[dict]) -> float | None:
+    """Median pause when the actor switches between keyboard and pointer.
+
+    Moving a hand from the keyboard to the mouse and back costs a person real
+    time -- typically a few hundred milliseconds. A script switching between
+    dispatching keydowns and mousemoves pays nothing, so its transitions are
+    near-instant or fixed by a timer.
+
+    This is a cross-channel relationship: a bot can imitate typing rhythm and
+    pointer motion separately and still fail here, which is the point of the
+    family.
+    """
+    events = sorted(
+        [(m.get("t", 0), "m") for m in mouse] + [(k.get("t", 0), "k") for k in keys]
+    )
+    lags = [
+        b_t - a_t
+        for (a_t, a_c), (b_t, b_c) in zip(events, events[1:])
+        if a_c != b_c and b_t >= a_t
+    ]
+    if len(lags) < MIN_CHANNEL_TRANSITIONS:
+        return None
+    return float(np.median(lags))
 
 
 def _autocorrelation(values: list[float], lag: int = 1) -> float | None:
@@ -507,6 +581,27 @@ def extract_features(raw: dict) -> dict:
         else float(np.clip(dispersion / 1.5, 0.0, 1.0))
     )
 
+    # --- Cross-channel synchronization ----------------------------------
+    # The kinematics features above measure structure *within* a channel. An
+    # attacker who has learned to fake pointer momentum and typing rhythm
+    # separately can still fail to reproduce how a single person's channels
+    # relate to each other: the cursor arrives before the click, the hand
+    # takes time to move between keyboard and mouse, and typing and pointing
+    # rarely happen in the same instant.
+    motion_ratio = _click_motion_ratio(mouse_trajectory, click_timing)
+    tiklama_oncesi_hareket = (
+        NEUTRAL_DEFAULTS["tiklama_oncesi_hareket"]
+        if motion_ratio is None
+        else float(np.clip(motion_ratio, 0.0, 1.0))
+    )
+
+    transition_lag = _channel_transition_lag(mouse_trajectory, key_events)
+    kanal_gecis_gecikmesi = (
+        NEUTRAL_DEFAULTS["kanal_gecis_gecikmesi"]
+        if transition_lag is None
+        else float(np.clip(transition_lag / TRANSITION_LAG_DIVISOR, 0.0, 1.0))
+    )
+
     return {
         "scroll_hizi_varyansi": scroll_hizi_varyansi,
         "tereddut_skoru": tereddut_skoru,
@@ -518,6 +613,8 @@ def extract_features(raw: dict) -> dict:
         "yon_tutarliligi": yon_tutarliligi,
         "zaman_kuantasyonu": zaman_kuantasyonu,
         "duraklama_dagilimi": duraklama_dagilimi,
+        "tiklama_oncesi_hareket": tiklama_oncesi_hareket,
+        "kanal_gecis_gecikmesi": kanal_gecis_gecikmesi,
     }
 
 
@@ -727,12 +824,26 @@ def compute_risk(raw: dict) -> dict:
         {
             "feature": FEATURE_NAMES[i],
             "value": round(float(features[FEATURE_NAMES[i]]), 2),
+            # Magnitude only, for the dashboard bar chart (backward compatible).
             "impact": round(float(abs(fraud_class_shap[i])) * 100, 1),
+            # Sign preserved: which way this feature pushed the verdict. Taking
+            # abs() above threw this away, which made "why was this flagged?"
+            # unanswerable from the explanation -- a feature with a large
+            # magnitude could equally have been the reason the session looked
+            # *human*. Reason codes (reasons.py) need the direction.
+            # Keys stay English (project rule: only user-visible text is
+            # Turkish); reasons.py holds the Turkish phrasing.
+            "direction": "bot" if fraud_class_shap[i] > 0 else "human",
+            "signed_impact": round(float(fraud_class_shap[i]) * 100, 1),
         }
         for i in range(len(FEATURE_NAMES))
     ]
     impacts.sort(key=lambda x: x["impact"], reverse=True)
     top_3 = impacts[:3]
+
+    sufficiency = signal_sufficiency(raw)
+    state = reasons.evidence_state(risk_score, sufficiency)
+    reason_codes = reasons.build_reason_codes(impacts, sufficiency)
 
     response_time_ms = round((time.perf_counter() - start) * 1000, 1)
 
@@ -743,6 +854,9 @@ def compute_risk(raw: dict) -> dict:
         "shap_explanation": top_3,
         "response_time_ms": response_time_ms,
         "features": features,
-        "signal_sufficiency": signal_sufficiency(raw),
+        "signal_sufficiency": sufficiency,
         "temporal_support": round(support, 3),
+        "evidence_state": state,
+        "evidence_state_label": reasons.EVIDENCE_STATES[state],
+        "reason_codes": reason_codes,
     }

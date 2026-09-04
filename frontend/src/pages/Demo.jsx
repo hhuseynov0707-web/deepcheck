@@ -32,6 +32,10 @@ export default function Demo() {
   // No SMS provider in the MVP, so the backend hands back the step-up code
   // when demo mode is on. Clearly labelled as a demo affordance in the modal.
   const [demoCode, setDemoCode] = useState(null);
+  // Server-issued explanation of the decision. Rendered verbatim so the page
+  // cannot tell a different story from the one the server enforced.
+  const [serverReasons, setServerReasons] = useState(null);
+  const [evidenceState, setEvidenceState] = useState(null);
 
   useEffect(() => {
     if (!window.DeepCheck) {
@@ -65,11 +69,26 @@ export default function Demo() {
   async function requestPayment() {
     setStatus("loading");
     setServerMessage(null);
+    setServerReasons(null);
     try {
+      // Score the current window before asking for a decision. The SDK
+      // batches every 2 seconds, so a checkout submitted 1.9s after the last
+      // flush would otherwise be authorised on a window that never contained
+      // the behaviour leading up to the click -- precisely the moment the
+      // evidence matters most. Failures here are non-fatal: the server still
+      // decides on whatever it already has.
+      try {
+        await window.DeepCheck.flushNow();
+      } catch (flushErr) {
+        console.warn("[Demo] son ölçüm gönderilemedi:", flushErr);
+      }
+
       const res = await window.DeepCheck.authorizedFetch("/api/transaction", {
         amount: total,
       });
       const data = await res.json();
+      setServerReasons(data.reason_codes || null);
+      setEvidenceState(data.evidence_state_label || null);
 
       if (data.decision === "onaylandi") {
         setStatus("success");
@@ -262,6 +281,32 @@ export default function Demo() {
                 {serverMessage || "Ödeme başarıyla alındı (demo)."}
               </p>
             )}
+
+            {serverReasons &&
+              (serverReasons.flagged?.length > 0 || serverReasons.allowed?.length > 0) && (
+                <div className="rounded-md border border-zinc-800 bg-[#09090b] px-3 py-3 text-xs text-zinc-400 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-zinc-300">Karar gerekçesi</span>
+                    {evidenceState && (
+                      <span className="font-mono text-[11px] text-zinc-500">{evidenceState}</span>
+                    )}
+                  </div>
+                  {serverReasons.flagged?.length > 0 && (
+                    <ul className="space-y-1">
+                      {serverReasons.flagged.map((reason) => (
+                        <li key={reason} className="text-rose-400">• {reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                  {status !== "denied" && serverReasons.allowed?.length > 0 && (
+                    <ul className="space-y-1">
+                      {serverReasons.allowed.map((reason) => (
+                        <li key={reason} className="text-emerald-400">• {reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
           </form>
 
           {risk && (

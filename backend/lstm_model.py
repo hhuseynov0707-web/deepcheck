@@ -43,6 +43,20 @@ FEATURE_NAMES = [
     "yon_tutarliligi",
     "zaman_kuantasyonu",
     "duraklama_dagilimi",
+    # --- Cross-channel synchronization -----------------------------------
+    # Within-channel structure can be faked one channel at a time. These
+    # measure how a single person's channels relate to each other: the cursor
+    # arrives before the click, and the hand takes real time to move between
+    # keyboard and mouse. Count/ratio statistics by design, so they remain
+    # valid on thin flushes.
+    #
+    # A third candidate, channel simultaneity (typing and pointing at once),
+    # was measured and dropped: it separated human from bot 0.07 vs 0.07 on
+    # the synthetic personas -- neither emits overlapping channels -- so the
+    # forest would never learn to weight it. A feature that measures nothing
+    # is noise, not signal.
+    "tiklama_oncesi_hareket",
+    "kanal_gecis_gecikmesi",
 ]
 
 # Per-timestep features fed into the LSTM

@@ -1,0 +1,4 @@
+# Adversarial bot lab only -- NOT needed to run DeepCheck itself.
+# Kept separate from backend/requirements.txt so a deployment does not ship a
+# browser automation stack it never uses.
+playwright==1.47.0

@@ -553,3 +553,83 @@ def test_ensemble_weights_always_sum_to_one():
         lstm_w = scorer.LSTM_WEIGHT * support
         rf_w = scorer.RF_WEIGHT + (scorer.LSTM_WEIGHT - lstm_w)
         assert abs((rf_w + scorer.ISO_WEIGHT + lstm_w) - 1.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Reason codes and evidence state
+# ---------------------------------------------------------------------------
+
+
+import reasons  # noqa: E402
+
+
+def test_reason_codes_follow_the_model_not_a_hardcoded_guess():
+    """Direction must come from the SHAP sign, so explanation cannot contradict score."""
+    raw = _iid_random_walk_bot_session(seed=0)
+    result = scorer.compute_risk(raw)
+    assert result["risk_score"] > 60
+    assert result["reason_codes"]["flagged"], "a flagged session must say why"
+
+    # Every flagged phrase must be the "bot" phrasing of a feature whose SHAP
+    # value actually pointed at automation for this session.
+    bot_phrases = {p["bot"] for p in reasons.FEATURE_PHRASES.values()}
+    for phrase in result["reason_codes"]["flagged"]:
+        assert phrase in bot_phrases
+
+
+def test_thin_session_is_told_it_was_unobserved_not_accused():
+    """Insufficient evidence must be stated explicitly, never dressed up."""
+    raw = _headless_bot_session()
+    result = scorer.compute_risk(raw)
+    assert result["evidence_state"] == "YETERSIZ"
+    assert reasons.INSUFFICIENT_SIGNAL_REASON in result["reason_codes"]["allowed"]
+
+
+def test_evidence_state_never_claims_high_confidence_without_signal():
+    """A high score built on no data is 'unobserved', not 'high-confidence bot'."""
+    assert reasons.evidence_state(95.0, 0.0) == "YETERSIZ"
+    assert reasons.evidence_state(95.0, 1.0) == "YUKSEK_GUVEN"
+    assert reasons.evidence_state(70.0, 1.0) == "BELIRSIZ"
+    assert reasons.evidence_state(10.0, 1.0) == "YETERLI"
+
+
+# ---------------------------------------------------------------------------
+# Cross-channel synchronization
+# ---------------------------------------------------------------------------
+
+
+def test_scripted_clicks_without_pointer_motion_are_visible():
+    """A click with no preceding cursor movement is a script signature."""
+    base = BASE_T
+    clicks = [{"x": 300, "y": 200, "t": base + 500 * i} for i in range(4)]
+    scripted = scorer._click_motion_ratio([], clicks)
+    assert scripted == 0.0
+
+    # A human moves the cursor to the target first.
+    mouse = []
+    for i in range(4):
+        for j in range(10):
+            mouse.append({"x": 100 + j, "y": 100 + j, "t": base + 500 * i - 300 + j * 20})
+    human = scorer._click_motion_ratio(mouse, clicks)
+    assert human == 1.0
+
+
+def test_cross_channel_features_gate_on_small_samples():
+    """One click cannot establish a rate; it must fall back to neutral."""
+    assert scorer._click_motion_ratio([], [{"x": 1, "y": 1, "t": BASE_T}]) is None
+    assert scorer._channel_transition_lag([{"x": 1, "y": 1, "t": BASE_T}], []) is None
+
+
+def test_instant_keyboard_pointer_switching_differs_from_human():
+    """Moving a hand between keyboard and mouse costs a person real time."""
+    base = BASE_T
+    instant_mouse = [{"x": 1, "y": 1, "t": base + 20 * i} for i in range(10)]
+    instant_keys = [{"t": base + 20 * i + 2} for i in range(10)]
+    instant = scorer._channel_transition_lag(instant_mouse, instant_keys)
+
+    human_mouse = [{"x": 1, "y": 1, "t": base + 1000 * i} for i in range(6)]
+    human_keys = [{"t": base + 1000 * i + 400} for i in range(6)]
+    human = scorer._channel_transition_lag(human_mouse, human_keys)
+
+    assert instant is not None and human is not None
+    assert human > instant * 5, f"human lag {human} should dwarf scripted {instant}"

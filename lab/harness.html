@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <title>DeepCheck — Saldırı Laboratuvarı</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#09090b; color:#e4e4e7; margin:0; padding:24px; }
+    .card { max-width:420px; background:#18181b; border:1px solid #27272a; border-radius:8px; padding:20px; }
+    label { display:block; font-size:12px; color:#a1a1aa; margin:12px 0 4px; }
+    input { width:100%; box-sizing:border-box; background:#09090b; color:#e4e4e7;
+            border:1px solid #3f3f46; border-radius:6px; padding:10px; font-family:monospace; }
+    button { margin-top:16px; width:100%; padding:12px; border:0; border-radius:6px;
+             background:#e4e4e7; color:#18181b; font-weight:600; cursor:pointer; }
+    #risk { margin-top:14px; font-family:monospace; font-size:13px; color:#a1a1aa; }
+  </style>
+</head>
+<body>
+  <!--
+    Minimal payment form for the adversarial bot lab.
+
+    This deliberately loads the REAL sdk/deepcheck.js and talks to the REAL
+    backend, because those are the two components under test: telemetry
+    collection in a genuine browser, and the server-side decision. The React
+    demo page adds styling and copy on top of exactly this path, so driving it
+    instead would test Vite and Tailwind rather than the detector.
+  -->
+  <div class="card">
+    <h2 style="margin:0">Ödeme</h2>
+    <label>Kart Numarası</label>
+    <input id="card" inputmode="numeric" placeholder="4242 4242 4242 4242" />
+    <label>Kart Üzerindeki İsim</label>
+    <input id="name" placeholder="AD SOYAD" />
+    <label>Son Kullanma / CVV</label>
+    <input id="exp" inputmode="numeric" placeholder="12/28" />
+    <button id="pay" type="button">Öde</button>
+    <div id="risk">risk: —</div>
+  </div>
+
+  <script src="/deepcheck.js"></script>
+  <script>
+    // The lab injects the backend URL as ?api=...
+    const params = new URLSearchParams(location.search);
+    const apiUrl = params.get("api") || "http://127.0.0.1:8000";
+
+    // Everything the lab observes goes through these globals rather than the
+    // DOM, so an attack scenario reads exactly what a real attacker could:
+    // the score the API returned, and the decision the server made.
+    window.__dc = { last: null, updates: 0 };
+
+    window.DeepCheck.init({
+      apiUrl,
+      intervalMs: 2000,
+      onUpdate: (result) => {
+        window.__dc.last = result;
+        window.__dc.updates += 1;
+        document.getElementById("risk").textContent =
+          `risk: ${result.risk_score} (${result.label})`;
+      },
+    });
+
+    // Flush on demand so a scenario can force the current window to be scored
+    // before submitting, mirroring the event-triggered flush at checkout.
+    window.__flush = () => window.DeepCheck.flushNow();
+
+    window.__pay = async (amount) => {
+      const res = await window.DeepCheck.authorizedFetch("/api/transaction", { amount });
+      return await res.json();
+    };
+
+    window.__verify = async (code) => {
+      const res = await window.DeepCheck.authorizedFetch("/api/transaction/verify", { code });
+      return { status: res.status, body: await res.json() };
+    };
+
+    document.getElementById("pay").addEventListener("click", async () => {
+      const out = await window.__pay(2038.8);
+      document.getElementById("risk").textContent =
+        `karar: ${out.decision} · risk: ${out.risk_score}`;
+    });
+  </script>
+</body>
+</html>

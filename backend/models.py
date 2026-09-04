@@ -50,6 +50,12 @@ class Session(Base):
     # low, so a session that simply was never observed cannot coast through on
     # a mid-scale score built entirely from neutral fallbacks.
     signal_sufficiency: Mapped[float] = mapped_column(Float, default=0.0)
+    # Evidence state + Turkish reason codes for the latest flush (see
+    # reasons.py). Persisted so the dashboard and the transaction endpoint
+    # explain a verdict from the same source the score came from, rather than
+    # each re-deriving its own story.
+    evidence_state: Mapped[str] = mapped_column(String, default="YETERSIZ")
+    reason_codes: Mapped[dict] = mapped_column(JSON, default=dict)
 
     behavior_data: Mapped[list["BehaviorData"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
@@ -91,6 +97,9 @@ class BehaviorData(Base):
     yon_tutarliligi: Mapped[float] = mapped_column(Float, default=0.0)
     zaman_kuantasyonu: Mapped[float] = mapped_column(Float, default=0.0)
     duraklama_dagilimi: Mapped[float] = mapped_column(Float, default=0.0)
+    # Cross-channel synchronization (scorer.py); same migration caveat.
+    tiklama_oncesi_hareket: Mapped[float] = mapped_column(Float, default=0.0)
+    kanal_gecis_gecikmesi: Mapped[float] = mapped_column(Float, default=0.0)
 
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
 

@@ -84,10 +84,34 @@ Endpointlər:
 Bloklama qərarı brauzerdə deyil, `/api/transaction`-da verilir; frontenddəki `riskScore >= 80`
 yalnız görüntü üçündür.
 
+### backend/reasons.py
+- SHAP işaretinden türetilmiş **türkcə səbəb kodları** (`flagged` / `allowed`)
+- İstiqamət modelin öz SHAP işarəsindən gəlir — izah heç vaxt skorla ziddiyyət təşkil edə bilməz
+- `evidence_state()` — YETERLI / YETERSIZ / BELIRSIZ / YUKSEK_GUVEN
+- Az siqnallı sessiya "ittiham" almır, açıq şəkildə "kifayət qədər müşahidə edilmədi" deyilir
+
+### backend/benchmark.py
+- Əlçatanlıq dilimləri üzrə yanlış-pozitiv nisbəti (klaviatura-only, yavaş yazan, az imleç, seyrək)
+- Hər nisbət 95% Wilson güven aralığı və nümunə sayı ilə verilir
+- Model skorlama gecikməsi p50/p95/p99
+
+### lab/ — Adversarial Bot Lab
+- **Real Chromium** brauzerini real SDK və real backend-ə qarşı sürür
+- Hücum nərdivanı: naive → randomized → human-mimic → evasive → adaptive
+- Meşru bazalar: insan, yalnız-klaviatura (yanlış-pozitiv ölçmək üçün)
+- `capture.py` real brauzer telemetriyasını etiketli dataset kimi yazır
+- Adaptiv hücumda **tur başına** tespit bildirilir (kümülativ deyil)
+
+ÖNƏMLİ: sintetik ayrılıq özünüqiymətləndirmədir. Lab ilk işləyəndə eyni
+kaçırmacı hücumun simulyasiyada 88.9, real brauzerdə isə 36.5 aldığını
+göstərdi — iki zaman feature-i iki paylanma arasında **tərsinə** idi.
+
 ### backend/security.py
 - HMAC imzalı session token: `issue_session()` / `verify_session_token()`
 - Operator açarı yoxlaması (SOC dashboard endpointləri üçün)
 - Token-bucket rate limiter (per-IP), yaddaş sızmasına qarşı məhdudlaşdırılmış
+- `sign_decision()` / `verify_decision()` — HMAC imzalı qərar sənədi.
+  Aşağı axındakı ödəmə backend-i qərarı yoxlaya bilir, göndərənə inanmır.
 
 ### backend/scorer.py
 Çıxarılan 10 feature (hamısı ~0-1 aralığında normalize olunur):

@@ -197,3 +197,72 @@ session_limiter = RateLimiter(rate_per_second=0.5, burst=10)
 
 # Transactions are deliberately tight -- this is the money path.
 transaction_limiter = RateLimiter(rate_per_second=1.0, burst=5)
+
+
+# --------------------------------------------------------------------------
+# Signed decision artifacts
+# --------------------------------------------------------------------------
+# A transaction decision that travels as plain JSON is only trustworthy while
+# it stays inside this process. The moment a real deployment puts a separate
+# payment backend behind DeepCheck, that backend needs to verify the verdict
+# it was handed rather than believing whatever the caller forwarded --
+# otherwise the enforcement boundary moves back to the client, which is the
+# vulnerability this whole hardening effort removed.
+#
+# So the decision is emitted as a signed artifact: the deciding fields plus an
+# HMAC over their canonical serialization. Any holder of the shared key can
+# verify that DeepCheck issued exactly this verdict, for exactly this session,
+# at this time. The signature covers the decision, session, risk score,
+# amount, policy version and timestamp together, so no field can be swapped
+# for another decision's.
+
+DECISION_TTL_SECONDS = 300
+
+
+def _canonical(fields: dict) -> bytes:
+    """Stable serialization for signing: sorted keys, no incidental whitespace.
+
+    Signing a dict's repr or an unsorted dump would make the signature depend
+    on key ordering, so a semantically identical artifact could fail to verify.
+    """
+    import json
+
+    return json.dumps(fields, sort_keys=True, separators=(",", ":")).encode()
+
+
+def sign_decision(fields: dict) -> dict:
+    """Returns `fields` plus decision_id, issued_at and an HMAC signature."""
+    artifact = dict(fields)
+    artifact["decision_id"] = secrets.token_urlsafe(12)
+    artifact["issued_at"] = int(time.time())
+    artifact["signature"] = _b64(
+        hmac.new(SESSION_SECRET.encode(), _canonical(artifact), hashlib.sha256).digest()
+    )
+    return artifact
+
+
+def verify_decision(artifact: dict) -> tuple[bool, str]:
+    """Checks a decision artifact's signature and freshness.
+
+    Returns (valid, reason). Rejects a tampered field, a forged signature, and
+    an artifact old enough to be a replay of a previous verdict.
+    """
+    if not isinstance(artifact, dict) or "signature" not in artifact:
+        return False, "İmza bulunamadı."
+
+    provided = artifact["signature"]
+    unsigned = {k: v for k, v in artifact.items() if k != "signature"}
+    expected = _b64(
+        hmac.new(SESSION_SECRET.encode(), _canonical(unsigned), hashlib.sha256).digest()
+    )
+    if not hmac.compare_digest(expected, provided):
+        return False, "İmza geçersiz."
+
+    issued_at = unsigned.get("issued_at")
+    if not isinstance(issued_at, int):
+        return False, "Zaman damgası geçersiz."
+    age = int(time.time()) - issued_at
+    if age < -60 or age > DECISION_TTL_SECONDS:
+        return False, "Karar belgesinin süresi doldu."
+
+    return True, "Karar doğrulandı."

@@ -141,3 +141,72 @@ def test_limiter_bucket_table_is_bounded():
     for i in range(limiter._MAX_TRACKED + 500):
         limiter.allow(f"ip-{i}")
     assert len(limiter._buckets) <= limiter._MAX_TRACKED + 500
+
+
+# ---------------------------------------------------------------------------
+# Signed decision artifacts
+# ---------------------------------------------------------------------------
+# A decision that travels as plain JSON is only trustworthy inside this
+# process. These cover the claim that a downstream payment backend can verify
+# a verdict it was handed, rather than believing the caller.
+
+
+def test_signed_decision_verifies():
+    artifact = security.sign_decision(
+        {"decision": "reddedildi", "session_id": "abc", "risk_score": 88.5, "amount": 100.0}
+    )
+    valid, _ = security.verify_decision(artifact)
+    assert valid is True
+    assert "decision_id" in artifact and "issued_at" in artifact
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("decision", "onaylandi"),   # the change an attacker actually wants
+        ("risk_score", 1.0),
+        ("amount", 1.0),
+        ("session_id", "someone-else"),
+    ],
+)
+def test_tampering_with_any_signed_field_is_rejected(field, value):
+    artifact = security.sign_decision(
+        {"decision": "reddedildi", "session_id": "abc", "risk_score": 88.5, "amount": 100.0}
+    )
+    artifact[field] = value
+    valid, _ = security.verify_decision(artifact)
+    assert valid is False
+
+
+def test_decision_without_signature_is_rejected():
+    for artifact in ({}, {"decision": "onaylandi"}, None, "not-a-dict"):
+        valid, _ = security.verify_decision(artifact)
+        assert valid is False
+
+
+def test_expired_decision_is_rejected():
+    artifact = security.sign_decision({"decision": "onaylandi"})
+    artifact["issued_at"] = int(time.time()) - security.DECISION_TTL_SECONDS - 60
+    # Re-sign so the signature matches the stale timestamp: this isolates the
+    # freshness check from the signature check.
+    unsigned = {k: v for k, v in artifact.items() if k != "signature"}
+    artifact["signature"] = security._b64(
+        security.hmac.new(
+            security.SESSION_SECRET.encode(),
+            security._canonical(unsigned),
+            security.hashlib.sha256,
+        ).digest()
+    )
+    valid, message = security.verify_decision(artifact)
+    assert valid is False and "süresi" in message
+
+
+def test_decision_signed_with_another_key_is_rejected():
+    artifact = security.sign_decision({"decision": "onaylandi"})
+    original = security.SESSION_SECRET
+    try:
+        security.SESSION_SECRET = "different-key"
+        valid, _ = security.verify_decision(artifact)
+        assert valid is False
+    finally:
+        security.SESSION_SECRET = original

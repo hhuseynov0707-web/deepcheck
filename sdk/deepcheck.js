@@ -187,9 +187,9 @@
       payload.hesitation_intervals.length ||
       payload.focus_changes.length ||
       payload.key_events.length;
-    if (!hasData) return;
+    if (!hasData) return Promise.resolve(null);
 
-    ensureToken()
+    return ensureToken()
       .then((token) =>
         fetch(`${config.apiUrl}/api/analyze`, {
           method: "POST",
@@ -219,7 +219,22 @@
       })
       .catch((err) => {
         console.error("[DeepCheck] analyze isteği başarısız:", err);
+        return null;
       });
+  }
+
+  /**
+   * Scores the current window immediately instead of waiting for the next
+   * periodic tick, and resolves with the result.
+   *
+   * The 2s batching is efficient for continuous monitoring but leaves a gap
+   * exactly where it matters least acceptable: a checkout submitted 1.9s
+   * after the last flush is authorised on a window that never included the
+   * behaviour leading up to it. Callers await this before a high-value action
+   * so the decision sees the most recent evidence.
+   */
+  function flushNow() {
+    return Promise.resolve(flushBuffer());
   }
 
   /**
@@ -285,5 +300,5 @@
     return config.sessionId;
   }
 
-  window.DeepCheck = { init, stop, getSessionId, authorizedFetch };
+  window.DeepCheck = { init, stop, getSessionId, authorizedFetch, flushNow };
 })(window);

@@ -19,6 +19,9 @@ formula automatically flows into training data too, since both paths run the
 same code.
 """
 
+import json
+from pathlib import Path
+
 import joblib
 import numpy as np
 import torch
@@ -139,6 +142,67 @@ def _ballistic_path(
         # Dwell at the target before the next reach (read, aim, decide).
         t += int(rng.uniform(60, 300) / speed)
     return points, t, x, y
+
+
+def _form_fill(
+    t: int,
+    x: float,
+    y: float,
+    n_fields: int,
+    points_per_reach: tuple[int, int],
+    keys_per_field: tuple[int, int],
+    typing_sigma: float,
+    speed: float = 1.0,
+    tremor: float = 1.2,
+    keyboard_only: bool = False,
+    hand_move_ms: tuple[int, int] = (250, 700),
+) -> tuple[list[dict], list[dict], list[dict], int, float, float]:
+    """Simulates filling a form the way a person actually does it.
+
+    For each field: reach for it with the pointer, settle, click, move the
+    hand to the keyboard, type, move the hand back. The channels are
+    *interleaved* in time, which is the whole point. The previous generator
+    emitted every mouse point, then every click, then every keystroke as three
+    separate blocks -- a session no human ever produced, and one in which the
+    cross-channel features (tiklama_oncesi_hareket, kanal_gecis_gecikmesi,
+    kanal_es_zamanliligi) had nothing real to learn from: clicks were never
+    preceded by motion, and keyboard<->pointer transitions did not exist.
+
+    keyboard_only models Tab navigation: no pointer at all, fields are reached
+    with the keyboard. It is a legitimate, common pattern (and an accessibility
+    one), so the model must see it labelled human.
+    """
+    mouse: list[dict] = []
+    clicks: list[dict] = []
+    keys: list[dict] = []
+
+    for _ in range(n_fields):
+        if not keyboard_only:
+            n_points = int(rng.integers(*points_per_reach)) if points_per_reach[1] > 0 else 0
+            reach, t, x, y = _ballistic_path(n_points, t, x, y, speed=speed, tremor=tremor)
+            mouse.extend(reach)
+            # Settle on the target, then click.
+            t += int(rng.uniform(80, 250) / speed)
+            clicks.append({"x": x, "y": y, "t": t})
+            # Hand travels from mouse to keyboard.
+            t += int(rng.uniform(*hand_move_ms) / speed)
+        else:
+            # Tab to the next field: a keystroke, then a beat to read the field.
+            t += int(rng.uniform(150, 500) / speed)
+            keys.append({"t": t})
+            t += int(rng.uniform(200, 600) / speed)
+
+        for _ in range(int(rng.integers(*keys_per_field))):
+            t += int(rng.lognormal(mean=5.0, sigma=typing_sigma) / speed)
+            keys.append({"t": t})
+            if rng.random() < 0.04:  # think mid-field
+                t += int(rng.uniform(400, 1200))
+
+        if not keyboard_only:
+            # Hand travels back to the mouse before the next reach.
+            t += int(rng.uniform(*hand_move_ms) / speed)
+
+    return mouse, clicks, keys, t, x, y
 
 
 def _simulate_session(persona: str, base_t: int) -> dict:
@@ -351,36 +415,22 @@ def _simulate_session(persona: str, base_t: int) -> dict:
         # acceleration), amplifying rather than smoothing. Slightly wider dt
         # and slightly smaller jitter brings it to a believable "efficient
         # but still human" range, below "human" but not off the scale.
-        n_points = int(rng.integers(0, 3)) if rng.random() < 0.30 else int(rng.integers(6, 15))
         x, y = rng.uniform(150, 250), rng.uniform(150, 250)
-        # speed>1 shortens the inter-sample interval and tremor is slightly
-        # tighter: the same motor control, executed briskly.
-        mouse_trajectory, t, x, y = _ballistic_path(
-            n_points, t, x, y, speed=1.5, tremor=0.9
+        sparse_pointer = rng.random() < 0.30
+        mouse_trajectory, click_timing, key_events, t, x, y = _form_fill(
+            t, x, y,
+            n_fields=int(rng.integers(1, 3)) if sparse_pointer else int(rng.integers(2, 4)),
+            points_per_reach=(0, 3) if sparse_pointer else (6, 12),
+            keys_per_field=(4, 14),
+            typing_sigma=0.4,
+            speed=1.5,
+            tremor=0.9,
+            keyboard_only=rng.random() < 0.15,
+            hand_move_ms=(150, 450),
         )
         all_times.extend(m["t"] for m in mouse_trajectory)
-        # NOTE: this used to be uniform(150, 400) -- numpy's upper bound is
-        # exclusive, so this could NEVER reach HESITATION_THRESHOLD_MS (400),
-        # meaning 100% of human_rushed samples got hesitation_intervals=[]
-        # (the same "always-exactly-neutral" bug as the bot personas, just
-        # discovered on the human side). Widened so some click gaps naturally
-        # cross the threshold, like a real (just efficient) human would.
-        # Floor of 1 (not 2): a headless bot can also have just 1-2 clicks,
-        # so requiring >=2 for every human sample meant "exactly 1 click"
-        # was only ever seen from bots in training, wrongly making a single
-        # click read as bot-like even for an early-session human snapshot.
-        # Also sometimes zero -- a keyboard-only (Tab navigation) user, real
-        # and legitimate, never fires a single click event.
-        n_clicks = 0 if rng.random() < 0.15 else int(rng.integers(1, 5))
-        for _ in range(n_clicks):
-            t += int(rng.uniform(150, 650))
-            click_timing.append({"x": x, "y": y, "t": t})
-            all_times.append(t)
-        n_keys = int(rng.integers(10, 35))
-        for _ in range(n_keys):
-            t += int(rng.uniform(60, 150))
-            key_events.append({"t": t})
-            all_times.append(t)
+        all_times.extend(c["t"] for c in click_timing)
+        all_times.extend(k["t"] for k in key_events)
         if rng.random() < 0.15:
             t += int(rng.uniform(50, 200))
             scroll_events.append({"scrollY": int(rng.uniform(50, 300)), "t": t})
@@ -396,24 +446,22 @@ def _simulate_session(persona: str, base_t: int) -> dict:
         # fallback constant can fix that after the fact, since the model
         # keys off having never seen a human example at that value.
         mostly_typing = rng.random() < 0.30
-        n_points = int(rng.integers(0, 3)) if mostly_typing else int(rng.integers(10, 40))
         x, y = rng.uniform(150, 250), rng.uniform(150, 250)
-        mouse_trajectory, t, x, y = _ballistic_path(n_points, t, x, y)
+        mouse_trajectory, click_timing, key_events, t, x, y = _form_fill(
+            t, x, y,
+            n_fields=int(rng.integers(1, 3)) if mostly_typing else int(rng.integers(2, 5)),
+            points_per_reach=(0, 3) if mostly_typing else (8, 16),
+            keys_per_field=(6, 18),
+            typing_sigma=0.5,
+            # Keyboard-only Tab navigation is a real, legitimate human
+            # interaction pattern (and an accessibility one).
+            keyboard_only=rng.random() < 0.15,
+        )
         all_times.extend(m["t"] for m in mouse_trajectory)
+        all_times.extend(c["t"] for c in click_timing)
+        all_times.extend(k["t"] for k in key_events)
         if mouse_trajectory and rng.random() < 0.35:  # natural pause mid-interaction
             t += int(rng.uniform(400, 1200))
-        # See note in human_rushed above; also sometimes zero (keyboard-only
-        # Tab navigation is a real, legitimate human interaction pattern).
-        n_clicks = 0 if rng.random() < 0.15 else int(rng.integers(1, 5))
-        for _ in range(n_clicks):
-            t += int(rng.uniform(300, 900))  # natural pause before clicking
-            click_timing.append({"x": x, "y": y, "t": t})
-            all_times.append(t)
-        n_keys = int(rng.integers(15, 50))
-        for _ in range(n_keys):
-            t += int(rng.lognormal(mean=5.0, sigma=0.5))  # ~100-350ms, occasional longer pause
-            key_events.append({"t": t})
-            all_times.append(t)
         if rng.random() < 0.35:
             sy = 0
             for _ in range(int(rng.integers(2, 6))):
@@ -469,6 +517,60 @@ def _simulate_session(persona: str, base_t: int) -> dict:
 # network; it is the measured better answer.
 
 
+# Real-browser telemetry captured by lab/capture.py. Blended into training
+# because the synthetic simulator does not reproduce how a real browser emits
+# events, and the bot lab measured the cost of that gap: the identical evasive
+# attack scored 88.9 in the simulator and 36.5 through real Chromium, because
+# two heavy timing features are inverted between the two distributions
+# (etkilesim_entropisi real-bot 0.225 vs synthetic 0.836; duraklama_dagilimi
+# real-bot 1.000 vs synthetic 0.264). Training on simulated telemetry alone
+# teaches the model the wrong sign on exactly those features.
+REAL_TELEMETRY_PATH = Path(__file__).resolve().parent.parent / "lab" / "real_telemetry.json"
+
+# Real rows are vastly outnumbered by synthetic ones, so without a weight they
+# would be rounding error. This makes the real set count for roughly as much as
+# the synthetic set in aggregate, while still keeping synthetic coverage of
+# personas the browser lab does not enumerate.
+REAL_TELEMETRY_WEIGHT = 120.0
+
+# Fraction of real *runs* (not flushes) held out for honest evaluation. Splitting
+# by run matters: every flush from one browser session is correlated with its
+# siblings, so a random per-flush split would put the same session on both sides
+# and report a number that cannot be reproduced on a fresh session.
+REAL_HOLDOUT_FRACTION = 0.3
+
+
+def load_real_telemetry(path: Path = REAL_TELEMETRY_PATH):
+    """Returns (X_train, y_train, X_eval, y_eval, eval_scenarios), split by run."""
+    if not path.exists():
+        return None
+
+    payload = json.loads(path.read_text())
+    samples = payload.get("samples", [])
+    if not samples:
+        return None
+
+    runs = sorted({s.get("run_id", s["scenario"]) for s in samples})
+    holdout_rng = np.random.default_rng(1234)
+    holdout_rng.shuffle(runs)
+    n_holdout = max(1, int(len(runs) * REAL_HOLDOUT_FRACTION))
+    holdout = set(runs[:n_holdout])
+
+    def vec(sample):
+        return [sample["features"][name] for name in FEATURE_NAMES]
+
+    train = [s for s in samples if s.get("run_id", s["scenario"]) not in holdout]
+    evaluate = [s for s in samples if s.get("run_id", s["scenario"]) in holdout]
+
+    return (
+        np.array([vec(s) for s in train], dtype=float),
+        np.array([s["label"] for s in train]),
+        np.array([vec(s) for s in evaluate], dtype=float),
+        np.array([s["label"] for s in evaluate]),
+        [s["scenario"] for s in evaluate],
+    )
+
+
 def _pick_persona(is_bot: int) -> str:
     """Persona mix per class.
 
@@ -522,7 +624,7 @@ def generate_synthetic_dataset(n_rows: int = N_ROWS):
     return X, S, is_bot, personas
 
 
-def train_tabular_models(X_train, y_train, X_test, y_test):
+def train_tabular_models(X_train, y_train, X_test, y_test, sample_weight=None):
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
@@ -546,7 +648,7 @@ def train_tabular_models(X_train, y_train, X_test, y_test):
         random_state=42,
         n_jobs=-1,
     )
-    rf.fit(X_train_scaled, y_train)
+    rf.fit(X_train_scaled, y_train, sample_weight=sample_weight)
 
     y_pred = rf.predict(X_test_scaled)
     rf_acc = accuracy_score(y_test, y_pred)
@@ -641,6 +743,27 @@ def report_per_persona_recall(rf, scaler, X_test, y_test, personas_test) -> None
         print(f"  {persona:20s} n={mask.sum():5d}  correct: {correct:.4f}")
 
 
+def report_real_holdout(rf, scaler, X_eval, y_eval, scenarios):
+    """Accuracy on held-out REAL browser sessions, broken down by scenario.
+
+    This is the number that actually matters. Synthetic accuracy is a
+    self-assessment; this is the detector graded on telemetry it did not
+    generate, split so no session appears on both sides.
+    """
+    if len(y_eval) == 0:
+        return
+    pred = rf.predict(scaler.transform(X_eval))
+    print(f"\nReal-browser holdout ({len(y_eval)} flushes, split by run):")
+    print(f"  overall accuracy: {(pred == y_eval).mean():.4f}")
+    for scenario in sorted(set(scenarios)):
+        mask = np.array([s == scenario for s in scenarios])
+        if not mask.any():
+            continue
+        print(
+            f"    {scenario:20s} n={mask.sum():4d}  correct: {(pred[mask] == y_eval[mask]).mean():.4f}"
+        )
+
+
 def main():
     import argparse
 
@@ -665,9 +788,29 @@ def main():
     )
     personas_test = [personas[i] for i in idx_test]
 
+    real = load_real_telemetry()
+    if real is None:
+        print("\nNo lab/real_telemetry.json found -- training on synthetic data only.")
+        print("Run lab/capture.py to record real-browser telemetry; the simulator")
+        print("alone teaches the wrong sign on the timing features.")
+        X_fit, y_fit, weights = X_train, y_train, None
+    else:
+        X_real, y_real, X_real_eval, y_real_eval, real_eval_scenarios = real
+        print(
+            f"\nBlending {len(y_real)} real-browser rows into training "
+            f"({len(y_real_eval)} held out by run for evaluation)."
+        )
+        X_fit = np.vstack([X_train, X_real])
+        y_fit = np.concatenate([y_train, y_real])
+        weights = np.concatenate(
+            [np.ones(len(y_train)), np.full(len(y_real), REAL_TELEMETRY_WEIGHT)]
+        )
+
     print("Training RandomForest + IsolationForest...")
-    scaler, rf, iso_forest = train_tabular_models(X_train, y_train, X_test, y_test)
+    scaler, rf, iso_forest = train_tabular_models(X_fit, y_fit, X_test, y_test, weights)
     report_per_persona_recall(rf, scaler, X_test, y_test, personas_test)
+    if real is not None:
+        report_real_holdout(rf, scaler, X_real_eval, y_real_eval, real_eval_scenarios)
 
     print("\nTraining LSTM...")
     lstm = train_lstm(S_train, y_train, S_test, y_test)

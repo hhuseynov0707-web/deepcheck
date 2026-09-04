@@ -92,7 +92,7 @@ cd backend && python train_model.py
 
 ## How the scoring works
 
-Ten behavioral features are extracted from each flush, every one normalized to roughly 0–1.
+Twelve behavioral features are extracted from each flush, every one normalized to roughly 0–1.
 
 **Distribution-shape features** — cheap to compute, and cheap for an attacker to fake:
 
@@ -114,7 +114,27 @@ Ten behavioral features are extracted from each flush, every one normalized to r
 | `zaman_kuantasyonu` | How often the *same* millisecond gap repeats — scripted timers do, hands don't |
 | `duraklama_dagilimi` | Spread of inter-event gaps. Human pauses are heavy-tailed; fixed or uniform-random script delays are not |
 
-Reproducing these requires modelling human motor control rather than adding noise. The same replay that scored 9.1 now scores **88.5 ("Bot Tespit Edildi")**, driven by `hiz_otokorelasyonu` and `duraklama_dagilimi` in the SHAP attribution.
+**Cross-channel synchronization** — the two features above still measure structure *within* one channel, which an attacker can fake a channel at a time. These measure how a single person's channels relate to each other:
+
+| Feature | What it measures |
+|---|---|
+| `tiklama_oncesi_hareket` | Do clicks have pointer motion before them? A person moves the cursor to a target; `element.click()` has nothing before it |
+| `kanal_gecis_gecikmesi` | Time cost of moving a hand between keyboard and mouse. A script pays nothing |
+
+Both are count/ratio statistics rather than distribution shapes, deliberately: they stay valid on thin flushes instead of re-creating the small-sample failure described below. A third candidate, channel *simultaneity*, was implemented, measured at 0.07 human vs 0.07 bot, and **removed** — a feature that separates nothing is noise, not signal.
+
+Reproducing these requires modelling human motor control rather than adding noise. The same replay that scored 9.1 now scores **88.5 ("Bot Tespit Edildi")** in simulation, driven by `hiz_otokorelasyonu` and `duraklama_dagilimi` in the SHAP attribution.
+
+### The simulator is not the benchmark
+
+Synthetic separation is a self-assessment: the personas and the detector have the same author. The [adversarial bot lab](lab/README.md) drives a **real Chromium browser** through the real SDK, and its first run showed how far that can be from reality — the identical evasive attack scored **88.9 (blocked) in simulation and 36.5 (approved) through a real browser**, because two heavy timing features are inverted between the two distributions:
+
+| feature | real bot | synthetic bot | what the model had learned |
+|---|---|---|---|
+| `etkilesim_entropisi` | 0.225 | 0.836 | high = bot → real bot read as human |
+| `duraklama_dagilimi` | 1.000 | 0.264 | high = human → real bot read as human |
+
+`lab/capture.py` records labelled real-browser telemetry, which is blended into training with session-level (per browser run) holdout splits — a random per-flush split would put the same session on both sides and inflate the result. Held-out real-browser accuracy is reported separately from synthetic accuracy by `train_model.py`.
 
 **Every one of these features requires a minimum sample count before it counts as a measurement.** An autocorrelation over 4 points, or an entropy over 4 gaps (which saturates at exactly 1.0 whenever the few values it sees are distinct), is sampling noise. Treating thin estimates as evidence scored an ordinary 5-keystroke card-form session **89.2 — a blocked customer, not a bot**. Below the threshold a feature falls back to a neutral value instead, and the *policy* layer handles the resulting uncertainty (see `signal_sufficiency` below).
 
@@ -181,6 +201,7 @@ Every scoring call is authenticated. `POST /api/session` mints a session id and 
 | `POST /api/analyze` | Bearer token | Score a behavior window |
 | `POST /api/transaction` | Bearer token | **Server-side** allow / step-up / deny decision |
 | `POST /api/transaction/verify` | Bearer token | Verify a step-up code (single-use, 5 attempts) |
+| `POST /api/decision/verify` | — | Verify a signed decision artifact |
 | `GET /api/score/{session_id}` | Operator key | Full history for one session |
 | `GET /api/sessions` | Operator key | All sessions, for the dashboard |
 | `GET /api/health` | — | Service and model status |
@@ -194,6 +215,10 @@ The risk score gates the payment in `POST /api/transaction`, not in the browser.
 | `onaylandi` | Approved |
 | `dogrulama_gerekli` | Step-up challenge issued (also when signal is too thin to judge) |
 | `reddedildi` | Blocked |
+
+Every decision is returned as an **HMAC-signed artifact** carrying the decision, session, risk score, amount and policy version. A downstream payment backend verifies it via `POST /api/decision/verify` rather than trusting whatever the caller forwarded, so the enforcement boundary stays server-side even when the payment step lives in another service. Changing any signed field fails verification.
+
+Each decision also carries **Turkish reason codes** and an **evidence state** (`Yeterli sinyal` / `Yetersiz sinyal` / `Anormal ama belirsiz` / `Yüksek güvenli otomasyon`). Reason direction comes from the SHAP *sign*, so an explanation can never contradict the model that produced the score, and "we could not observe enough" is stated explicitly rather than dressed up as an accusation.
 
 ### SDK usage
 
@@ -231,10 +256,14 @@ This is **model scoring time** — feature extraction, all three models, and SHA
 ## Testing
 
 ```bash
-cd backend && pytest test_scorer.py test_security.py
+cd backend && pytest test_scorer.py test_security.py   # 44 regression tests
+python benchmark.py                                    # accessibility slices + latency
+python ../lab/bot_lab.py --api http://127.0.0.1:8000   # real-browser attack ladder
 ```
 
-27 regression tests, each one a bug or an attack that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, the IID-random-walk replay that scored 9.1, a forged session token, a poisoning attempt that keeps a valid signature and swaps the target id. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+44 regression tests, each one a bug or an attack that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, the IID-random-walk replay that scored 9.1, a forged session token, a poisoning attempt that keeps a valid signature and swaps the target id, a tampered decision artifact, and an under-sampled estimator inventing evidence.
+
+`benchmark.py` reports false-positive rate **per interaction style** (keyboard-only, slow typist, low-pointer, sparse first flush, rapid legitimate user) with 95% Wilson confidence intervals and explicit sample sizes — because a global accuracy number hides exactly the failure that matters, and "FPR under 1%" from a handful of sessions is not a measurement. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
 
 Training and inference share the same `extract_features()` code path: `train_model.py` simulates raw sessions and pushes them through the identical extraction used at serving time, so a change to a feature formula flows into the training data automatically and cannot drift apart.
 

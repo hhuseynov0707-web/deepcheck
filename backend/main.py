@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import reasons
 import scorer
 import security
 from database import get_db, init_db
@@ -266,6 +267,9 @@ class AnalyzeResponse(BaseModel):
     shap_explanation: list[dict]
     response_time_ms: float
     signal_sufficiency: float
+    evidence_state: str
+    evidence_state_label: str
+    reason_codes: dict
 
 
 class SessionResponse(BaseModel):
@@ -417,6 +421,8 @@ async def analyze(
     session.shap_explanation = result["shap_explanation"]
     session.response_time_ms = result["response_time_ms"]
     session.signal_sufficiency = result["signal_sufficiency"]
+    session.evidence_state = result["evidence_state"]
+    session.reason_codes = result["reason_codes"]
     session.last_seen_at = datetime.utcnow()
 
     features = result["features"]
@@ -444,6 +450,9 @@ async def analyze(
         shap_explanation=result["shap_explanation"],
         response_time_ms=result["response_time_ms"],
         signal_sufficiency=result["signal_sufficiency"],
+        evidence_state=result["evidence_state"],
+        evidence_state_label=result["evidence_state_label"],
+        reason_codes=result["reason_codes"],
     )
 
 
@@ -482,7 +491,34 @@ class TransactionResponse(BaseModel):
     risk_score: float
     label: str
     signal_sufficiency: float
+    evidence_state: str = "YETERLI"
+    evidence_state_label: str = ""
+    reason_codes: dict = Field(default_factory=lambda: {"flagged": [], "allowed": []})
+    # HMAC-signed record of this verdict. A downstream payment backend can
+    # verify it (POST /api/decision/verify) instead of trusting whatever the
+    # caller forwarded, so the enforcement boundary stays server-side even
+    # once the payment step lives in another service.
+    decision_artifact: dict | None = None
     demo_code: str | None = None
+
+
+def _decision_artifact(session_id: str, decision: str, session: Session | None, amount: float) -> dict:
+    return security.sign_decision(
+        {
+            "decision": decision,
+            "session_id": session_id,
+            "risk_score": session.risk_score if session else 0.0,
+            "label": session.label if session else "Bilinmiyor",
+            "amount": amount,
+            "policy_version": reasons.POLICY_VERSION,
+        }
+    )
+
+
+def _session_reasons(session: Session | None) -> dict:
+    if session is None or not session.reason_codes:
+        return {"flagged": [], "allowed": []}
+    return session.reason_codes
 
 
 @app.post("/api/transaction", response_model=TransactionResponse)
@@ -509,6 +545,12 @@ async def transaction(
         risk_score=session.risk_score if session else 0.0,
         label=session.label if session else "Bilinmiyor",
         signal_sufficiency=session.signal_sufficiency if session else 0.0,
+        evidence_state=session.evidence_state if session else "YETERSIZ",
+        evidence_state_label=reasons.EVIDENCE_STATES.get(
+            session.evidence_state if session else "YETERSIZ", ""
+        ),
+        reason_codes=_session_reasons(session),
+        decision_artifact=_decision_artifact(session_id, decision, session, payload.amount),
         demo_code=demo_code,
     )
 
@@ -572,6 +614,9 @@ async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
         "shap_explanation": session.shap_explanation,
         "response_time_ms": session.response_time_ms,
         "signal_sufficiency": session.signal_sufficiency,
+        "evidence_state": session.evidence_state,
+        "evidence_state_label": reasons.EVIDENCE_STATES.get(session.evidence_state, ""),
+        "reason_codes": session.reason_codes or {"flagged": [], "allowed": []},
         "created_at": session.created_at,
         "last_seen_at": session.last_seen_at,
         "history": [
@@ -597,11 +642,33 @@ async def list_sessions(db: AsyncSession = Depends(get_db)):
             "confidence": s.confidence,
             "response_time_ms": s.response_time_ms,
             "signal_sufficiency": s.signal_sufficiency,
+            "evidence_state": s.evidence_state,
             "created_at": s.created_at,
             "last_seen_at": s.last_seen_at,
         }
         for s in sessions
     ]
+
+
+class DecisionVerifyRequest(BaseModel):
+    artifact: dict
+
+
+@app.post("/api/decision/verify")
+async def decision_verify(payload: DecisionVerifyRequest):
+    """Verifies a signed decision artifact.
+
+    This is what makes the "server-side decision" claim checkable rather than
+    rhetorical: a payment backend (or a judge) can hand back an artifact and
+    learn whether DeepCheck really issued that verdict, for that session, at
+    that amount. Tampering with any signed field fails the check.
+
+    Deliberately unauthenticated: it reveals nothing an artifact holder does
+    not already have, and requiring the operator key would stop the very
+    downstream service this exists for from using it.
+    """
+    valid, message = security.verify_decision(payload.artifact)
+    return {"valid": valid, "message": message}
 
 
 @app.get("/api/health")

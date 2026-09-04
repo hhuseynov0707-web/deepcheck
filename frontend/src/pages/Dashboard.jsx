@@ -137,16 +137,58 @@ export default function Dashboard() {
                   Güven: {(selectedDetail.confidence * 100).toFixed(0)}% · Yanıt süresi:{" "}
                   {selectedDetail.response_time_ms} ms
                 </p>
+                {selectedDetail.signal_sufficiency != null && (
+                  <p className="text-xs text-zinc-500 font-mono">
+                    Kanıt yeterliliği: {(selectedDetail.signal_sufficiency * 100).toFixed(0)}%
+                  </p>
+                )}
               </div>
             ) : (
               <p className="text-zinc-400 text-sm">Bir session seçin.</p>
             )}
           </div>
 
+          {(selectedDetail?.reason_codes?.flagged?.length > 0 ||
+            selectedDetail?.reason_codes?.allowed?.length > 0) && (
+            <div className="bg-[#18181b] border border-zinc-800 rounded-lg p-5 shadow-xl shadow-black/50">
+              <h2 className="text-lg font-semibold tracking-tight text-zinc-50 mb-3">
+                Neden? (Analist Görünümü)
+              </h2>
+              {selectedDetail.reason_codes.flagged?.length > 0 && (
+                <>
+                  <p className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
+                    İşaretlenme nedenleri
+                  </p>
+                  <ul className="space-y-1.5 mb-4">
+                    {selectedDetail.reason_codes.flagged.map((reason) => (
+                      <li key={reason} className="text-sm text-rose-400 leading-snug">
+                        • {reason}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {selectedDetail.reason_codes.allowed?.length > 0 && (
+                <>
+                  <p className="text-xs uppercase tracking-wider text-zinc-500 mb-2">
+                    İzin verilme nedenleri
+                  </p>
+                  <ul className="space-y-1.5">
+                    {selectedDetail.reason_codes.allowed.map((reason) => (
+                      <li key={reason} className="text-sm text-emerald-400 leading-snug">
+                        • {reason}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
           {selectedDetail?.shap_explanation?.length > 0 && (
             <div className="bg-[#18181b] border border-zinc-800 rounded-lg p-5 shadow-xl shadow-black/50">
               <h2 className="text-lg font-semibold tracking-tight text-zinc-50 mb-3">
-                En Etkili 3 Özellik (SHAP)
+                En Etkili 3 Özellik (SHAP · Teknik Görünüm)
               </h2>
               <ShapBarChart shapExplanation={selectedDetail.shap_explanation} />
             </div>
