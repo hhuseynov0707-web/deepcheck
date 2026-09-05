@@ -4,12 +4,17 @@
  *   <script src="/deepcheck.js"></script>
  *   <script>
  *     DeepCheck.init({
- *       sessionId: "optional-existing-id",
  *       apiUrl: "http://localhost:8000",
  *       intervalMs: 2000,
  *       onUpdate: (result) => console.log(result),
  *     });
  *   </script>
+ *
+ * The session id is minted by the server (POST /api/session) together with a
+ * signed token, and every flush carries that token in X-DeepCheck-Token. The
+ * id is no longer generated in the browser: a client-chosen id let anyone
+ * post telemetry under another customer's session, and let a bot skip the
+ * SDK entirely and still have its id look legitimate at checkout.
  */
 (function (window) {
   "use strict";
@@ -58,29 +63,43 @@
     };
   }
 
-  // One id per page load, generated up front. Previously the id came only
-  // from the server's response to the first successful flush: until that
-  // response landed, every flush posted session_id: null and the server
-  // minted a NEW session for each one, so a slow first request (model warm-up)
-  // or any transient failure scattered duplicate orphan sessions across the
-  // SOC dashboard.
-  function generateSessionId() {
-    if (window.crypto && typeof window.crypto.randomUUID === "function") {
-      return window.crypto.randomUUID();
-    }
-    return `dc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  }
-
   let state = createState();
   let config = {
-    sessionId: null,
     apiUrl: "http://localhost:8000",
     intervalMs: DEFAULT_INTERVAL_MS,
     onUpdate: null,
     onError: null,
   };
+  let sessionId = null;
+  let sessionToken = null;
   let timerId = null;
   let started = false;
+  // Resolves once the server has minted this page's session. Collection
+  // starts immediately regardless -- the listeners are attached before this
+  // request is even sent, so the behavior of the first two seconds is not
+  // lost while the round trip is in flight.
+  let registration = null;
+
+  function register() {
+    // React StrictMode mounts, unmounts and remounts in development, so
+    // init() runs twice per page load. Minting a second session there would
+    // orphan the first one and double the id count for every real visit.
+    if (sessionId && sessionToken) return Promise.resolve({ session_id: sessionId, token: sessionToken });
+
+    return fetch(`${config.apiUrl}/api/session`, { method: "POST" })
+      .then((res) => {
+        if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (!data || typeof data.session_id !== "string" || typeof data.token !== "string") {
+          throw new Error("DeepCheck oturum yanıtı geçersiz");
+        }
+        sessionId = data.session_id;
+        sessionToken = data.token;
+        return data;
+      });
+  }
 
   function now() {
     return Date.now();
@@ -142,6 +161,12 @@
   }
 
   function flushBuffer() {
+    // No token yet means the session has not been minted (the request is
+    // still in flight, or it failed). Dropping the flush is correct: the
+    // buffers are rolling, so the next tick re-sends this window's behavior
+    // rather than losing it.
+    if (!sessionId || !sessionToken) return;
+
     const t = now();
 
     // If the user has gone quiet since their last tracked event, that
@@ -175,7 +200,7 @@
     state.hesitationIntervals = pruneToWindow(state.hesitationIntervals, t, (h) => h.t);
 
     const payload = {
-      session_id: config.sessionId,
+      session_id: sessionId,
       mouse_trajectory: capTail(state.mouseTrajectory, LIMITS.mouse),
       click_timing: capTail(state.clickTiming, LIMITS.click),
       scroll_events: capTail(state.scrollEvents, LIMITS.scroll),
@@ -196,7 +221,13 @@
 
     fetch(`${config.apiUrl}/api/analyze`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Signed by the server when the session was minted. Without it the
+        // API returns 401: telemetry can only be posted under an id whose
+        // token the poster actually holds.
+        "X-DeepCheck-Token": sessionToken,
+      },
       body: JSON.stringify(payload),
     })
       // An error response is JSON too, so parsing it unconditionally used to
@@ -212,7 +243,6 @@
         if (typeof result.risk_score !== "number" || !isFinite(result.risk_score)) {
           throw new Error("DeepCheck API geçersiz yanıt döndürdü");
         }
-        if (result.session_id) config.sessionId = result.session_id;
         if (typeof config.onUpdate === "function") config.onUpdate(result);
         window.dispatchEvent(new CustomEvent("deepcheck:update", { detail: result }));
       })
@@ -246,12 +276,27 @@
   function init(options) {
     if (started) return;
     config = { ...config, ...(options || {}) };
-    if (!config.sessionId) config.sessionId = generateSessionId();
     state = createState();
     started = true;
 
+    // Listeners first, then registration: behavior from the very first
+    // moment is buffered even though it cannot be sent yet.
     attachListeners();
     timerId = window.setInterval(flushBuffer, config.intervalMs);
+
+    registration = register().catch((err) => {
+      console.error("[DeepCheck] oturum kaydı başarısız:", err);
+      // The host page must be able to fail CLOSED. A session that was never
+      // registered can never be scored, and a missing score is not a clean
+      // one.
+      if (typeof config.onError === "function") config.onError(err);
+      window.dispatchEvent(
+        new CustomEvent("deepcheck:error", { detail: { message: String(err && err.message) } })
+      );
+      return null;
+    });
+
+    return registration;
   }
 
   function stop() {
@@ -263,8 +308,19 @@
   }
 
   function getSessionId() {
-    return config.sessionId;
+    return sessionId;
   }
 
-  window.DeepCheck = { init, stop, getSessionId };
+  function getToken() {
+    return sessionToken;
+  }
+
+  // Resolves once the server-minted session is available (or immediately, if
+  // registration already failed). A host page that needs the id before it can
+  // do anything -- e.g. to call /api/decision -- awaits this.
+  function ready() {
+    return registration || Promise.resolve(null);
+  }
+
+  window.DeepCheck = { init, stop, getSessionId, getToken, ready };
 })(window);

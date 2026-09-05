@@ -59,12 +59,35 @@ class BehaviorLSTM(nn.Module):
         return self.classifier(last_step)
 
 
-def build_sequence_from_features(feature_vector: list[float]) -> torch.Tensor:
-    """Repeats a single feature snapshot across the sequence length.
+def build_sequence(rows: list[list[float]]) -> torch.Tensor:
+    """Builds the LSTM input from a session's real flush history.
 
-    Real deployments would keep a rolling window of per-second snapshots;
-    for a single /api/analyze call we only have the latest aggregate, so we
-    tile it across the window to still exercise the temporal model.
+    `rows` runs oldest -> newest and its last entry is the flush being scored
+    right now. Longer histories are truncated to the most recent
+    SEQUENCE_LENGTH steps; shorter ones are left-padded with the current row,
+    so a session's very first flush produces the same constant sequence the
+    old tiling helper produced, and each additional flush replaces one pad
+    step with a real earlier observation.
+
+    This is the inference path. It is what lets the model react to a
+    *trajectory* -- behavior drifting from human to robotic mid-session --
+    rather than only to the level of the latest snapshot.
     """
-    seq = torch.tensor([feature_vector] * SEQUENCE_LENGTH, dtype=torch.float32)
+    if not rows:
+        raise ValueError("build_sequence() en az bir satir gerektirir")
+    window = [list(row) for row in rows[-SEQUENCE_LENGTH:]]
+    padding = [list(window[-1])] * (SEQUENCE_LENGTH - len(window))
+    seq = torch.tensor(padding + window, dtype=torch.float32)
     return seq.unsqueeze(0)  # (1, SEQUENCE_LENGTH, NUM_FEATURES)
+
+
+def build_sequence_from_features(feature_vector: list[float]) -> torch.Tensor:
+    """Tiles one feature snapshot across the sequence length.
+
+    NO LONGER THE INFERENCE PATH -- see build_sequence() above, which feeds
+    the model a session's actual flush history. This helper survives only as
+    the degenerate single-observation case (it is exactly what
+    build_sequence() produces from a one-row history) and as a convenience
+    for ad-hoc scripts that hold a single feature vector and no history.
+    """
+    return build_sequence([feature_vector])

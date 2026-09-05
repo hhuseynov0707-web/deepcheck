@@ -14,9 +14,23 @@ these assertions fail loudly instead of only being noticed when a demo user
 gets blocked.
 """
 
+import os
+from types import SimpleNamespace
+
 import numpy as np
 
 import scorer
+
+# Set before importing main: it refuses to start without these unless
+# DEBUG=1, which is the behavior that keeps a production deployment from
+# silently running with authentication off.
+os.environ.setdefault("DEEPCHECK_SECRET", "test-secret-not-for-production")
+os.environ.setdefault("DASHBOARD_KEY", "test-dashboard-key")
+os.environ.setdefault("DEBUG", "0")
+
+import main  # noqa: E402  (must follow the environment setup above)
+from fastapi.testclient import TestClient  # noqa: E402
+from lstm_model import FEATURE_NAMES  # noqa: E402
 
 BASE_T = 1_751_470_045_000
 
@@ -316,6 +330,225 @@ def test_fast_keyboard_only_no_mouse_scores_high():
     )
 
 
+# ---------------------------------------------------------------------------
+# API tests.
+#
+# These use a stub database rather than Postgres: what is under test is the
+# authorization and enforcement logic, and it must be runnable without
+# standing up a database -- otherwise it does not get run, which is how a
+# security control quietly stops working.
+# ---------------------------------------------------------------------------
+
+
+class _StubResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
+class _StubDB:
+    """Just enough AsyncSession for the handlers under test."""
+
+    def __init__(self, session=None, history=(), has_flushes=True):
+        self.session = session
+        self.history = list(history)
+        self.has_flushes = has_flushes
+        self.added = []
+        self.committed = False
+
+    async def execute(self, statement):
+        return _StubResult(self.history)
+
+    async def scalar(self, statement):
+        return 1 if self.has_flushes else None
+
+    async def get(self, model, primary_key):
+        return self.session
+
+    def add(self, obj):
+        self.added.append(obj)
+
+    async def commit(self):
+        self.committed = True
+
+
+def _stub_session(risk_score=0.0, label="Gerçek Kullanıcı"):
+    return SimpleNamespace(
+        id="stub",
+        risk_score=risk_score,
+        label=label,
+        confidence=0.0,
+        shap_explanation=[],
+        response_time_ms=0.0,
+        last_seen_at=None,
+    )
+
+
+def _client(db):
+    main.app.dependency_overrides[main.get_db] = lambda: db
+    return TestClient(main.app)
+
+
+def _clear_overrides():
+    main.app.dependency_overrides.clear()
+
+
+def _analyze_payload(session_id: str) -> dict:
+    raw = _headless_bot_session()
+    return {
+        "session_id": session_id,
+        "mouse_trajectory": raw["mouse_trajectory"],
+        "click_timing": raw["click_timing"],
+        "scroll_events": raw["scroll_events"],
+        "hesitation_intervals": raw["hesitation_intervals"],
+        "focus_changes": raw["focus_changes"],
+        "key_events": raw["key_events"],
+    }
+
+
+def test_api_rejects_bad_token():
+    """Telemetry may only be posted under a session id whose token the poster
+    actually holds. Without this, anyone could push fabricated behavior under
+    a victim's session id, or simply invent an id and appear scored."""
+    session_id = "11111111-2222-3333-4444-555555555555"
+    client = _client(_StubDB(session=_stub_session()))
+    try:
+        payload = _analyze_payload(session_id)
+
+        no_token = client.post("/api/analyze", json=payload)
+        assert no_token.status_code == 401, f"jetonsuz istek {no_token.status_code} dondu, 401 bekleniyordu"
+
+        wrong = client.post("/api/analyze", json=payload, headers={"X-DeepCheck-Token": "a" * 64})
+        assert wrong.status_code == 401, f"yanlis jeton {wrong.status_code} dondu, 401 bekleniyordu"
+
+        # A token signed for a DIFFERENT session must not work on this one.
+        other = client.post(
+            "/api/analyze",
+            json=payload,
+            headers={"X-DeepCheck-Token": main.sign_session("baska-oturum")},
+        )
+        assert other.status_code == 401, f"baska oturumun jetonu {other.status_code} dondu, 401 bekleniyordu"
+
+        # And the valid one is accepted, so the check is not simply rejecting
+        # everything.
+        ok = client.post(
+            "/api/analyze",
+            json=payload,
+            headers={"X-DeepCheck-Token": main.sign_session(session_id)},
+        )
+        assert ok.status_code == 200, f"gecerli jeton {ok.status_code} dondu, 200 bekleniyordu"
+        assert ok.json()["session_id"] == session_id
+    finally:
+        _clear_overrides()
+
+
+def test_decision_blocks_bot_session():
+    """The 40/60/80 ladder is applied server-side, at the enforcement point.
+
+    It used to be applied in Demo.jsx, inside the browser the attacker
+    controls, where deleting one comparison was enough to defeat it.
+    """
+    session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    token = main.sign_session(session_id)
+    body = {"session_id": session_id}
+
+    cases = [
+        (95.0, "Bot Tespit Edildi", "block"),
+        (72.0, "Yüksek Risk", "verify"),
+        (48.0, "Şüpheli", "warn"),
+        (12.0, "Gerçek Kullanıcı", "allow"),
+    ]
+    for score, label, expected in cases:
+        client = _client(_StubDB(session=_stub_session(score, label)))
+        try:
+            res = client.post("/api/decision", json=body, headers={"X-DeepCheck-Token": token})
+            assert res.status_code == 200, f"{res.status_code} dondu"
+            action = res.json()["action"]
+            assert action == expected, f"skor {score} icin '{action}' dondu, '{expected}' bekleniyordu"
+        finally:
+            _clear_overrides()
+
+    # No token at all: no decision, whatever the stored score says.
+    client = _client(_StubDB(session=_stub_session(12.0)))
+    try:
+        assert client.post("/api/decision", json=body).status_code == 401
+    finally:
+        _clear_overrides()
+
+
+def test_decision_fails_closed_without_telemetry():
+    """A session row exists the moment /api/session runs, and its risk_score
+    column defaults to 0.0. A client that loads the page and never runs the
+    SDK must not be waved through on that default."""
+    session_id = "99999999-8888-7777-6666-555555555555"
+    token = main.sign_session(session_id)
+
+    for db, description in [
+        (_StubDB(session=_stub_session(0.0), has_flushes=False), "hic akis gondermemis oturum"),
+        (_StubDB(session=None), "hic kaydi olmayan oturum"),
+    ]:
+        client = _client(db)
+        try:
+            res = client.post(
+                "/api/decision",
+                json={"session_id": session_id},
+                headers={"X-DeepCheck-Token": token},
+            )
+            assert res.status_code == 200
+            action = res.json()["action"]
+            assert action == "verify", f"{description} icin '{action}' dondu, 'verify' bekleniyordu"
+        finally:
+            _clear_overrides()
+
+
+def test_dashboard_endpoints_require_key():
+    """GET /api/sessions exposes every customer's live session id and score."""
+    client = _client(_StubDB(session=_stub_session(), history=[]))
+    try:
+        assert client.get("/api/sessions").status_code == 401
+        assert client.get("/api/sessions", headers={"X-Dashboard-Key": "wrong"}).status_code == 401
+        ok = client.get("/api/sessions", headers={"X-Dashboard-Key": main.DASHBOARD_KEY})
+        assert ok.status_code == 200, f"gecerli anahtar {ok.status_code} dondu"
+
+        assert client.get("/api/score/abc").status_code == 401
+    finally:
+        _clear_overrides()
+
+
+def test_lstm_reacts_to_trajectory():
+    """The sequence model must respond to a session's HISTORY, not only to
+    its latest flush.
+
+    Both calls score the identical current flush. The only difference is what
+    came before it. If the score does not move, the LSTM is not reading the
+    time series -- which was literally the case before: every timestep was a
+    copy of the current instant.
+    """
+    raw = _sparse_typing_human_session()
+    current = scorer.extract_features(raw)
+
+    human_like = [current[name] for name in FEATURE_NAMES]
+    robotic = dict(current)
+    robotic.update({"etkilesim_entropisi": 0.02, "tereddut_skoru": 0.0, "ivme_degisimi": 0.01})
+    robotic_row = [robotic[name] for name in FEATURE_NAMES]
+
+    calm = scorer.compute_risk(raw, [human_like] * 9)["risk_score"]
+    drifting = scorer.compute_risk(raw, [robotic_row] * 9)["risk_score"]
+
+    assert drifting != calm, (
+        f"ayni akis, farkli gecmis -> ayni skor ({calm}). LSTM gecmisi okumuyor."
+    )
+    assert drifting > calm, (
+        f"robotik gecmisli oturum {drifting}, sakin gecmisli oturum {calm} aldi; "
+        "gecmisin skoru yukseltmesi bekleniyordu"
+    )
+
+
 def _run_all():
     tests = [
         test_natural_human_scores_low,
@@ -325,6 +558,11 @@ def _run_all():
         test_bot_with_incidental_pause_still_scores_high,
         test_human_with_fast_burst_still_scores_low,
         test_fast_keyboard_only_no_mouse_scores_high,
+        test_lstm_reacts_to_trajectory,
+        test_api_rejects_bad_token,
+        test_decision_blocks_bot_session,
+        test_decision_fails_closed_without_telemetry,
+        test_dashboard_endpoints_require_key,
     ]
     failures = []
     for test in tests:

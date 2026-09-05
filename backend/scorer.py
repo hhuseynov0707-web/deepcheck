@@ -1,5 +1,6 @@
 """Feature extraction, model inference, SHAP explanation and risk scoring."""
 
+import logging
 import math
 import os
 import time
@@ -10,7 +11,9 @@ import numpy as np
 import shap
 import torch
 
-from lstm_model import FEATURE_NAMES, BehaviorLSTM, build_sequence_from_features
+from lstm_model import FEATURE_NAMES, SEQUENCE_LENGTH, BehaviorLSTM, build_sequence
+
+logger = logging.getLogger("deepcheck.scorer")
 
 MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(MODEL_DIR, "model.pkl")
@@ -36,14 +39,18 @@ ACCELERATION_VARIANCE_DIVISOR = 2.2e-6
 # training means in train_model.py -- "no evidence" should not count as
 # evidence toward either class.
 #
-# IMPORTANT: these are derived from train_model.py's persona distributions
-# (average of human/human_rushed vs average of bot/bot_sophisticated,
-# midpoint of the two) and MUST be recomputed any time those persona
-# distributions change meaningfully -- they drifted stale once already (a
-# training-data rebalance shifted tereddut_skoru's true midpoint from ~0.26
-# to ~0.44 without this constant being updated, silently reintroducing a
-# false positive on sparse-data sessions). See the P0 diagnosis in this
-# conversation for how the drift was found.
+# These are now COMPUTED AT TRAINING TIME and stored in model.pkl under
+# "neutral_defaults" (see train_model.py) -- the constant below is only the
+# fallback for a pickle written before that existed, and loading such a
+# pickle logs a warning. Hand-maintaining these numbers is what let them
+# drift stale once already: a training-data rebalance moved tereddut_skoru's
+# true midpoint from ~0.26 to ~0.44 while this constant stayed put, silently
+# reintroducing a false positive on sparse-data sessions.
+#
+# Note the one unavoidable bootstrap: the training run that computes these
+# values is itself extracting features with the fallback in force, since no
+# bundle exists yet at that point. That only affects rows sparse enough to
+# need a fallback, and the next training run converges on the new values.
 #
 # tiklama_yogunlugu and odak_degisimi are deliberately excluded: they are
 # simple counts (clicks in window, focus-loss count) that are always
@@ -55,6 +62,11 @@ NEUTRAL_DEFAULTS = {
     "etkilesim_entropisi": 0.66,
     "ivme_degisimi": 0.35,
 }
+
+# Features that never need a neutral fallback: they are simple counts (clicks
+# in window, focus-loss count) that are always well-defined, including as a
+# legitimate 0.
+NEUTRAL_FEATURES = tuple(NEUTRAL_DEFAULTS)
 
 LABELS = [
     (40, "Gerçek Kullanıcı"),
@@ -75,6 +87,19 @@ class ModelBundle:
         self.rf = bundle["rf"]
         self.iso_forest = bundle["iso_forest"]
         self.feature_names = bundle["feature_names"]
+
+        # Computed by train_model.py from the generated dataset (the midpoint
+        # between the human and bot means of each feature). Missing only in a
+        # pickle written before that was added -- say so rather than silently
+        # using numbers that may no longer match the training distribution.
+        self.neutral_defaults = bundle.get("neutral_defaults") or {}
+        if not self.neutral_defaults:
+            logger.warning(
+                "UYARI: model.pkl 'neutral_defaults' icermiyor (eski surum). "
+                "scorer.py icindeki sabit degerler kullanilacak; egitim "
+                "dagilimi degistiyse bunlar guncel olmayabilir. "
+                "`python train_model.py` ile yeniden egitin."
+            )
 
         # n_jobs=-1 is a *training* setting that gets serialized into model.pkl
         # and then silently reused for inference. At training time it
@@ -112,6 +137,19 @@ def get_bundle() -> ModelBundle:
     if _bundle is None:
         _bundle = ModelBundle()
     return _bundle
+
+
+def get_neutral_defaults() -> dict:
+    """The neutral fallback values in force right now.
+
+    Reads them off the loaded bundle when there is one; falls back to the
+    module constant otherwise. Deliberately does NOT call get_bundle(), which
+    would raise during training -- train_model.py imports extract_features()
+    long before any model.pkl exists.
+    """
+    if _bundle is not None and _bundle.neutral_defaults:
+        return _bundle.neutral_defaults
+    return NEUTRAL_DEFAULTS
 
 
 def get_label(risk_score: float) -> str:
@@ -160,6 +198,7 @@ def _channel_entropy(times: list[float]) -> tuple[float, int] | None:
 
 def extract_features(raw: dict) -> dict:
     """Turns raw SDK payload into the 6 model features, each normalized to ~0-1."""
+    defaults = get_neutral_defaults()
     mouse_trajectory = raw.get("mouse_trajectory") or []
     click_timing = raw.get("click_timing") or []
     scroll_events = raw.get("scroll_events") or []
@@ -178,7 +217,7 @@ def extract_features(raw: dict) -> dict:
     if len(scroll_speeds) >= 2:
         scroll_hizi_varyansi = float(np.clip(_safe_variance(scroll_speeds) / 5.0, 0.0, 1.0))
     else:
-        scroll_hizi_varyansi = NEUTRAL_DEFAULTS["scroll_hizi_varyansi"]
+        scroll_hizi_varyansi = defaults["scroll_hizi_varyansi"]
 
     # tereddut_skoru: normalized average pause before actions (ms / 1500).
     # An empty list here usually means too few tracked events fired to even
@@ -186,7 +225,7 @@ def extract_features(raw: dict) -> dict:
     if hesitation_intervals:
         tereddut_skoru = float(np.clip(np.mean(hesitation_intervals) / 1500.0, 0.0, 1.0))
     else:
-        tereddut_skoru = NEUTRAL_DEFAULTS["tereddut_skoru"]
+        tereddut_skoru = defaults["tereddut_skoru"]
 
     # etkilesim_entropisi: entropy of event spacing across mouse+click+scroll+
     # keydown, measured PER CHANNEL and then combined -- not by merging all
@@ -211,7 +250,7 @@ def extract_features(raw: dict) -> dict:
         weights = [w for _, w in available]
         etkilesim_entropisi = float(np.average(entropies, weights=weights))
     else:
-        etkilesim_entropisi = NEUTRAL_DEFAULTS["etkilesim_entropisi"]
+        etkilesim_entropisi = defaults["etkilesim_entropisi"]
 
     # ivme_degisimi: variance of mouse acceleration (d(speed)/dt), not just speed delta.
     # Needs >=3 trajectory points (>=2 acceleration samples) to compute at all.
@@ -230,7 +269,7 @@ def extract_features(raw: dict) -> dict:
     if len(accelerations) >= 2:
         ivme_degisimi = float(np.clip(_safe_variance(accelerations) / ACCELERATION_VARIANCE_DIVISOR, 0.0, 1.0))
     else:
-        ivme_degisimi = NEUTRAL_DEFAULTS["ivme_degisimi"]
+        ivme_degisimi = defaults["ivme_degisimi"]
 
     # tiklama_yogunlugu: click density in the most recent 5s window
     click_times = [c.get("t", 0) for c in click_timing]
@@ -255,7 +294,34 @@ def extract_features(raw: dict) -> dict:
     }
 
 
-def compute_risk(raw: dict) -> dict:
+def _sanitize_row(row, defaults: dict) -> list[float]:
+    """One historical feature row -> a clean float vector in FEATURE_NAMES
+    order. History comes out of Postgres, where a column can be NULL and a
+    pre-validation row can hold a non-finite value; either would poison the
+    whole sequence with NaN."""
+    clean = []
+    for name, value in zip(FEATURE_NAMES, row):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = float("nan")
+        if not math.isfinite(value):
+            value = defaults.get(name, 0.0)
+        clean.append(float(np.clip(value, 0.0, 1.0)))
+    return clean
+
+
+def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
+    """Scores one flush.
+
+    `history` is this session's earlier flushes, oldest first, each a feature
+    vector in FEATURE_NAMES order (main.py reads them back from Postgres).
+    They are the LSTM's time-series context: without them the sequence model
+    sees SEQUENCE_LENGTH copies of one instant and cannot react to a session
+    whose behavior *changes*, which is the only thing a sequence model is
+    there to catch. Passing nothing is still valid and reproduces the old
+    single-observation behavior.
+    """
     start = time.perf_counter()
     bundle = get_bundle()
 
@@ -281,8 +347,15 @@ def compute_risk(raw: dict) -> dict:
     # decision_function: higher = more normal. Flip + squash to a 0-1 anomaly score.
     iso_anomaly = float(np.clip(0.5 - iso_raw, 0.0, 1.0))
 
+    current_row = [features[name] for name in FEATURE_NAMES]
+    defaults = get_neutral_defaults()
+    # Only the most recent SEQUENCE_LENGTH - 1 earlier flushes matter; slicing
+    # here keeps a caller that hands over a whole session from paying for rows
+    # build_sequence would discard anyway.
+    past_rows = [_sanitize_row(row, defaults) for row in (history or [])[-(SEQUENCE_LENGTH - 1):]]
+
     with torch.no_grad():
-        seq = build_sequence_from_features([features[name] for name in FEATURE_NAMES])
+        seq = build_sequence(past_rows + [current_row])
         lstm_proba = float(bundle.lstm(seq).item())
 
     fraud_probability = float(np.clip(0.5 * rf_proba + 0.2 * iso_anomaly + 0.3 * lstm_proba, 0.0, 1.0))

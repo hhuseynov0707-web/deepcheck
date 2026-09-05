@@ -64,14 +64,24 @@ deepcheck-mvp/
 - Brauzerdə işləyir, `<script>` tegi ilə əlavə edilir
 - Hər 2 saniyədə bir toplayır: mouse trajectory, click timing, scroll ritmi, hesitation intervalları
 - `POST /api/analyze` endpoint-ə JSON göndərir
-- `window.DeepCheck.init(sessionId)` ilə aktivləşdirilir
+- `window.DeepCheck.init({ apiUrl })` ilə aktivləşdirilir; session id və token
+  serverdən (`POST /api/session`) gəlir, brauzerdə yaradılmır
+- `DeepCheck.getSessionId()`, `DeepCheck.getToken()`, `DeepCheck.ready()`
 
 ### backend/main.py
 Endpointlər:
+- `POST /api/session` → yeni session id + HMAC-SHA256 imzalı token qaytarır
 - `POST /api/analyze` → davranış datasını alır, risk skoru qaytarır
-- `GET /api/score/{session_id}` → session tarixçəsi
-- `GET /api/sessions` → bütün sessionlar (dashboard üçün)
+  (`X-DeepCheck-Token` başlığı məcburidir, yoxsa 401)
+- `POST /api/decision` → **tək icra nöqtəsi**: 40/60/80 pilləsini tətbiq edib
+  `allow | warn | verify | block` qaytarır. Skor əldə edilə bilmirsə `verify`
+  (heç vaxt `allow`)
+- `GET /api/score/{session_id}` → session tarixçəsi (`X-Dashboard-Key`)
+- `GET /api/sessions` → bütün sessionlar (dashboard üçün, `X-Dashboard-Key`)
 - `GET /api/health` → sistem sağlamlığı
+
+`DEEPCHECK_SECRET` və `DASHBOARD_KEY` `.env`-dən oxunur. `DEBUG=0` olduqda
+onlar təyin edilməyibsə proses **başlamır** — susqun default heç vaxt olmamalıdır.
 
 ### backend/scorer.py
 Çıxarılan 6 feature (kanonik ad və sıra `backend/lstm_model.py`-dakı
@@ -92,15 +102,31 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 - Output: fraud ehtimalı (0-1)
 
 ### backend/train_model.py
-- 50.000 sətirlik sintetik dataset yaradır
+- 25.000 sintetik **session** yaradır; hər biri 10 ardıcıl flush pəncərəsi
+  (cəmi 250.000 feature sətri)
 - İnsan davranışı: təbii mouse variansı, scroll ritmi 0.3-0.8, hesitation 200-1500ms
 - Bot davranışı: piksel-mükəmməl kliklər, sıfır hesitation, sabit sürət
-- RF + Isolation Forest + LSTM train edir, `model.pkl` saxlayır
+- Sessionların 12%-i orta yerdə **dəyişir** (insan → bot və əksi) — ardıcıl
+  model üçün öyrəniləcək yeganə zaman siqnalı budur
+- RF + Isolation Forest final pəncərə üzərində, LSTM isə həqiqi 10 addımlıq
+  ardıcıllıq üzərində train olunur
+- `NEUTRAL_DEFAULTS` burada hesablanır və `model.pkl` içində saxlanılır
+  (`scorer.py`-də əl ilə saxlanılmır)
+
+### backend/record_session.py və backend/evaluate.py
+- `record_session.py` — etiketlənmiş **real** sessionu Postgres-dən
+  `data/real/{label}/{id}.json` faylına yazır
+- `evaluate.py` — həmin sessionları real scoring yolundan keçirib accuracy,
+  false-positive nisbəti və ROC-AUC hesablayır → `docs/evaluation.md`
 
 ### frontend/src/pages/Demo.jsx
 - Türkcə ödəmə formu (Kart Numarası, Tutar, Onayla)
 - SDK embedded
-- Sağ üst küncdə canlı risk skoru badge-i (hər 2 saniyə yenilənir)
+- Sağ üst küncdə canlı risk skoru badge-i (hər 2 saniyə yenilənir) — **yalnız
+  göstərmək üçündür**, ödənişi bloklayan qərar deyil
+- "Onayla" düyməsi `POST /api/decision` çağırır və qayıdan `action`-a əməl edir.
+  Eşiklər brauzerdə müqayisə edilmir: brauzerdəki hər nəzarət saldırganın
+  redaktə edə biləcəyi nəzarətdir
 - Etiketlər: 0-40 = "Gerçek Kullanıcı ✓", 40-60 = "Şüpheli ⚠", 60-80 = "Yüksek Risk 🔴", 80-100 = "Bot Tespit Edildi 🚫"
 
 ### frontend/src/pages/Dashboard.jsx

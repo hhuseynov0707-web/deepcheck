@@ -67,3 +67,6 @@ desktop.ini
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Recorded behavioral sessions are personal data -- keep the report, not the recordings.
+data/real/**/*.json

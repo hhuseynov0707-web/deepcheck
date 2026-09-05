@@ -8,6 +8,13 @@ import SessionTable from "../components/SessionTable.jsx";
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const REFRESH_MS = 3000;
 
+// The SOC endpoints expose every customer's live session, so they are no
+// longer public. This key must match the backend's DASHBOARD_KEY; both come
+// from the .env file docker-compose reads (see .env.example).
+const DASHBOARD_KEY = import.meta.env.VITE_DASHBOARD_KEY || "deepcheck-dev-dashboard-key";
+const AUTH_HEADERS = { "X-Dashboard-Key": DASHBOARD_KEY };
+const UNAUTHORIZED = "Yetkisiz erişim — panoya erişim anahtarı geçersiz";
+
 export default function Dashboard() {
   const [sessions, setSessions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -19,8 +26,9 @@ export default function Dashboard() {
 
     async function fetchSessions() {
       try {
-        const res = await fetch(`${API_URL}/api/sessions`);
-        if (!res.ok) throw new Error("Sessionlar alınamadı");
+        const res = await fetch(`${API_URL}/api/sessions`, { headers: AUTH_HEADERS });
+        if (res.status === 401) throw new Error(UNAUTHORIZED);
+        if (!res.ok) throw new Error("Session'lar alınamadı");
         const data = await res.json();
         if (!cancelled) {
           setSessions(data);
@@ -51,7 +59,8 @@ export default function Dashboard() {
 
     async function fetchDetail() {
       try {
-        const res = await fetch(`${API_URL}/api/score/${selectedId}`);
+        const res = await fetch(`${API_URL}/api/score/${selectedId}`, { headers: AUTH_HEADERS });
+        if (res.status === 401) throw new Error(UNAUTHORIZED);
         if (!res.ok) throw new Error("Session detayı alınamadı");
         const data = await res.json();
         if (!cancelled) setSelectedDetail(data);

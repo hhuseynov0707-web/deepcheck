@@ -62,7 +62,12 @@ flowchart LR
     G -->|score + label + SHAP| A
     A --> I
     H --> J
+    I -->|checkout| K[POST /api/decision]
+    H --> K
+    K -->|allow / warn / verify / block| I
 ```
+
+The score the browser sees is for display. The decision that gates a payment is made by `POST /api/decision` on the server, from the score stored in Postgres — a control in the browser is a control the attacker can edit.
 
 The SDK keeps a 10-second rolling window of behavior and flushes every 2 seconds, so a couple of quiet seconds — a user typing without moving the mouse — doesn't blank out the signal.
 
@@ -74,7 +79,7 @@ The SDK keeps a 10-second rolling window of behavior and flushes every 2 seconds
 docker-compose up --build
 ```
 
-That's the whole thing. On first run the backend trains the models automatically (a few minutes — the model binaries are deliberately not committed, see [Model artifacts](#model-artifacts)).
+That's the whole thing. On first run the backend trains the models automatically (4–8 minutes, and it says so on the console — the model binaries are deliberately not committed, see [Model artifacts](#model-artifacts)).
 
 | Surface | URL |
 |---|---|
@@ -146,12 +151,20 @@ A session's reported score is the **median of its last 5 flushes**, not the inst
 }
 ```
 
-| Endpoint | Purpose |
-|---|---|
-| `POST /api/analyze` | Score a behavior window |
-| `GET /api/score/{session_id}` | Full history for one session |
-| `GET /api/sessions` | All sessions, for the dashboard |
-| `GET /api/health` | Service and model status |
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/session` | — | Mint a session id and its signed token |
+| `POST /api/analyze` | `X-DeepCheck-Token` | Score a behavior window |
+| `POST /api/decision` | `X-DeepCheck-Token` | **The enforcement point.** Returns the action to take |
+| `GET /api/score/{session_id}` | `X-Dashboard-Key` | Full history for one session |
+| `GET /api/sessions` | `X-Dashboard-Key` | All sessions, for the dashboard |
+| `GET /api/health` | — | Service and model status |
+
+Session ids are minted server-side and signed with HMAC-SHA256 over
+`DEEPCHECK_SECRET`. A client can hold a token but cannot mint one, so
+telemetry cannot be posted under a session id its sender was not given. The
+SOC endpoints expose every customer's live session and are behind a separate
+key.
 
 ### SDK usage
 
@@ -163,11 +176,74 @@ A session's reported score is the **median of its last 5 flushes**, not the inst
     intervalMs: 2000,
     onUpdate: (result) => {
       // { risk_score, label, confidence, shap_explanation }
-      gateCheckout(result.risk_score);
+      // Display only. Never gate a payment on this value — see Entegrasyon.
+      showRiskBadge(result.risk_score);
     },
   });
 </script>
 ```
+
+`DeepCheck.getSessionId()` and `DeepCheck.getToken()` return what the checkout
+call needs; `DeepCheck.ready()` resolves once the server has minted the
+session.
+
+---
+
+## Entegrasyon
+
+Bir bankanın veya e-ticaret sitesinin DeepCheck'i devreye alması üç adımdır.
+
+**1. SDK'yı sayfaya ekleyin.**
+
+```html
+<script src="https://<host>/deepcheck.js"></script>
+```
+
+**2. Oturumu başlatın.** Oturum kimliği ve imzalı jeton sunucudan gelir;
+SDK bunu kendisi ister ve her akışta `X-DeepCheck-Token` başlığıyla gönderir.
+
+```html
+<script>
+  DeepCheck.init({ apiUrl: "https://<host>" });
+</script>
+```
+
+**3. Ödeme anında kararı sunucudan alın ve uygulayın.** Risk skorunu
+tarayıcıda karşılaştırmayın: eşikler yalnızca `POST /api/decision` içinde
+uygulanır, çünkü tarayıcıdaki her kontrol saldırganın düzenleyebileceği bir
+kontroldür.
+
+```js
+const res = await fetch("https://<host>/api/decision", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-DeepCheck-Token": DeepCheck.getToken(),
+  },
+  body: JSON.stringify({ session_id: DeepCheck.getSessionId() }),
+});
+const decision = await res.json();
+```
+
+```json
+{
+  "action": "verify",
+  "risk_score": 73.4,
+  "label": "Yüksek Risk",
+  "message": "Ek dogrulama gerekli"
+}
+```
+
+| `action` | Skor | Etiket | Yapılması gereken |
+|---|---|---|---|
+| `allow` | 0–40 | Gerçek Kullanıcı | Ödemeyi işleyin, kullanıcı hiçbir şey görmez |
+| `warn` | 40–60 | Şüpheli | Ödemeyi işleyin, uyarı gösterin |
+| `verify` | 60–80 | Yüksek Risk | Ek doğrulama isteyin (SMS, 3-D Secure) |
+| `block` | 80–100 | Bot Tespit Edildi | Ödemeyi reddedin |
+
+Karar alınamazsa (ağ hatası, kayıtsız oturum, hiç telemetri göndermemiş bir
+istemci) yanıt `verify` olur — asla `allow`. Skorun yokluğu masumiyet kanıtı
+değildir; SDK'yı hiç çalıştırmayan bir istemcinin durumu tam olarak budur.
 
 ---
 
@@ -192,9 +268,13 @@ This is **model scoring time** — feature extraction, all three models, and SHA
 cd backend && python test_scorer.py
 ```
 
-Seven regression tests, each one a bug that actually happened and must not come back — a sparse typing session that used to be scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+Twelve regression tests, each one a bug that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, a checkout that was approved because the score never arrived. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+
+The API tests run against a stub database rather than Postgres, deliberately: an authorization check that needs infrastructure to test is an authorization check that stops being tested.
 
 Training and inference share the same `extract_features()` code path: `train_model.py` simulates raw sessions and pushes them through the identical extraction used at serving time, so a change to a feature formula flows into the training data automatically and cannot drift apart.
+
+Measuring against real people is a separate question, and an open one — see [docs/evaluation.md](docs/evaluation.md).
 
 ---
 
@@ -224,7 +304,9 @@ deepcheck/
 
 `model.pkl` and `lstm_model.pt` are **not committed**. They are regenerated by `train_model.py` (fixed seed, reproducible), `entrypoint.sh` builds them automatically if missing, and a ~10 MB binary in git history is permanent weight. Pickles are also version-fragile — they must be loaded by the same scikit-learn version that wrote them, so pinning the training environment matters more than shipping the file. See `backend/requirements.txt`.
 
-Training generates 50,000 synthetic sessions across four personas — natural humans, rushed-but-genuine humans, naive scripts, and human-mimicking bots — with 10% cross-contamination so the two classes are not trivially separable.
+Training generates 25,000 synthetic sessions — 250,000 flush windows — across four personas: natural humans, rushed-but-genuine humans, naive scripts, and human-mimicking bots. 10% of each class is drawn from the opposite persona so the two are not trivially separable, and a further 12% *change* mid-session (human behavior handed off to automation, and the reverse). Those drifting sessions are the only thing in the dataset a sequence model can learn that a single feature row cannot express.
+
+Each session is generated as ten consecutive flush windows, which is what the LSTM trains on; the tabular models train on the final window. The neutral fallback values feature extraction uses for a too-sparse flush are computed during training and stored in `model.pkl`, rather than hand-maintained in `scorer.py` where they had already drifted stale once.
 
 ---
 
@@ -234,29 +316,30 @@ This is a **competition MVP**, and worth reading as one.
 
 The detection pipeline, the SDK, and both interfaces work end to end and are what you see running. Current models are trained on synthetic behavior, so reported separation reflects the quality of that simulation rather than measured performance against real traffic — collecting labeled sessions from real users and off-the-shelf automation frameworks is the next substantive step, and no accuracy claim here should be taken as a production benchmark until then.
 
-The deployment is likewise sized for demonstration rather than production: hardening the API surface, moving risk enforcement fully server-side, and adding rate limiting are tracked work, not oversights.
+Risk enforcement is server-side: `POST /api/decision` is the only place the thresholds are applied, session tokens are signed, and the SOC endpoints are behind a key. Rate limiting, a migration tool for the database schema, and key rotation are still tracked work rather than oversights, and the deployment is sized for a demonstration.
 
 ---
 
 ## Deployment
 
-**Primary, tested path: Docker Compose + Uvicorn.**
+**Docker Compose + Uvicorn, and nothing else.**
 
 ```bash
 docker-compose up --build
 ```
 
-Runs `main.py` under Uvicorn via `backend/entrypoint.sh` and `backend/Dockerfile`. This is the configuration the demo and dashboard are verified against.
+Runs `main.py` under Uvicorn via `backend/entrypoint.sh` and `backend/Dockerfile`. This is the configuration the demo and dashboard are verified against. An AWS Lambda adapter used to sit in the tree unused and untested; it has been removed rather than left looking supported.
 
-**Optional: AWS Lambda.**
+### Configuration
 
-`backend/lambda_handler.py` (Mangum adapter) and `backend/template.yaml` (AWS SAM) host the same FastAPI app behind API Gateway:
+Copy `.env.example` to `.env` before deploying anywhere that is not a laptop.
 
-```bash
-cd backend && sam build --use-container && sam deploy --guided
-```
-
-This path is **present as code but not deployed or tested** in this repository. A real Lambda deployment needs container-image packaging (torch + shap exceed the zip size limit) and a `DATABASE_URL` pointing at a reachable Postgres instance such as RDS or Aurora — there is no bundled database on Lambda.
+| Variable | Purpose |
+|---|---|
+| `DEEPCHECK_SECRET` | Signs session tokens (HMAC-SHA256) |
+| `DASHBOARD_KEY` | Guards the SOC endpoints; the frontend sends it as `VITE_DASHBOARD_KEY` |
+| `DEBUG` | `1` allows fixed development secrets and warns on every boot. `0` makes the backend **refuse to start** without both values above |
+| `CORS_ORIGINS` | Browser origin allowlist. `*` is for a local demo only |
 
 ---
 

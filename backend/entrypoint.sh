@@ -2,8 +2,17 @@
 set -e
 
 if [ ! -f "model.pkl" ]; then
-  echo "model.pkl bulunamadı, model eğitiliyor..."
+  # A cold container trains before it can serve. Without this notice the
+  # several silent minutes look exactly like a hang, which is not something
+  # to discover in front of an audience.
+  echo "======================================================================"
+  echo " model.pkl bulunamadi. Modeller ilk kez egitiliyor."
+  echo " 25.000 oturum x 10 akis penceresi uretilecek ve uc model egitilecek."
+  echo " Beklenen sure: 4-8 dakika (makineye gore degisir). Lutfen bekleyin;"
+  echo " bu asamada API henuz istek kabul etmez."
+  echo "======================================================================"
   python train_model.py
+  echo "Model egitimi tamamlandi. API baslatiliyor..."
 fi
 
 # --reload is a development-only flag: it adds a file watcher, disables

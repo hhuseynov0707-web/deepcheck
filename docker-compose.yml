@@ -24,6 +24,14 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://deepcheck:deepcheck@db:5432/deepcheck
+      # Compose reads these from a .env file next to this one (see
+      # .env.example). Left unset, DEBUG=1 keeps the local demo working with
+      # a fixed development secret and logs a warning on every boot; with
+      # DEBUG=0 the backend REFUSES TO START unless both are provided, so a
+      # production deployment cannot silently run with authentication off.
+      DEEPCHECK_SECRET: ${DEEPCHECK_SECRET:-}
+      DASHBOARD_KEY: ${DASHBOARD_KEY:-}
+      DEBUG: ${DEBUG:-1}
     ports:
       - "8000:8000"
     volumes:
@@ -40,6 +48,9 @@ services:
     restart: unless-stopped
     environment:
       VITE_API_URL: http://localhost:8000
+      # Must match the backend's DASHBOARD_KEY or the SOC dashboard shows
+      # "Yetkisiz erişim". The default matches the backend's DEBUG fallback.
+      VITE_DASHBOARD_KEY: ${DASHBOARD_KEY:-deepcheck-dev-dashboard-key}
     ports:
       - "3000:3000"
     volumes:

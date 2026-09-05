@@ -27,6 +27,8 @@ export default function Demo() {
   const [scoreUnavailable, setScoreUnavailable] = useState(false);
   const [status, setStatus] = useState("idle"); // idle | loading | success
   const [showVerifyModal, setShowVerifyModal] = useState(false);
+  const [blockMessage, setBlockMessage] = useState(null);
+  const [warnMessage, setWarnMessage] = useState(null);
 
   useEffect(() => {
     if (!window.DeepCheck) {
@@ -54,23 +56,16 @@ export default function Demo() {
   const total = ORDER.subtotal + tax;
   const cardType = detectCardType(cardNumber);
 
-  // `risk?.risk_score ?? 0` used to mean: no SDK, blocked script, dead
-  // backend, or a rejected payload all collapsed to 0 -- "Gerçek Kullanıcı",
-  // payment allowed. The gate defaulted to open exactly in the situations an
-  // attacker can create at will. An unknown score is now treated as unknown
-  // and routed to step-up verification rather than waved through.
-  //
-  // NOTE: this is still a client-side control and remains defeatable by
-  // anyone editing the page; it is the demo's UX layer, not an authorization
-  // boundary. The real gate belongs on the server, next to the charge (see
-  // the /api/verdict design). This change removes the trivially-triggered
-  // fail-open, it does not make the browser trustworthy.
+  // The badge is DISPLAY ONLY. Nothing on this page decides whether the
+  // payment goes through any more: the 40/60/80 ladder lives behind
+  // POST /api/decision, where a page the attacker controls cannot edit it
+  // away. What used to be here was a client-side gate that an attacker could
+  // simply delete, and that defaulted to "allow" whenever the score was
+  // missing -- which is exactly the state a client that never runs the SDK
+  // is in.
   const hasScore =
     !scoreUnavailable && typeof risk?.risk_score === "number" && Number.isFinite(risk.risk_score);
   const riskScore = hasScore ? risk.risk_score : null;
-  const isBlocked = riskScore !== null && riskScore >= 80;
-  const needsVerification = riskScore === null || (riskScore >= 60 && riskScore < 80);
-  const showWarning = riskScore !== null && riskScore >= 40 && riskScore < 60;
 
   function processPayment() {
     setStatus("loading");
@@ -80,14 +75,51 @@ export default function Demo() {
     }, 1000);
   }
 
-  function handleSubmit(e) {
-    e.preventDefault();
-    if (status === "loading" || isBlocked) return;
-    if (needsVerification) {
+  function applyDecision(decision) {
+    const action = decision?.action;
+    if (action === "block") {
+      setStatus("idle");
+      setBlockMessage(decision.message || "İşlem Reddedildi — Şüpheli Davranış Tespit Edildi");
+      return;
+    }
+    if (action === "verify") {
+      setStatus("idle");
       setShowVerifyModal(true);
       return;
     }
+    if (action === "warn") {
+      setWarnMessage(decision.message || null);
+    }
     processPayment();
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (status === "loading") return;
+
+    setBlockMessage(null);
+    setWarnMessage(null);
+    setStatus("loading");
+
+    try {
+      const sessionId = window.DeepCheck?.getSessionId?.();
+      const token = window.DeepCheck?.getToken?.();
+      if (!sessionId || !token) throw new Error("Oturum jetonu yok");
+
+      const res = await fetch(`${API_URL}/api/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-DeepCheck-Token": token },
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
+      applyDecision(await res.json());
+    } catch (err) {
+      // Fail closed. A decision we could not obtain is not an approval, so
+      // the payment goes to step-up verification rather than through.
+      console.error("[Demo] karar alınamadı:", err);
+      setStatus("idle");
+      setShowVerifyModal(true);
+    }
   }
 
   function handleVerified() {
@@ -112,9 +144,9 @@ export default function Demo() {
         )}
       </div>
 
-      {showWarning && (
+      {warnMessage && (
         <div className="max-w-4xl mx-auto mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
-          Davranışınız normal dışı görünüyor, lütfen dikkatli devam edin.
+          {warnMessage}
         </div>
       )}
 
@@ -211,7 +243,7 @@ export default function Demo() {
 
             <button
               type="submit"
-              disabled={status === "loading" || isBlocked}
+              disabled={status === "loading"}
               className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-medium py-3 px-4 rounded-md transition-colors duration-200 cursor-pointer text-sm tracking-wide shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-2"
             >
               {status === "loading" && (
@@ -227,9 +259,9 @@ export default function Demo() {
               {status === "loading" ? "İşleniyor..." : `₺${formatCurrency(total)} Onayla`}
             </button>
 
-            {isBlocked && (
+            {blockMessage && (
               <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
-                İşlem Reddedildi — Şüpheli Davranış Tespit Edildi
+                {blockMessage}
               </p>
             )}
 

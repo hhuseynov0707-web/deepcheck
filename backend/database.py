@@ -9,13 +9,32 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://deepcheck:deepcheck@localhost:5432/deepcheck",
 )
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
+# Built on first use rather than at import. create_async_engine() resolves and
+# imports the DBAPI driver eagerly, so building it at module scope made
+# `import main` fail outright on any machine without asyncpg installed --
+# including one running the API's authorization tests, which touch no database
+# at all. A security check that cannot be tested without infrastructure is a
+# security check that stops being tested.
+_engine = None
+_sessionmaker = None
 
-AsyncSessionLocal = async_sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+
+def get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_async_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
+    return _engine
+
+
+def get_sessionmaker():
+    global _sessionmaker
+    if _sessionmaker is None:
+        _sessionmaker = async_sessionmaker(
+            bind=get_engine(),
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+    return _sessionmaker
 
 
 class Base(DeclarativeBase):
@@ -28,7 +47,7 @@ _SCHEMA_LOCK_KEY = 728_301
 
 
 async def init_db() -> None:
-    async with engine.begin() as conn:
+    async with get_engine().begin() as conn:
         # entrypoint.sh starts 4 uvicorn workers and each one runs this in its
         # own lifespan, simultaneously. Concurrent CREATE TABLE IF NOT EXISTS
         # is not safe in Postgres -- the existence check and the catalog insert
@@ -42,5 +61,5 @@ async def init_db() -> None:
 
 
 async def get_db():
-    async with AsyncSessionLocal() as session:
+    async with get_sessionmaker()() as session:
         yield session
