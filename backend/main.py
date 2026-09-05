@@ -18,6 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,6 +109,39 @@ VERIFICATION_VALID_S = 300
 # prints this code in the modal so a jury can see it is a deliberate demo
 # value, not an "any six digits" bypass.
 DEMO_VERIFY_CODE = os.getenv("DEMO_VERIFY_CODE", "482913").strip()
+
+# The /api/demo/* endpoints are a demonstration of the merchant-side pattern,
+# not a payment integration. The step-up code is a fixed constant that the demo
+# page prints on screen, so anything the server answers `verify` for can be
+# upgraded to `allow` by anyone who reads it. That is the point in a demo and
+# unacceptable anywhere else, so they are enabled only in DEBUG unless someone
+# turns them on deliberately.
+# Reads DEBUG from the environment rather than the module constant, which is
+# defined further down; the default is simply "whatever DEBUG says".
+DEMO_ENDPOINTS_ENABLED = (
+    os.getenv("DEMO_ENDPOINTS", os.getenv("DEBUG", "0")).strip() == "1"
+)
+
+# Whether /api/analyze returns its SHAP breakdown to the client being scored.
+#
+# It should not. The response goes to the party under assessment, and naming
+# the three features driving their score hands them a tuning signal: submit,
+# read which feature convicted you, adjust, repeat. That is a supervised
+# optimisation loop against the live detector, and the adversarial run used
+# exactly it to build a bot that scores lower than real humans. The SOC
+# dashboard still gets the full explanation from GET /api/score/{id}, which is
+# behind DASHBOARD_KEY, and the explanation is still stored on every row.
+#
+# Default off. Set SHAP_IN_ANALYZE=1 only for a walkthrough where showing the
+# reasoning live matters more than withholding it.
+SHAP_IN_ANALYZE = os.getenv("SHAP_IN_ANALYZE", "0").strip() == "1"
+
+
+def _require_demo_endpoints() -> None:
+    if not DEMO_ENDPOINTS_ENABLED:
+        raise HTTPException(
+            status_code=404, detail="Demo uc noktalari bu dagitimda kapali"
+        )
 
 # --- Rate limiting -----------------------------------------------------------
 #
@@ -820,14 +854,30 @@ async def analyze(
     )
     db.add(behavior_row)
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # The duplicate pre-check above is a read before a write, so identical
+        # flushes posted concurrently all pass it. The unique index on
+        # payload_hash is what actually settles that race; losing it means this
+        # window was already recorded, which is the same answer the pre-check
+        # gives.
+        await db.rollback()
+        logger.warning("replay/duplicate race lost for session %s", session_id)
+        raise HTTPException(
+            status_code=422,
+            detail="Bu davranis penceresi daha once gonderilmis (tekrar oynatma suphesi)",
+        ) from None
 
     return AnalyzeResponse(
         session_id=session_id,
         risk_score=smoothed_score,
         label=smoothed_label,
         confidence=result["confidence"],
-        shap_explanation=result["shap_explanation"],
+        # Empty unless SHAP_IN_ANALYZE is set: see the note there. The row
+        # keeps the full explanation, and the dashboard reads it from
+        # /api/score/{id} behind the dashboard key.
+        shap_explanation=result["shap_explanation"] if SHAP_IN_ANALYZE else [],
         response_time_ms=result["response_time_ms"],
     )
 
@@ -923,6 +973,7 @@ async def demo_verify(
     only thing it can do is submit a code; whether that unlocks anything is
     decided here and read back by /api/demo/charge.
     """
+    _require_demo_endpoints()
     _require_session_token(payload.session_id, x_deepcheck_token)
     # Same bucket as the checkout itself: without this the step-up code is a
     # six-digit secret an attacker may guess at unlimited speed.
@@ -957,6 +1008,7 @@ async def demo_charge(
     "charged" response for a session the server would not allow. Deleting
     every check in Demo.jsx changes nothing, because Demo.jsx has no checks.
     """
+    _require_demo_endpoints()
     _require_session_token(payload.session_id, x_deepcheck_token)
     _rate_limit("decision", payload.session_id)
     verdict = await _decide(db, payload.session_id)

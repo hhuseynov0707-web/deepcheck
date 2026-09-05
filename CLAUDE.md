@@ -173,7 +173,7 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 
 1. **Hər UI mətni türkcə olmalıdır** — demo, dashboard, xəta mesajları, etiketlər
 2. Response time hər zaman loglanmalıdır — 50ms altında saxla
-3. SHAP explanation hər `/api/analyze` cavabında olmalıdır
+3. SHAP explanation hər `/api/analyze` cavabında **artıq qaytarılmır**. `/api/analyze` skorlanan tərəfə cavab verir və onu məhkum edən üç xüsusiyyəti adlandırmaq hücumçuya köklənmə siqnalı verir: göndər, səbəbi oxu, dəyiş, təkrarla. Bu, canlı detektora qarşı nəzarətli optimallaşdırma döngüsüdür və adversarial sınaqda məhz bundan istifadə edilib. İzah hər sətirdə saxlanılır və SOC panosu onu `GET /api/score/{id}`-dən (`X-Dashboard-Key` arxasında) oxuyur. Yalnız canlı nümayiş üçün `SHAP_IN_ANALYZE=1`
 4. Docker Compose ilə `docker-compose up --build` əmri ilə hər şey işləməlidir
 5. `train_model.py` ilk öncə run edilməlidir — `model.pkl` yaranır
 6. Frontend `http://localhost:3000`, backend `http://localhost:8000` portunda işləyir

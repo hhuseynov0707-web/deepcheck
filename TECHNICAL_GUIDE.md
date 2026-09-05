@@ -202,8 +202,16 @@ Processing order:
 }
 ```
 
+`shap_explanation` comes back **empty** unless `SHAP_IN_ANALYZE=1`. This
+endpoint answers the party being assessed, and naming the three features that
+drove their score is a tuning signal: submit, read the reason, adjust, repeat.
+The adversarial run used exactly that loop. The explanation is still stored on
+every row, and the SOC dashboard reads it from `GET /api/score/{id}` behind the
+dashboard key.
+
 Errors: 503 if the model is not loaded, 500 with a generic Turkish message
-on any other failure (tracebacks are logged, never returned).
+on any other failure (tracebacks are logged, never returned), 422 for the
+replay checks, 429 past the rate limit.
 
 #### Replay protection
 

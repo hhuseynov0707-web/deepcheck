@@ -70,7 +70,14 @@ class BehaviorData(Base):
         # Global lookup for replay detection: the same recording posted under
         # any session hashes to the same value (timestamps are rebased before
         # hashing, so shifting a recording's clock does not change it).
-        Index("ix_behavior_data_payload_hash", "payload_hash"),
+        # UNIQUE, not just indexed. The duplicate check in /api/analyze is a
+        # read before a write, so two identical flushes posted concurrently
+        # both pass it before either commits -- and three of them would
+        # satisfy the evidence rule from a single captured window. Postgres
+        # is the only place that race can actually be settled; the handler
+        # turns the resulting IntegrityError into the same 422 the check
+        # returns. NULLs are exempt, so rows predating the column are fine.
+        Index("ix_behavior_data_payload_hash", "payload_hash", unique=True),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

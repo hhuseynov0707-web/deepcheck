@@ -26,7 +26,13 @@ on both sides and report a number that will not reproduce.
 | A3_human_mimic | 10 | 0.927 | 100% |
 | A4_evasive | 28 | 0.599 | 68% |
 
-**False positives 0%, bot recall 76.1%.**
+**False positives 0%, bot recall 76.1%** — against these scenarios.
+
+Read "false positives" carefully. The H1 and H2 rows are *scripted* human
+behaviour driven through a real browser, not recordings of people. So the 0%
+means the detector does not flag this lab's model of a legitimate user. It is
+a far stronger statement than 0% against simulated feature vectors, and a far
+weaker one than 0% against customers. Nobody should quote it as the latter.
 
 H2 matters as much as the attack rows. Blocking a keyboard-only user is worse
 for a payment product than missing a bot, and a lab that only measured
@@ -88,6 +94,12 @@ cd backend && python train_model.py
 
 ## Honest scope
 
+- **The "human" class is Playwright, not people.** H1 and H2 are scripted
+  approximations executed in a real Chromium. Every kinematic property they
+  have was chosen by whoever wrote the scenario, so the model has been taught
+  what this lab thinks a person looks like. The structural features are
+  therefore an unverified mitigation, not proof that human-like automation is
+  caught.
 - 234 samples from one machine and one browser build. Input device, screen
   size and operating system all shape pointer kinematics, and none of that
   variation is represented. A real false-positive rate needs many people on

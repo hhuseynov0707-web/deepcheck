@@ -69,6 +69,8 @@ flowchart LR
 
 The score the browser sees is for display. The decision that gates a payment is made by `POST /api/decision` on the server, from the score stored in Postgres — a control in the browser is a control the attacker can edit.
 
+**What this evidence is worth.** Telemetry is submitted by the client, and the session token only proves the sender holds a token for that session — never that a human produced the behaviour. An adversarial run against this stack blocks straight-line automation 92% of the time and catches none of an independently written humanised bot. So behavioural risk belongs alongside device, network and card-level signals as one input to a decision, not as the sole gate on a payment. The demo gates on it alone because a demo has nothing else to gate on.
+
 The SDK keeps a 10-second rolling window of behavior and flushes every 2 seconds, so a couple of quiet seconds — a user typing without moving the mouse — doesn't blank out the signal.
 
 ---
@@ -297,7 +299,7 @@ değildir; SDK'yı hiç çalıştırmayan bir istemcinin durumu tam olarak budur
 
 ## Evaluation
 
-Measured against **real Chromium telemetry**, not the simulator: 0% false positives on both legitimate scenarios (including keyboard-only), 76.1% bot recall on held-out browser runs. The honest caveat is in [docs/evaluation.md](docs/evaluation.md) — the detector catches attack techniques it has samples of and does not generalise to techniques it has not seen, which an independently written adversarial harness demonstrates directly.
+Measured against **real Chromium telemetry**, not the simulator: 0% false positives on both legitimate scenarios (including keyboard-only), 76.1% bot recall on held-out browser runs. Both legitimate scenarios are *scripted* humans driven through a real browser, so that 0% means "does not flag this lab's model of a user" and not "does not flag customers". The honest caveat is in [docs/evaluation.md](docs/evaluation.md) — the detector catches attack techniques it has samples of and does not generalise to techniques it has not seen, which an independently written adversarial harness demonstrates directly.
 
 `lab/` drives a real browser through the real SDK and records labelled telemetry; `backend/train_model.py` blends it into training with a run-level holdout.
 
@@ -402,6 +404,8 @@ Copy `.env.example` to `.env` before deploying anywhere that is not a laptop.
 | `DASHBOARD_KEY` | Guards the SOC endpoints. The analyst types it into the dashboard; it is never compiled into the bundle |
 | `DEBUG` | `1` allows fixed development secrets and warns on every boot. `0` makes the backend **refuse to start** without both values above |
 | `CORS_ORIGINS` | Browser origin allowlist. `*` is for a local demo only |
+| `DEMO_ENDPOINTS` | `/api/demo/*` on or off. Defaults to `DEBUG`. Their step-up code is a published constant, so anything scored `verify` can be upgraded to `allow` by anyone who reads the page |
+| `SHAP_IN_ANALYZE` | Return the SHAP breakdown to the scored client. Off by default: it is a tuning oracle |
 | `DEMO_VERIFY_CODE` | Step-up code for the demo's verification modal |
 | `VITE_API_URL` | Backend URL, compiled into the frontend at **build** time |
 | `RAW_RETENTION_HOURS` / `ROW_RETENTION_HOURS` | When raw telemetry is blanked (default 1 h) and whole rows deleted (default 24 h) |

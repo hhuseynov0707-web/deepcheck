@@ -29,6 +29,11 @@ import scorer
 os.environ.setdefault("DEEPCHECK_SECRET", "test-secret-not-for-production")
 os.environ.setdefault("DASHBOARD_KEY", "test-dashboard-key")
 os.environ.setdefault("DEBUG", "0")
+# The /api/demo/* endpoints are off by default outside DEBUG, because their
+# step-up code is a published constant. These tests exercise that flow on
+# purpose, so they opt in explicitly -- which is also the only way a real
+# deployment should ever enable them.
+os.environ.setdefault("DEMO_ENDPOINTS", "1")
 
 import main  # noqa: E402  (must follow the environment setup above)
 from fastapi.testclient import TestClient  # noqa: E402
@@ -912,6 +917,41 @@ def test_training_seeds_torch():
     assert torch.equal(fingerprint(), fingerprint()), "ayni tohum farkli agirliklar uretti"
 
 
+def test_demo_endpoints_off_by_default_outside_debug():
+    """The demo step-up code is a fixed constant printed on the demo page, so
+    anything scored `verify` can be upgraded to `allow` by anyone who reads it.
+    Acceptable in a demo, never in a deployment -- so the endpoints must not be
+    reachable unless someone turned them on deliberately."""
+    resolved = lambda env: (env.get("DEMO_ENDPOINTS", env.get("DEBUG", "0")).strip() == "1")
+    assert resolved({}) is False, "hicbir ayar yokken demo uc noktalari acik"
+    assert resolved({"DEBUG": "0"}) is False, "DEBUG=0 iken demo uc noktalari acik"
+    assert resolved({"DEBUG": "1"}) is True, "yerel demoda kapali kalmamali"
+    assert resolved({"DEBUG": "0", "DEMO_ENDPOINTS": "1"}) is True, "acik secim gecersiz"
+
+
+def test_analyze_withholds_shap_from_the_scored_client():
+    """/api/analyze answers the party being assessed. Naming the features that
+    convicted them is a tuning signal: submit, read the reason, adjust, repeat.
+    The row keeps the explanation and the dashboard reads it behind its key."""
+    assert main.SHAP_IN_ANALYZE is False, "SHAP varsayilan olarak istemciye donuyor"
+
+    session_id = "0c0c0c0c-0000-0000-0000-000000000001"
+    db = _StubDB(session=_stub_session())
+    client = _client(db)
+    try:
+        res = client.post(
+            "/api/analyze",
+            json=_analyze_payload(session_id),
+            headers={"X-DeepCheck-Token": main.sign_session(session_id)},
+        )
+        assert res.status_code == 200
+        assert res.json()["shap_explanation"] == [], "skorlanan istemciye SHAP sizdi"
+        # Still stored, so the SOC dashboard loses nothing.
+        assert db.session.shap_explanation, "aciklama satira yazilmamis"
+    finally:
+        _clear_overrides()
+
+
 def test_lstm_reacts_to_trajectory():
     """The sequence model must respond to a session's HISTORY, not only to
     its latest flush.
@@ -966,6 +1006,8 @@ def _run_all():
         test_rate_limiter_memory_is_bounded,
         test_bundle_requires_lstm_weights,
         test_client_signals_recorded_but_not_scored,
+        test_demo_endpoints_off_by_default_outside_debug,
+        test_analyze_withholds_shap_from_the_scored_client,
         test_training_seeds_torch,
     ]
     failures = []
