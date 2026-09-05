@@ -48,6 +48,15 @@ pitch/
 # describes are not all fixed yet. Keep it out of the repository until they are.
 AUDIT.md
 
+# AUDIT_ADVERSARIAL.md and redteam/ are the same category: a measured, working
+# evasion recipe against the live detector (2 px of pointer jitter halves the
+# risk score), plus the generators that produce it. The weaknesses it describes
+# are not fixed, so publishing it would hand an attacker the method before the
+# fix exists. Keep locally; publish a sanitised version once the normalisation
+# and the unscored provenance signals are addressed.
+AUDIT_ADVERSARIAL.md
+redteam/
+
 # --- Claude Code local settings ---
 # Machine-specific permission list containing absolute paths to this user's
 # home and temp directories. The non-.local settings.json is the shareable one.

@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import time
-from collections import Counter
 
 import joblib
 import numpy as np
@@ -33,14 +32,62 @@ LSTM_PATH = os.path.join(MODEL_DIR, f"lstm_model-sklearn{sklearn.__version__}.pt
 
 CLICK_DENSITY_WINDOW_MS = 5000
 
-# Empirically calibrated: raw variance(acceleration) from real mouse coordinates
-# lands around 1e-6 to 1e-7 (px/ms^2, squared) for natural human jitter, since
-# acceleration divides by elapsed-ms twice. The previous /2.0 divisor assumed
-# speed-delta-sized magnitudes and silently collapsed every real session to
-# ~0.0 regardless of how human or robotic the movement actually was. This
-# divisor maps a natural-human trajectory's acceleration variance to ~0.45,
-# matching the training distribution's human mean (see train_model.py).
-ACCELERATION_VARIANCE_DIVISOR = 2.2e-6
+# Features whose RAW value spans orders of magnitude: two variances and a mean
+# duration. They are normalised by mapping log10(raw) onto the 1st..99th
+# percentile of the training distribution, with the endpoints stored in
+# model.pkl under "feature_scaling".
+#
+# What this replaces, and why. Each of these used to be divided by a
+# hand-picked constant and clipped to [0, 1]: variance/5.0, ms/1500.0, and
+# variance/2.2e-6. Measured against real browser traffic and against
+# adversarial sessions, all three sat on the ceiling:
+#
+#     ivme_degisimi     1.000 for human motion, 1.000 for a Bezier bot,
+#                       0.002 for a straight line
+#     tereddut_skoru    1.000 whenever mean hesitation exceeded 1.5 s
+#     etkilesim_entropisi  1.000
+#
+# A feature pinned at its maximum carries one bit at best. ivme_degisimi had
+# collapsed into "does the pointer wobble at all?", and an attacker flipped it
+# by adding two pixels of gaussian noise -- one line of code that halved the
+# risk score and turned a refused session into an approved one. Nothing about
+# that is a modelling subtlety; the divisor was simply three orders of
+# magnitude off the real distribution, and clipping hid it.
+#
+# Percentiles rather than min/max so a single freak session cannot set the
+# scale, and log10 because the underlying quantities are multiplicative: the
+# difference between 1e-9 and 1e-8 of acceleration variance matters exactly as
+# much as the difference between 1e-6 and 1e-5.
+LOG_SCALED_FEATURES = ("scroll_hizi_varyansi", "tereddut_skoru", "ivme_degisimi")
+
+# Raw values below this are treated as "immeasurably small" rather than fed to
+# log10, which would return -inf for a perfectly constant signal.
+RAW_FLOOR = 1e-10
+
+# Fallback used only by a bundle written before feature_scaling existed, or
+# before training has computed it. Wide enough to be harmless, not tuned.
+FEATURE_SCALING = {
+    "scroll_hizi_varyansi": (-4.0, 1.0),
+    "tereddut_skoru": (2.3, 3.6),
+    "ivme_degisimi": (-9.0, -4.0),
+}
+
+# Counts, not measurements. They were never the problem and are left alone.
+CLICK_DENSITY_DIVISOR = 10.0
+FOCUS_CHANGE_DIVISOR = 5.0
+
+# Inter-event gaps are binned on a FIXED log10-millisecond grid rather than
+# over each session's own [min, max].
+#
+# The old binning rescaled itself per session, which inverted the feature on
+# realistic input. A person pausing once to read stretches the range from
+# ~10 ms to ~5 s, so every ordinary gap falls into the first bin and the
+# entropy collapses toward zero -- while a metronomic bot, whose gaps are all
+# alike, keeps a narrow range and scores HIGHER. Measured: 0.174 for a human
+# model against 0.548 for a headless script, precisely backwards from what the
+# training data assumes. Fixed edges make the number mean the same thing in
+# every session and restore the intended reading.
+ENTROPY_LOG_EDGES = np.linspace(0.5, 4.0, 15)  # ~3 ms .. 10 s
 
 # When a feature can't be mathematically computed because a request carries
 # too little raw signal (e.g. a 2s window where the user was only typing, not
@@ -145,6 +192,21 @@ class ModelBundle:
         # between the human and bot means of each feature). Missing only in a
         # pickle written before that was added -- say so rather than silently
         # using numbers that may no longer match the training distribution.
+        # Refuse, do not warn. A bundle written before feature_scaling existed
+        # was trained on features normalised by the old fixed divisors. Serving
+        # it under the new normalisation feeds the forest a different
+        # coordinate system than it learned, which produces confident and
+        # meaningless scores -- the same failure mode as loading a pickle from
+        # another scikit-learn, and it deserves the same answer.
+        # entrypoint.sh retrains when this raises.
+        self.feature_scaling = bundle.get("feature_scaling") or {}
+        if not self.feature_scaling:
+            raise ModelUnavailableError(
+                "model.pkl 'feature_scaling' icermiyor (eski surumle egitilmis). "
+                "Ozellik olcekleme degisti; eski model yanlis normalize edilmis "
+                "veriyle skorlar. `python train_model.py` ile yeniden egitin."
+            )
+
         self.neutral_defaults = bundle.get("neutral_defaults") or {}
         if not self.neutral_defaults:
             logger.warning(
@@ -204,6 +266,32 @@ def get_neutral_defaults() -> dict:
     return NEUTRAL_DEFAULTS
 
 
+def get_feature_scaling() -> dict:
+    """Log-percentile endpoints in force right now: from the loaded bundle
+    when there is one, otherwise the module fallback. Deliberately does not
+    call get_bundle(), which would raise during training."""
+    if _bundle is not None and _bundle.feature_scaling:
+        return _bundle.feature_scaling
+    return FEATURE_SCALING
+
+
+def normalize_feature(name: str, raw_value: float, scaling: dict | None = None) -> float:
+    """Raw quantity -> the 0..1 value the model sees."""
+    if name in LOG_SCALED_FEATURES:
+        scaling = scaling or get_feature_scaling()
+        lo, hi = scaling.get(name, FEATURE_SCALING[name])
+        if hi - lo < 1e-9:
+            return 0.5
+        value = math.log10(max(float(raw_value), RAW_FLOOR))
+        return float(np.clip((value - lo) / (hi - lo), 0.0, 1.0))
+    if name == "tiklama_yogunlugu":
+        return float(np.clip(raw_value / CLICK_DENSITY_DIVISOR, 0.0, 1.0))
+    if name == "odak_degisimi":
+        return float(np.clip(raw_value / FOCUS_CHANGE_DIVISOR, 0.0, 1.0))
+    # etkilesim_entropisi is already a 0..1 quantity by construction.
+    return float(np.clip(raw_value, 0.0, 1.0))
+
+
 def get_label(risk_score: float) -> str:
     # A non-finite score must never reach the threshold ladder: every
     # `NaN < threshold` comparison is False, so NaN would fall through the
@@ -226,15 +314,26 @@ def _safe_variance(values: list[float]) -> float:
     return float(np.var(values))
 
 
-def _entropy(values: list[float], bins: int = 10) -> float:
-    if len(values) < 2:
+def _entropy(gaps: list[float]) -> float:
+    """Shannon entropy of inter-event gaps over FIXED log-millisecond bins.
+
+    See the ENTROPY_LOG_EDGES note: binning over each session's own range made
+    one long human pause collapse the measure to ~0 while a metronomic bot
+    scored high.
+    """
+    if len(gaps) < 2:
         return 0.0
-    counts = Counter(np.digitize(values, np.linspace(min(values), max(values) + 1e-9, bins)))
-    total = sum(counts.values())
-    probs = [c / total for c in counts.values()]
-    ent = -sum(p * math.log2(p) for p in probs if p > 0)
-    max_ent = math.log2(min(bins, len(values))) or 1.0
-    return float(np.clip(ent / max_ent, 0.0, 1.0))
+    logs = np.log10(np.clip(np.asarray(gaps, dtype=float), 1.0, None))
+    counts = np.histogram(logs, bins=ENTROPY_LOG_EDGES)[0]
+    counts = counts[counts > 0]
+    if counts.size < 2:
+        return 0.0
+    probs = counts / counts.sum()
+    ent = float(-(probs * np.log2(probs)).sum())
+    # Against the most a sample of this size could show, so a short window is
+    # not penalised for having fewer gaps than bins.
+    max_ent = math.log2(min(len(ENTROPY_LOG_EDGES) - 1, len(gaps)))
+    return float(np.clip(ent / max_ent, 0.0, 1.0)) if max_ent > 0 else 0.0
 
 
 def _channel_entropy(times: list[float]) -> tuple[float, int] | None:
@@ -248,9 +347,19 @@ def _channel_entropy(times: list[float]) -> tuple[float, int] | None:
     return _entropy(gaps), len(gaps)
 
 
-def extract_features(raw: dict) -> dict:
-    """Turns raw SDK payload into the 6 model features, each normalized to ~0-1."""
-    defaults = get_neutral_defaults()
+def extract_raw(raw: dict) -> dict:
+    """Raw, unnormalised quantities from one flush.
+
+    A value of None means the flush carries too little signal to measure that
+    feature at all -- fewer than two scroll samples, no hesitation gaps, fewer
+    than three trajectory points. None is not zero: zero is the most robotic
+    value every one of these can take, so scoring "no data" as zero was
+    scoring absence of evidence as evidence of guilt. extract_features()
+    substitutes the neutral fallback instead.
+
+    Splitting this out from normalisation is what lets train_model.py measure
+    the real distribution of each quantity before choosing a scale for it.
+    """
     mouse_trajectory = raw.get("mouse_trajectory") or []
     click_timing = raw.get("click_timing") or []
     scroll_events = raw.get("scroll_events") or []
@@ -258,38 +367,24 @@ def extract_features(raw: dict) -> dict:
     focus_changes = raw.get("focus_changes") or []
     key_events = raw.get("key_events") or []
 
-    # scroll_hizi_varyansi: variance of scroll speed, normalized.
-    # Needs >=2 scroll samples to compute a variance at all -- with fewer,
-    # there is no measurement to make, so fall back to neutral (not 0.0).
+    # scroll_hizi_varyansi: variance of scroll speed (px/ms), needs >=2 samples.
     scroll_speeds = []
     for a, b in zip(scroll_events, scroll_events[1:]):
         dt = max(b.get("t", 0) - a.get("t", 0), 1)
         dy = b.get("scrollY", 0) - a.get("scrollY", 0)
         scroll_speeds.append(dy / dt)
-    if len(scroll_speeds) >= 2:
-        scroll_hizi_varyansi = float(np.clip(_safe_variance(scroll_speeds) / 5.0, 0.0, 1.0))
-    else:
-        scroll_hizi_varyansi = defaults["scroll_hizi_varyansi"]
+    scroll_raw = _safe_variance(scroll_speeds) if len(scroll_speeds) >= 2 else None
 
-    # tereddut_skoru: normalized average pause before actions (ms / 1500).
-    # An empty list here usually means too few tracked events fired to even
-    # measure a gap, not that the user paused zero times -- neutral fallback.
-    if hesitation_intervals:
-        tereddut_skoru = float(np.clip(np.mean(hesitation_intervals) / 1500.0, 0.0, 1.0))
-    else:
-        tereddut_skoru = defaults["tereddut_skoru"]
+    # tereddut_skoru: mean pause before an action, in milliseconds.
+    hesitation_raw = float(np.mean(hesitation_intervals)) if hesitation_intervals else None
 
-    # etkilesim_entropisi: entropy of event spacing across mouse+click+scroll+
-    # keydown, measured PER CHANNEL and then combined -- not by merging all
-    # timestamps into one stream first. Merging first is tempting but wrong:
-    # interleaving several independently-regular channels (e.g. mouse every
-    # 80ms, clicks every 150ms, scroll every 90ms) produces a merged gap
-    # sequence that looks highly irregular even though every channel is
-    # perfectly robotic on its own (a beat-frequency artifact of combining
-    # different periods) -- empirically, three period-regular 0.0-entropy
-    # channels merged into one stream measured ~0.92. Scoring each channel's
-    # own regularity and averaging (weighted by how many gaps each channel
-    # contributed) avoids this entirely.
+    # etkilesim_entropisi: regularity of event spacing, measured PER CHANNEL
+    # and then combined -- not by merging all timestamps into one stream first.
+    # Merging is tempting but wrong: interleaving several independently regular
+    # channels (mouse every 80 ms, clicks every 150 ms, scroll every 90 ms)
+    # produces a merged gap sequence that looks irregular even though every
+    # channel is perfectly robotic on its own, a beat-frequency artefact.
+    # Three period-regular zero-entropy channels merged this way measured ~0.92.
     channel_results = [
         _channel_entropy([m.get("t", 0) for m in mouse_trajectory]),
         _channel_entropy([c.get("t", 0) for c in click_timing]),
@@ -298,14 +393,15 @@ def extract_features(raw: dict) -> dict:
     ]
     available = [r for r in channel_results if r is not None]
     if available:
-        entropies = [e for e, _ in available]
-        weights = [w for _, w in available]
-        etkilesim_entropisi = float(np.average(entropies, weights=weights))
+        entropy_raw = float(
+            np.average([e for e, _ in available], weights=[w for _, w in available])
+        )
     else:
-        etkilesim_entropisi = defaults["etkilesim_entropisi"]
+        entropy_raw = None
 
-    # ivme_degisimi: variance of mouse acceleration (d(speed)/dt), not just speed delta.
-    # Needs >=3 trajectory points (>=2 acceleration samples) to compute at all.
+    # ivme_degisimi: variance of pointer ACCELERATION, not of speed. Constant
+    # velocity has zero acceleration variance at any speed; a hand never does.
+    # Needs >=3 trajectory points to yield >=2 acceleration samples.
     speed_samples = []
     for a, b in zip(mouse_trajectory, mouse_trajectory[1:]):
         dt = max(b.get("t", 0) - a.get("t", 0), 1)
@@ -318,32 +414,47 @@ def extract_features(raw: dict) -> dict:
     for (t1, s1), (t2, s2) in zip(speed_samples, speed_samples[1:]):
         dt = max(t2 - t1, 1)
         accelerations.append((s2 - s1) / dt)
-    if len(accelerations) >= 2:
-        ivme_degisimi = float(np.clip(_safe_variance(accelerations) / ACCELERATION_VARIANCE_DIVISOR, 0.0, 1.0))
-    else:
-        ivme_degisimi = defaults["ivme_degisimi"]
+    accel_raw = _safe_variance(accelerations) if len(accelerations) >= 2 else None
 
-    # tiklama_yogunlugu: click density in the most recent 5s window
+    # Counts. Always well defined, including as a legitimate zero: "no clicks
+    # happened" is a real observation, not a missing measurement.
     click_times = [c.get("t", 0) for c in click_timing]
     if click_times:
         window_end = max(click_times)
-        window_start = window_end - CLICK_DENSITY_WINDOW_MS
-        clicks_in_window = sum(1 for t in click_times if t >= window_start)
-        tiklama_yogunlugu = float(np.clip(clicks_in_window / 10.0, 0.0, 1.0))
+        clicks_in_window = sum(1 for t in click_times if t >= window_end - CLICK_DENSITY_WINDOW_MS)
     else:
-        tiklama_yogunlugu = 0.0
-
-    # odak_degisimi: how often the tab/window lost focus (visibilitychange events)
-    odak_degisimi = float(np.clip(len(focus_changes) / 5.0, 0.0, 1.0))
+        clicks_in_window = 0
 
     return {
-        "scroll_hizi_varyansi": scroll_hizi_varyansi,
-        "tereddut_skoru": tereddut_skoru,
-        "etkilesim_entropisi": etkilesim_entropisi,
-        "ivme_degisimi": ivme_degisimi,
-        "tiklama_yogunlugu": tiklama_yogunlugu,
-        "odak_degisimi": odak_degisimi,
+        "scroll_hizi_varyansi": scroll_raw,
+        "tereddut_skoru": hesitation_raw,
+        "etkilesim_entropisi": entropy_raw,
+        "ivme_degisimi": accel_raw,
+        "tiklama_yogunlugu": float(clicks_in_window),
+        "odak_degisimi": float(len(focus_changes)),
     }
+
+
+def extract_features(raw: dict) -> dict:
+    """Raw SDK payload -> the six model features, each on 0..1.
+
+    Normalisation comes from the training distribution (see
+    normalize_feature and LOG_SCALED_FEATURES), not from hand-picked
+    divisors, so the features use their range instead of sitting on the
+    ceiling.
+    """
+    raw_values = extract_raw(raw)
+    scaling = get_feature_scaling()
+    defaults = get_neutral_defaults()
+
+    features = {}
+    for name in FEATURE_NAMES:
+        value = raw_values[name]
+        if value is None or not math.isfinite(value):
+            features[name] = float(defaults.get(name, 0.0))
+        else:
+            features[name] = normalize_feature(name, value, scaling)
+    return features
 
 
 def _sanitize_row(row, defaults: dict) -> list[float]:

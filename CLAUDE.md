@@ -88,7 +88,7 @@ onlar təyin edilməyibsə proses **başlamır** — susqun default heç vaxt ol
 `FEATURE_NAMES`-dədir — scorer, train_model və SHAP etiketləri hamısı oradan
 oxuyur, buradakı siyahı onun sənədləşdirilməsidir):
 - `scroll_hizi_varyansi` — scroll sürətinin variansı
-- `tereddut_skoru` — hərəkətdən əvvəlki ortalama duraksama (ms / 1500)
+- `tereddut_skoru` — hərəkətdən əvvəlki ortalama duraksama (ms, log-persentil miqyaslı)
 - `etkilesim_entropisi` — hadisə aralıqlarının entropiyası, **kanal başına** ölçülür
 - `ivme_degisimi` — mouse **təcilinin** variansı (sürət deltası deyil)
 - `tiklama_yogunlugu` — son 5 saniyədəki klik sıxlığı

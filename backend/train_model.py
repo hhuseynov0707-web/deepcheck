@@ -434,6 +434,52 @@ PILOT_SESSIONS = int(os.getenv("PILOT_SESSIONS", "2500"))
 PILOT_PASSES = 2
 
 
+# Sessions used to measure the raw distribution of each log-scaled feature.
+SCALING_SESSIONS = int(os.getenv("SCALING_SESSIONS", "1500"))
+
+
+def compute_feature_scaling(n_sessions: int = SCALING_SESSIONS) -> dict:
+    """Measures where each heavy-tailed feature actually lives, and returns the
+    log10 endpoints used to map it onto 0..1.
+
+    This exists because the previous hand-picked divisors were wrong by orders
+    of magnitude, and clipping hid it: acceleration variance divided by 2.2e-6
+    put every jittered pointer path -- human or bot -- at exactly 1.000, so the
+    feature answered "does the pointer wobble?" and nothing else. Two pixels of
+    gaussian noise was enough to flip it.
+
+    Percentiles rather than min/max, so one freak session cannot set the scale
+    for everything else. Deliberately spans BOTH classes: the useful resolution
+    is in the range between robotic and human, and cutting the scale at the
+    human 1st percentile would flatten every bot to zero and throw that away.
+
+    Runs on RAW values, so unlike the neutral fallbacks it needs no fixed-point
+    iteration -- nothing here depends on its own output.
+    """
+    samples = {name: [] for name in scorer.LOG_SCALED_FEATURES}
+    for _ in range(n_sessions):
+        base_t = 1_700_000_000_000 + int(rng.integers(0, 10**9))
+        persona = _pick_persona(int(rng.integers(0, 2)))
+        for payload in simulate_session_windows(persona, base_t):
+            for name, value in scorer.extract_raw(payload).items():
+                if name in samples and value is not None and np.isfinite(value):
+                    samples[name].append(max(float(value), scorer.RAW_FLOOR))
+
+    scaling = {}
+    for name, values in samples.items():
+        if len(values) < 50:
+            scaling[name] = scorer.FEATURE_SCALING[name]
+            print(f"  {name}: only {len(values)} samples, keeping fallback")
+            continue
+        logs = np.log10(np.asarray(values))
+        lo, hi = float(np.percentile(logs, 1)), float(np.percentile(logs, 99))
+        if hi - lo < 0.5:  # degenerate spread; widen so the feature stays usable
+            mid = (hi + lo) / 2.0
+            lo, hi = mid - 0.5, mid + 0.5
+        scaling[name] = (round(lo, 3), round(hi, 3))
+    return scaling
+
+
 def converge_neutral_defaults() -> dict:
     """Finds neutral fallbacks that TRAINING AND SERVING BOTH USE.
 
@@ -576,6 +622,14 @@ def main():
     except (AttributeError, OSError):
         pass
 
+    print("Measuring raw feature distributions for normalization...")
+    feature_scaling = compute_feature_scaling()
+    # extract_features() reads this whenever no bundle is loaded, which is the
+    # case for the whole of training, so the dataset below is generated with
+    # exactly the scaling that will be stored and served.
+    scorer.FEATURE_SCALING.update(feature_scaling)
+    print(f"Feature scaling (log10 range): {feature_scaling}")
+
     print("Converging neutral fallback values...")
     neutral_defaults = converge_neutral_defaults()
 
@@ -613,6 +667,9 @@ def main():
             # written by a different scikit-learn rather than scoring with it
             # and hoping.
             "sklearn_version": sklearn.__version__,
+            # Where each heavy-tailed feature actually lives, measured rather
+            # than guessed. Serving must normalize exactly as training did.
+            "feature_scaling": feature_scaling,
             "neutral_defaults": neutral_defaults,
         },
         scorer.MODEL_PATH,

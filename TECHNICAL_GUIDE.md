@@ -299,15 +299,42 @@ they can never drift apart.
 
 | # | Feature | Computation | Human tends to | Bot tends to |
 |---|---|---|---|---|
-| 1 | `scroll_hizi_varyansi` | variance of scroll speed over consecutive scroll events, / 5 | high | 0 or tiny |
-| 2 | `tereddut_skoru` | mean hesitation gap / 1500 ms | 0.3 – 0.8 | about 0 |
+| 1 | `scroll_hizi_varyansi` | variance of scroll speed, log-percentile scaled | high | 0 or tiny |
+| 2 | `tereddut_skoru` | mean hesitation gap in ms, log-percentile scaled | 0.3 – 0.8 | about 0 |
 | 3 | `etkilesim_entropisi` | Shannon entropy of inter-event gaps, **per channel**, then weighted average | 0.7 – 1.0 | about 0 |
-| 4 | `ivme_degisimi` | variance of mouse *acceleration* (change of speed over time), / 2.2e-6 | about 0.45 | about 0 |
+| 4 | `ivme_degisimi` | variance of mouse *acceleration*, log-percentile scaled | mid-range | near 0 |
 | 5 | `tiklama_yogunlugu` | clicks in the last 5 s / 10 | low | high |
 | 6 | `odak_degisimi` | focus-loss count / 5 | sometimes > 0 | 0 |
 
+**Normalisation is learned, not guessed.** The three heavy-tailed features
+above -- two variances and a mean duration -- are mapped onto 0..1 by taking
+`log10` of the raw value and placing it between the 1st and 99th percentile of
+the training distribution. Those endpoints are measured during training and
+stored in the bundle as `feature_scaling`; a bundle without them is refused
+rather than served, because the model would be reading a different coordinate
+system than it learned.
+
+This replaced three hand-picked divisors, and the reason is worth keeping.
+Divided by 2.2e-6, `ivme_degisimi` read 1.000 for human motion, 1.000 for a
+Bezier-path bot and 0.002 for a straight line: the feature had collapsed into
+"does the pointer wobble at all?". Measured against the training distribution
+afterwards, the real 99th percentile is 2.9e-6 -- the divisor had been sitting
+at the very top of the range, so almost everything clipped. In an adversarial
+test, adding two pixels of gaussian noise to an otherwise metronomic bot
+halved its risk score and turned a refused session into an approved one. After
+the change the same ablation moves the score from 90.4 to 88.6 and the verdict
+does not change at all.
+
 Design decisions worth knowing:
 
+- **Entropy is binned on a fixed log-millisecond grid.** Binning over each
+  session's own `[min, max]` made the feature mean opposite things in
+  different sessions: one long pause, which is what a person reading produces,
+  stretches the range until every ordinary gap lands in the first bin and the
+  entropy collapses toward zero, while a metronomic bot keeps a narrow range
+  and scores higher. Measured on realistic input it was inverted -- 0.174 for
+  a human model against 0.548 for a headless script. Fixed edges make the
+  number comparable between sessions.
 - **Entropy is measured per channel, not on a merged stream.** Merging
   three perfectly regular channels with different periods produces a
   jagged combined gap sequence that scores as high entropy (a
