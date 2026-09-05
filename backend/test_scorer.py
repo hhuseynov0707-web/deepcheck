@@ -15,6 +15,8 @@ gets blocked.
 """
 
 import os
+import time
+from datetime import timedelta
 from types import SimpleNamespace
 
 import numpy as np
@@ -350,22 +352,38 @@ class _StubResult:
     def all(self):
         return list(self._rows)
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
 
 class _StubDB:
     """Just enough AsyncSession for the handlers under test."""
 
-    def __init__(self, session=None, history=(), has_flushes=True):
+    def __init__(self, session=None, history=(), has_flushes=True, flush_count=None, known_hashes=()):
         self.session = session
         self.history = list(history)
-        self.has_flushes = has_flushes
+        # `flush_count` is what /api/decision counts; `has_flushes=False` is
+        # the older shorthand for "zero".
+        if flush_count is None:
+            flush_count = 5 if has_flushes else 0
+        self.flush_count = flush_count
+        # Fingerprints the "database" already holds, for the replay check.
+        self.known_hashes = set(known_hashes)
         self.added = []
         self.committed = False
 
     async def execute(self, statement):
+        text = str(statement)
+        if "WHERE behavior_data.payload_hash =" in text:
+            # The duplicate lookup: match against the literal hash the handler
+            # bound into the statement.
+            params = statement.compile().params
+            hit = any(v in self.known_hashes for v in params.values() if isinstance(v, str))
+            return _StubResult([1] if hit else [])
         return _StubResult(self.history)
 
     async def scalar(self, statement):
-        return 1 if self.has_flushes else None
+        return self.flush_count
 
     async def get(self, model, primary_key):
         return self.session
@@ -377,7 +395,9 @@ class _StubDB:
         self.committed = True
 
 
-def _stub_session(risk_score=0.0, label="Gerçek Kullanıcı"):
+def _stub_session(risk_score=0.0, label="Gerçek Kullanıcı", last_seen_at="now", verified_at=None):
+    if last_seen_at == "now":
+        last_seen_at = main.utcnow()
     return SimpleNamespace(
         id="stub",
         risk_score=risk_score,
@@ -385,7 +405,8 @@ def _stub_session(risk_score=0.0, label="Gerçek Kullanıcı"):
         confidence=0.0,
         shap_explanation=[],
         response_time_ms=0.0,
-        last_seen_at=None,
+        last_seen_at=last_seen_at,
+        verified_at=verified_at,
     )
 
 
@@ -398,8 +419,24 @@ def _clear_overrides():
     main.app.dependency_overrides.clear()
 
 
-def _analyze_payload(session_id: str) -> dict:
-    raw = _headless_bot_session()
+def _shift_to_now(raw: dict, offset_ms: int = 0) -> dict:
+    """Re-times a fixture so its newest event lands at (now + offset_ms). The
+    fixtures are pinned to BASE_T for reproducibility; the API now rejects
+    telemetry whose clock is far from the server's, as a recording would be."""
+    stamps = [e["t"] for key in ("mouse_trajectory", "click_timing", "scroll_events", "key_events") for e in raw[key]]
+    stamps.extend(raw["focus_changes"])
+    delta = int(time.time() * 1000) + offset_ms - max(stamps)
+    shifted = {
+        key: [dict(e, t=e["t"] + delta) for e in raw[key]]
+        for key in ("mouse_trajectory", "click_timing", "scroll_events", "key_events")
+    }
+    shifted["focus_changes"] = [f + delta for f in raw["focus_changes"]]
+    shifted["hesitation_intervals"] = list(raw["hesitation_intervals"])
+    return shifted
+
+
+def _analyze_payload(session_id: str, raw: dict | None = None) -> dict:
+    raw = _shift_to_now(raw or _headless_bot_session())
     return {
         "session_id": session_id,
         "mouse_trajectory": raw["mouse_trajectory"],
@@ -409,6 +446,10 @@ def _analyze_payload(session_id: str) -> dict:
         "focus_changes": raw["focus_changes"],
         "key_events": raw["key_events"],
     }
+
+
+def _raw_from_payload(payload: dict) -> dict:
+    return {k: v for k, v in payload.items() if k != "session_id"}
 
 
 def test_api_rejects_bad_token():
@@ -520,6 +561,204 @@ def test_dashboard_endpoints_require_key():
         _clear_overrides()
 
 
+def test_analyze_rejects_stale_timestamps():
+    """A recording is old by definition. Telemetry whose newest event is far
+    from the server clock is a replay (or a broken clock); either way it is
+    not evidence about the person at the keyboard right now."""
+    session_id = "0a0a0a0a-0000-0000-0000-000000000001"
+    token = main.sign_session(session_id)
+    client = _client(_StubDB(session=_stub_session()))
+    try:
+        raw = _headless_bot_session()  # pinned to BASE_T, i.e. months old
+        stale = dict(raw, session_id=session_id)
+        res = client.post("/api/analyze", json=stale, headers={"X-DeepCheck-Token": token})
+        assert res.status_code == 422, f"eski zaman damgali akis {res.status_code} dondu, 422 bekleniyordu"
+
+        future = _analyze_payload(session_id, raw)
+        for key in ("mouse_trajectory", "click_timing", "scroll_events", "key_events"):
+            future[key] = [dict(e, t=e["t"] + main.MAX_CLOCK_SKEW_MS + 5_000) for e in future[key]]
+        res = client.post("/api/analyze", json=future, headers={"X-DeepCheck-Token": token})
+        assert res.status_code == 422, f"gelecekten akis {res.status_code} dondu, 422 bekleniyordu"
+
+        fresh = _analyze_payload(session_id, raw)
+        res = client.post("/api/analyze", json=fresh, headers={"X-DeepCheck-Token": token})
+        assert res.status_code == 200, f"guncel akis {res.status_code} dondu, 200 bekleniyordu"
+    finally:
+        _clear_overrides()
+
+
+def test_analyze_rejects_backwards_time():
+    """Within a session, time only moves forward. A flush whose newest event
+    predates the previous flush's newest event is a replayed window."""
+    session_id = "0a0a0a0a-0000-0000-0000-000000000002"
+    token = main.sign_session(session_id)
+    payload = _analyze_payload(session_id)
+    newest = main._newest_event_ms(_raw_from_payload(payload))
+
+    previous = SimpleNamespace(risk_score=50.0, newest_event_at=newest + 5_000)
+    for name in FEATURE_NAMES:
+        setattr(previous, name, 0.5)
+    client = _client(_StubDB(session=_stub_session(), history=[previous]))
+    try:
+        res = client.post("/api/analyze", json=payload, headers={"X-DeepCheck-Token": token})
+        assert res.status_code == 422, f"geriye giden zaman {res.status_code} dondu, 422 bekleniyordu"
+    finally:
+        _clear_overrides()
+
+
+def test_analyze_rejects_replayed_payload():
+    """The same recording replayed with its clock shifted to "now" must be
+    caught. The fingerprint rebases timestamps before hashing, so shifting
+    does not change it, and the lookup is global across sessions -- a fresh
+    token does not launder a recording."""
+    raw = _headless_bot_session()
+    first = _shift_to_now(raw)
+    second = _shift_to_now(raw, offset_ms=-3_000)
+    assert main._payload_fingerprint(first) == main._payload_fingerprint(second), (
+        "ayni kaydin saati kaydirilmis kopyasi farkli parmak izi uretti"
+    )
+    # The headless fixture has no mouse points, so perturb a channel it has.
+    perturbed = dict(second)
+    perturbed["hesitation_intervals"] = list(second["hesitation_intervals"]) + [999]
+    assert main._payload_fingerprint(perturbed) != main._payload_fingerprint(first)
+
+    # Session B replays what session A already posted.
+    session_b = "0a0a0a0a-0000-0000-0000-00000000000b"
+    client = _client(_StubDB(session=_stub_session(), known_hashes=[main._payload_fingerprint(first)]))
+    try:
+        res = client.post(
+            "/api/analyze",
+            json=dict(second, session_id=session_b),
+            headers={"X-DeepCheck-Token": main.sign_session(session_b)},
+        )
+        assert res.status_code == 422, f"tekrar oynatilan akis {res.status_code} dondu, 422 bekleniyordu"
+    finally:
+        _clear_overrides()
+
+
+def test_decision_verifies_with_too_few_flushes():
+    """One plausible 2-second window is cheap to fabricate. Until
+    MIN_FLUSHES_FOR_DECISION windows have been analysed, the answer is
+    step-up, whatever the score says."""
+    session_id = "0a0a0a0a-0000-0000-0000-000000000003"
+    token = main.sign_session(session_id)
+    for count in range(main.MIN_FLUSHES_FOR_DECISION):
+        client = _client(_StubDB(session=_stub_session(12.0), flush_count=count))
+        try:
+            res = client.post("/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token})
+            body = res.json()
+            assert body["action"] == "verify", f"{count} akisla '{body['action']}' dondu, 'verify' bekleniyordu"
+            assert body["reason"] == "insufficient_evidence"
+        finally:
+            _clear_overrides()
+
+    client = _client(_StubDB(session=_stub_session(12.0), flush_count=main.MIN_FLUSHES_FOR_DECISION))
+    try:
+        body = client.post("/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}).json()
+        assert body["action"] == "allow", f"yeterli akisla '{body['action']}' dondu, 'allow' bekleniyordu"
+        assert body["reason"] == "score"
+    finally:
+        _clear_overrides()
+
+
+def test_decision_verifies_when_stale():
+    """A verdict is about current behaviour. A session last seen long ago --
+    a token lifted from a shared machine and cashed in later -- goes to
+    step-up even if its stored score is clean."""
+    session_id = "0a0a0a0a-0000-0000-0000-000000000004"
+    token = main.sign_session(session_id)
+    old = main.utcnow() - timedelta(seconds=main.DECISION_MAX_AGE_S + 60)
+    client = _client(_StubDB(session=_stub_session(12.0, last_seen_at=old)))
+    try:
+        body = client.post("/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}).json()
+        assert body["action"] == "verify", f"bayat oturum '{body['action']}' dondu, 'verify' bekleniyordu"
+        assert body["reason"] == "stale"
+    finally:
+        _clear_overrides()
+
+
+def test_demo_charge_never_charges_blocked_session():
+    """The charge lives behind the server. No browser-side sequence can turn
+    a blocked or unverified session into a charged one."""
+    session_id = "0a0a0a0a-0000-0000-0000-000000000005"
+    token = main.sign_session(session_id)
+    body = {"session_id": session_id, "amount": 2038.8}
+
+    cases = [
+        (_StubDB(session=_stub_session(95.0, "Bot Tespit Edildi")), "declined", "block"),
+        (_StubDB(session=_stub_session(72.0, "Yüksek Risk")), "declined", "verify"),
+        (_StubDB(session=_stub_session(12.0), flush_count=1), "declined", "verify"),
+        (_StubDB(session=None), "declined", "verify"),
+        (_StubDB(session=_stub_session(48.0, "Şüpheli")), "charged", "warn"),
+        (_StubDB(session=_stub_session(12.0)), "charged", "allow"),
+    ]
+    for db, expected_status, expected_action in cases:
+        client = _client(db)
+        try:
+            res = client.post("/api/demo/charge", json=body, headers={"X-DeepCheck-Token": token})
+            assert res.status_code == 200, f"{res.status_code} dondu"
+            out = res.json()
+            assert out["status"] == expected_status, f"{expected_action} icin '{out['status']}' dondu"
+            assert out["decision"]["action"] == expected_action
+            assert (out["charge_id"] is not None) == (expected_status == "charged")
+        finally:
+            _clear_overrides()
+
+    client = _client(_StubDB(session=_stub_session(12.0)))
+    try:
+        assert client.post("/api/demo/charge", json=body).status_code == 401
+    finally:
+        _clear_overrides()
+
+
+def test_demo_verify_upgrades_verify_but_not_block():
+    """Step-up is recorded on the server and only ever upgrades 'verify' to
+    'allow'. A wrong code is rejected; a confident bot verdict stays blocked
+    no matter how many codes are entered."""
+    session_id = "0a0a0a0a-0000-0000-0000-000000000006"
+    token = main.sign_session(session_id)
+    headers = {"X-DeepCheck-Token": token}
+
+    session = _stub_session(72.0, "Yüksek Risk")
+    db = _StubDB(session=session)
+    client = _client(db)
+    try:
+        wrong = client.post("/api/demo/verify", json={"session_id": session_id, "code": "000000"}, headers=headers)
+        assert wrong.status_code == 400, f"yanlis kod {wrong.status_code} dondu, 400 bekleniyordu"
+        assert session.verified_at is None
+
+        ok = client.post(
+            "/api/demo/verify", json={"session_id": session_id, "code": main.DEMO_VERIFY_CODE}, headers=headers
+        )
+        assert ok.status_code == 200 and ok.json()["verified"] is True
+        assert session.verified_at is not None and db.committed
+
+        charged = client.post("/api/demo/charge", json={"session_id": session_id, "amount": 10}, headers=headers).json()
+        assert charged["status"] == "charged", f"dogrulanmis oturum '{charged['status']}' dondu"
+        assert charged["decision"]["reason"] == "verified"
+    finally:
+        _clear_overrides()
+
+    blocked = _stub_session(95.0, "Bot Tespit Edildi", verified_at=main.utcnow())
+    client = _client(_StubDB(session=blocked))
+    try:
+        out = client.post("/api/demo/charge", json={"session_id": session_id, "amount": 10}, headers=headers).json()
+        assert out["status"] == "declined" and out["decision"]["action"] == "block", (
+            "dogrulama bir 'block' kararini asamaz"
+        )
+    finally:
+        _clear_overrides()
+
+    client = _client(_StubDB(session=None))
+    try:
+        res = client.post(
+            "/api/demo/verify", json={"session_id": session_id, "code": main.DEMO_VERIFY_CODE}, headers=headers
+        )
+        assert res.status_code == 404, "hic akis gondermemis oturum dogrulanamaz"
+    finally:
+        _clear_overrides()
+
+
 def test_lstm_reacts_to_trajectory():
     """The sequence model must respond to a session's HISTORY, not only to
     its latest flush.
@@ -563,6 +802,13 @@ def _run_all():
         test_decision_blocks_bot_session,
         test_decision_fails_closed_without_telemetry,
         test_dashboard_endpoints_require_key,
+        test_analyze_rejects_stale_timestamps,
+        test_analyze_rejects_backwards_time,
+        test_analyze_rejects_replayed_payload,
+        test_decision_verifies_with_too_few_flushes,
+        test_decision_verifies_when_stale,
+        test_demo_charge_never_charges_blocked_session,
+        test_demo_verify_upgrades_verify_but_not_block,
     ]
     failures = []
     for test in tests:

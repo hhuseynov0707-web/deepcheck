@@ -6,6 +6,9 @@ import VerificationModal from "../components/VerificationModal.jsx";
 import { detectCardType, formatCardNumber, formatCvv, formatExpiry } from "../utils/cardFormat.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Shown inside the step-up modal so the demo code reads as a deliberate demo
+// value. Must match the backend's DEMO_VERIFY_CODE (both come from .env).
+const DEMO_VERIFY_CODE = import.meta.env.VITE_DEMO_VERIFY_CODE || "482913";
 
 const ORDER = {
   merchant: "TechStore",
@@ -29,6 +32,7 @@ export default function Demo() {
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [blockMessage, setBlockMessage] = useState(null);
   const [warnMessage, setWarnMessage] = useState(null);
+  const [hintMessage, setHintMessage] = useState(null);
 
   useEffect(() => {
     if (!window.DeepCheck) {
@@ -67,64 +71,95 @@ export default function Demo() {
     !scoreUnavailable && typeof risk?.risk_score === "number" && Number.isFinite(risk.risk_score);
   const riskScore = hasScore ? risk.risk_score : null;
 
-  function processPayment() {
-    setStatus("loading");
-    window.setTimeout(() => {
-      setStatus("success");
-      window.setTimeout(() => setStatus("idle"), 2500);
-    }, 1000);
+  function sessionHeaders() {
+    const sessionId = window.DeepCheck?.getSessionId?.();
+    const token = window.DeepCheck?.getToken?.();
+    if (!sessionId || !token) throw new Error("Oturum jetonu yok");
+    return { sessionId, headers: { "Content-Type": "application/json", "X-DeepCheck-Token": token } };
   }
 
-  function applyDecision(decision) {
-    const action = decision?.action;
-    if (action === "block") {
-      setStatus("idle");
-      setBlockMessage(decision.message || "İşlem Reddedildi — Şüpheli Davranış Tespit Edildi");
-      return;
-    }
-    if (action === "verify") {
-      setStatus("idle");
-      setShowVerifyModal(true);
-      return;
-    }
-    if (action === "warn") {
-      setWarnMessage(decision.message || null);
-    }
-    processPayment();
-  }
-
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (status === "loading") return;
-
+  // The charge itself happens on the server. This page sends the request and
+  // renders whatever came back; it holds no rule that could be edited away.
+  // Whether the payment goes through is decided by /api/demo/charge, which
+  // applies the ladder, the minimum-evidence and freshness rules, and any
+  // server-recorded step-up verification -- none of which this code can see
+  // or influence.
+  async function submitCharge() {
     setBlockMessage(null);
     setWarnMessage(null);
+    setHintMessage(null);
     setStatus("loading");
 
     try {
-      const sessionId = window.DeepCheck?.getSessionId?.();
-      const token = window.DeepCheck?.getToken?.();
-      if (!sessionId || !token) throw new Error("Oturum jetonu yok");
-
-      const res = await fetch(`${API_URL}/api/decision`, {
+      const { sessionId, headers } = sessionHeaders();
+      const res = await fetch(`${API_URL}/api/demo/charge`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-DeepCheck-Token": token },
-        body: JSON.stringify({ session_id: sessionId }),
+        headers,
+        body: JSON.stringify({ session_id: sessionId, amount: total }),
       });
       if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
-      applyDecision(await res.json());
+      const result = await res.json();
+      const decision = result.decision || {};
+
+      if (result.status === "charged") {
+        if (decision.action === "warn") setWarnMessage(decision.message || null);
+        setStatus("success");
+        window.setTimeout(() => setStatus("idle"), 2500);
+        return;
+      }
+
+      setStatus("idle");
+      if (decision.action === "block") {
+        setBlockMessage(decision.message || "İşlem Reddedildi — Şüpheli Davranış Tespit Edildi");
+      } else if (decision.reason === "insufficient_evidence") {
+        // Too little behaviour observed yet. Asking for an OTP here would be
+        // odd for a real customer who has been on the page for two seconds;
+        // tell them to continue and try again.
+        setHintMessage(decision.message || "Karar için yeterli davranış verisi yok, lütfen birkaç saniye sonra tekrar deneyin.");
+      } else {
+        setShowVerifyModal(true);
+      }
     } catch (err) {
-      // Fail closed. A decision we could not obtain is not an approval, so
-      // the payment goes to step-up verification rather than through.
-      console.error("[Demo] karar alınamadı:", err);
+      // Fail closed. A charge we could not complete is not a completed
+      // charge, so the customer is routed to step-up rather than told
+      // "success".
+      console.error("[Demo] ödeme isteği başarısız:", err);
       setStatus("idle");
       setShowVerifyModal(true);
+    }
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (status === "loading") return;
+    submitCharge();
+  }
+
+  // Sends the step-up code to the server, which records the result on the
+  // session. Resolves to { ok, message } for the modal; it never decides.
+  async function verifyCode(code) {
+    try {
+      const { sessionId, headers } = sessionHeaders();
+      const res = await fetch(`${API_URL}/api/demo/verify`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ session_id: sessionId, code }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, message: body?.detail || "Doğrulama başarısız" };
+      return { ok: body?.verified === true, message: body?.message };
+    } catch (err) {
+      console.error("[Demo] doğrulama isteği başarısız:", err);
+      return { ok: false, message: "Doğrulama sunucusuna ulaşılamadı" };
     }
   }
 
   function handleVerified() {
     setShowVerifyModal(false);
-    processPayment();
+    // Verification was recorded server-side; charging again lets the server
+    // apply it. If it did not take (e.g. the verdict was "block"), the
+    // server declines again and the page shows that.
+    submitCharge();
   }
 
   const inputClass =
@@ -265,6 +300,12 @@ export default function Demo() {
               </p>
             )}
 
+            {hintMessage && (
+              <p className="text-center rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm text-zinc-300">
+                {hintMessage}
+              </p>
+            )}
+
             {status === "success" && (
               <p className="text-center rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
                 Ödeme başarıyla alındı (demo).
@@ -295,7 +336,12 @@ export default function Demo() {
       </div>
 
       {showVerifyModal && (
-        <VerificationModal onVerified={handleVerified} onClose={() => setShowVerifyModal(false)} />
+        <VerificationModal
+          onVerified={handleVerified}
+          onClose={() => setShowVerifyModal(false)}
+          verify={verifyCode}
+          demoCode={DEMO_VERIFY_CODE}
+        />
       )}
     </div>
   );

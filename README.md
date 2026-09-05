@@ -155,7 +155,9 @@ A session's reported score is the **median of its last 5 flushes**, not the inst
 |---|---|---|
 | `POST /api/session` | — | Mint a session id and its signed token |
 | `POST /api/analyze` | `X-DeepCheck-Token` | Score a behavior window |
-| `POST /api/decision` | `X-DeepCheck-Token` | **The enforcement point.** Returns the action to take |
+| `POST /api/decision` | `X-DeepCheck-Token` | **The enforcement point.** Returns the action to take and why |
+| `POST /api/demo/charge` | `X-DeepCheck-Token` | Demo merchant backend: applies the decision and charges, or declines |
+| `POST /api/demo/verify` | `X-DeepCheck-Token` | Demo step-up: records a successful verification on the server |
 | `GET /api/score/{session_id}` | `X-Dashboard-Key` | Full history for one session |
 | `GET /api/sessions` | `X-Dashboard-Key` | All sessions, for the dashboard |
 | `GET /api/health` | — | Service and model status |
@@ -165,6 +167,19 @@ Session ids are minted server-side and signed with HMAC-SHA256 over
 telemetry cannot be posted under a session id its sender was not given. The
 SOC endpoints expose every customer's live session and are behind a separate
 key.
+
+**Replay protection.** `/api/analyze` rejects (422) a flush whose newest event
+is more than 15 s from the server clock, a flush whose time runs backwards
+within its session, and any telemetry whose clock-independent fingerprint
+(timestamps rebased before hashing) has been seen before in *any* session. A
+recording of a real person cannot be replayed under a fresh token, with or
+without its timestamps rewritten.
+
+**Evidence before a verdict.** `/api/decision` answers `verify` until at least
+3 flushes (6 s of behaviour) have been analysed and while the session's last
+flush is older than 30 s. One plausible window is cheap to fabricate; six
+seconds of sustained behaviour is not, and a verdict must be about behaviour
+that is happening now.
 
 ### SDK usage
 
@@ -208,21 +223,29 @@ SDK bunu kendisi ister ve her akışta `X-DeepCheck-Token` başlığıyla gönde
 </script>
 ```
 
-**3. Ödeme anında kararı sunucudan alın ve uygulayın.** Risk skorunu
-tarayıcıda karşılaştırmayın: eşikler yalnızca `POST /api/decision` içinde
-uygulanır, çünkü tarayıcıdaki her kontrol saldırganın düzenleyebileceği bir
-kontroldür.
+**3. Ödeme anında kararı SUNUCUNUZDAN alın ve uygulayın.** Tarayıcı, ödeme
+isteğiyle birlikte `DeepCheck.getSessionId()` ve `DeepCheck.getToken()`
+değerlerini kendi arka ucunuza gönderir; kararı arka ucunuz ister ve ödeme
+sağlayıcısını yalnızca `allow` veya `warn` geldiğinde çağırır. Risk skorunu
+tarayıcıda karşılaştırmayın ve ödemeyi tarayıcıdan başlatmayın: tarayıcıdaki
+her kontrol saldırganın düzenleyebileceği bir kontroldür. Bu depodaki
+`POST /api/demo/charge` bu deseni küçük ölçekte gösterir — karar ve tahsilat
+aynı sunucu çağrısında yapılır, sayfada hiçbir koşul yoktur.
 
 ```js
+// Merchant backend (Node örneği) — tarayıcıdan gelen session_id ve token ile
 const res = await fetch("https://<host>/api/decision", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "X-DeepCheck-Token": DeepCheck.getToken(),
+    "X-DeepCheck-Token": token,
   },
-  body: JSON.stringify({ session_id: DeepCheck.getSessionId() }),
+  body: JSON.stringify({ session_id }),
 });
 const decision = await res.json();
+if (decision.action === "allow" || decision.action === "warn") {
+  await paymentProvider.charge(order);
+}
 ```
 
 ```json
@@ -230,9 +253,22 @@ const decision = await res.json();
   "action": "verify",
   "risk_score": 73.4,
   "label": "Yüksek Risk",
-  "message": "Ek dogrulama gerekli"
+  "message": "Ek dogrulama gerekli",
+  "reason": "score"
 }
 ```
+
+`reason` kararın nedenini söyler: `score` (eşik), `insufficient_evidence`
+(henüz 3 akıştan az davranış var — kullanıcıya "birkaç saniye sonra tekrar
+deneyin" gösterin, OTP istemeyin), `stale` (son akış 30 saniyeden eski),
+`unknown_session`, `verified` (ek doğrulama sunucuda kaydedilmiş ve `verify`
+kararını `allow`a yükseltmiş).
+
+**Ek doğrulama** sonucu tarayıcıda değil sunucuda tutulur: demo'daki
+`POST /api/demo/verify` kodu doğrular ve oturuma yazar, sonraki `charge`
+çağrısı bunu okur. Gerçek entegrasyonda bu adım SMS / 3-D Secure
+sağlayıcınızdır. Doğrulama yalnızca `verify` kararını yükseltir; `block`
+kararı hiçbir kodla aşılamaz.
 
 | `action` | Skor | Etiket | Yapılması gereken |
 |---|---|---|---|
@@ -316,7 +352,7 @@ This is a **competition MVP**, and worth reading as one.
 
 The detection pipeline, the SDK, and both interfaces work end to end and are what you see running. Current models are trained on synthetic behavior, so reported separation reflects the quality of that simulation rather than measured performance against real traffic — collecting labeled sessions from real users and off-the-shelf automation frameworks is the next substantive step, and no accuracy claim here should be taken as a production benchmark until then.
 
-Risk enforcement is server-side: `POST /api/decision` is the only place the thresholds are applied, session tokens are signed, and the SOC endpoints are behind a key. Rate limiting, a migration tool for the database schema, and key rotation are still tracked work rather than oversights, and the deployment is sized for a demonstration.
+Risk enforcement is server-side: `POST /api/decision` is the only place the thresholds are applied, session tokens are signed, telemetry replay is rejected, a verdict needs six seconds of current behaviour, the demo's charge and step-up verification both live behind the server, and the SOC endpoints are behind a key. Rate limiting, a migration tool for the database schema, and key rotation are still tracked work rather than oversights, and the deployment is sized for a demonstration.
 
 ---
 

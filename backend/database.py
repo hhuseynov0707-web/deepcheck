@@ -58,6 +58,23 @@ async def init_db() -> None:
         # transaction-scoped and releases on commit.
         await conn.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _SCHEMA_LOCK_KEY})
         await conn.run_sync(Base.metadata.create_all)
+        # create_all never ALTERs an existing table, so a volume created by an
+        # earlier version would be missing the columns added since and the
+        # first flush would fail with a 500 at request time. Until a real
+        # migration tool is adopted, add the known additions idempotently
+        # here, at boot, under the same lock.
+        for statement in _ADDITIVE_MIGRATIONS:
+            await conn.execute(text(statement))
+
+
+# Columns and indexes added after the first release. Every statement must be
+# safe to run on a schema that already has it (IF NOT EXISTS).
+_ADDITIVE_MIGRATIONS = (
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS payload_hash VARCHAR(64)",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS newest_event_at BIGINT",
+    "CREATE INDEX IF NOT EXISTS ix_behavior_data_payload_hash ON behavior_data (payload_hash)",
+)
 
 
 async def get_db():

@@ -193,18 +193,68 @@ Processing order:
 Errors: 503 if the model is not loaded, 500 with a generic Turkish message
 on any other failure (tracebacks are logged, never returned).
 
+#### Replay protection
+
+Before scoring, three checks reject telemetry that is not evidence about
+the person at the keyboard right now. Each returns 422 with a Turkish
+message and is logged.
+
+1. **Clock skew.** The newest event in the flush must be within 15 s of the
+   server clock. A recording is old by definition.
+2. **Forward time.** Within a session, each flush's newest event must not be
+   older than the previous flush's newest event.
+3. **Fingerprint.** A SHA-256 of the telemetry with every timestamp rebased
+   to the flush's first event, so shifting a recording's clock to "now" does
+   not change it. The lookup is global across sessions: a fresh token does
+   not launder a recording. Stored as `behavior_data.payload_hash`.
+
+A recording that is perturbed as well as re-timed gets past the hash. That
+is where replay stops being a transport problem and becomes a model
+problem, which the LSTM history and the real-session evaluation address.
+
 ### `POST /api/decision`
 
 The enforcement point, and the only place the 40 / 60 / 80 ladder is
 applied. Takes `{session_id}` plus the token, returns
-`{action, risk_score, label, message}` where action is `allow`, `warn`,
-`verify` or `block`.
+`{action, risk_score, label, message, reason}` where action is `allow`,
+`warn`, `verify` or `block`.
 
-It fails closed. An unknown session, a session that has never had a flush
-analysed, or a non-finite score all return `verify` — never `allow`. The
-`sessions.risk_score` column defaults to 0.0, so "has this session ever been
-scored?" is answered by looking for a `behavior_data` row rather than by
-trusting that default.
+It fails closed, and it needs evidence. In order:
+
+| Condition | Result | `reason` |
+|---|---|---|
+| No session row | `verify` | `unknown_session` |
+| Fewer than 3 analysed flushes (6 s of behaviour) | `verify` | `insufficient_evidence` |
+| Last flush older than 30 s | `verify` | `stale` |
+| Score puts it in the `verify` band but a step-up was recorded within 5 min | `allow` | `verified` |
+| Otherwise, the ladder | as scored | `score` |
+
+One plausible two-second window is cheap to fabricate; six seconds of
+sustained behaviour is not. The freshness rule stops a token lifted from a
+shared machine being cashed in later on the real customer's earlier
+browsing. A recorded verification only ever upgrades `verify`; a `block`
+cannot be verified past.
+
+### `POST /api/demo/charge`
+
+The merchant side of the pattern, in miniature. Takes `{session_id,
+amount}` plus the token, runs the decision logic above, and returns
+`{status: "charged", charge_id, ...}` only for `allow` or `warn`; otherwise
+`{status: "declined", decision}`. In a real integration the merchant's own
+backend calls `/api/decision` and then its payment provider. Here both live
+in one endpoint so the property a jury will test for holds visibly: the
+demo page contains no condition that could be edited to produce a charge.
+
+### `POST /api/demo/verify`
+
+Takes `{session_id, code}` plus the token. Checks the code against
+`DEMO_VERIFY_CODE` in constant time and, on success, writes
+`sessions.verified_at`. It stands in for an SMS or 3-D Secure provider; the
+point is where the result lives. The browser can submit a code. Whether
+that unlocks anything is decided on the server and read back by the charge
+endpoint. A session with no row (a client that never sent a flush) cannot
+be verified. The demo code is printed in the modal on purpose, so it reads
+as a deliberate demo value rather than an "any six digits" bypass.
 
 ### `GET /api/score/{session_id}`
 
@@ -420,10 +470,13 @@ is the raw per-flush signal kept for analysis and charting.
 - **Demo.jsx** — Turkish card form (Kart Numarası, Son Kullanma, CVV,
   Tutar, Onayla). Card type icon and formatting are cosmetic. The risk
   badge is top-right and is **display only**. Pressing Onayla calls
-  `POST /api/decision` and obeys the `action` it returns; no threshold is
-  compared in the browser, because a control in the browser is a control
-  the attacker can edit. A decision that cannot be obtained (network error,
-  no token) routes to the verification modal, never to allow.
+  `POST /api/demo/charge` and renders whatever came back: charged,
+  declined with a block message, a "not enough behaviour yet, try again"
+  hint, or the verification modal. The page holds no threshold, no
+  decision, and no local payment path; a charge it cannot complete is not a
+  success and routes to step-up. The modal posts its code to
+  `POST /api/demo/verify` and then charges again so the server can apply
+  the recorded verification.
 - **Dashboard.jsx** — dark SOC theme. Session table coloured by label,
   D3 line chart of the selected session's raw history, horizontal SHAP bars
   with Turkish feature names, metric cards, 3 s refresh.
@@ -451,7 +504,7 @@ is the raw per-flush signal kept for analysis and charting.
 
 ## 13. Tests
 
-`backend/test_scorer.py` runs twelve tests. Seven scoring scenarios go
+`backend/test_scorer.py` runs nineteen tests. Seven scoring scenarios go
 through the real `compute_risk`:
 
 - natural human scores low
@@ -465,14 +518,21 @@ through the real `compute_risk`:
 One checks the sequence model actually reads history: the same current flush
 must score differently after a robotic history than after a calm one.
 
-Four cover the API's authorization and enforcement:
+Eleven cover the API's authorization and enforcement:
 
 - `/api/analyze` rejects a missing, wrong, or other-session token
+- `/api/analyze` rejects telemetry far from the server clock, in either direction
+- `/api/analyze` rejects a flush whose time runs backwards within its session
+- `/api/analyze` rejects a recording replayed under a new token with its clock shifted
 - `/api/decision` returns block / verify / warn / allow across the ladder
 - `/api/decision` returns verify for a session with no telemetry at all
+- `/api/decision` returns verify until three flushes have been analysed
+- `/api/decision` returns verify when the last flush is older than 30 s
+- `/api/demo/charge` never charges a blocked, unverified, thin or unknown session
+- `/api/demo/verify` rejects a wrong code, upgrades verify to allow, and cannot lift a block
 - the SOC endpoints reject a missing or wrong dashboard key
 
-Those four run against a stub database rather than Postgres, deliberately: an
+Those run against a stub database rather than Postgres, deliberately: an
 authorization check that needs infrastructure to test is an authorization
 check that stops being tested.
 
@@ -525,15 +585,19 @@ are in `ESSENTIAL_CHANGES.md`.
 3. **No rate limiting.** `POST /api/session` will mint tokens as fast as it
    is asked to.
 4. **No schema migration tool.** `create_all()` creates tables but does not
-   alter existing ones, so a column or constraint added later needs applying
-   by hand. Alembic is the obvious fix.
+   alter existing ones. As a stop-gap, `init_db` applies a short list of
+   additive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements at boot so
+   existing volumes keep working; Alembic is the proper fix.
 5. **No key rotation.** Changing `DEEPCHECK_SECRET` invalidates every live
    session token at once.
 
 Resolved since the first draft of this guide: client-side enforcement
 (now `POST /api/decision`), unauthenticated endpoints (now signed session
-tokens and a dashboard key), and the LSTM's tiled input (now the session's
-real flush history, trained on real sequences).
+tokens and a dashboard key), the LSTM's tiled input (now the session's
+real flush history, trained on real sequences), telemetry replay (clock
+skew, forward-time and fingerprint checks), one-flush verdicts (now three
+flushes and 30 s freshness), and the browser-side charge and step-up (now
+`/api/demo/charge` and `/api/demo/verify`).
 
 ---
 
@@ -587,11 +651,14 @@ as "allow". Once server-side enforcement lands, a missing session token
 is rejected at the API.
 
 **Can a bot just call your API with fake human data?**
-Today yes, because session ids are client-supplied. The planned signed
-token stops impersonating another session, and server-side decision
-removes the client from the trust path. Fabricated telemetry is then a
-model problem, which the forge-resistant features and real evaluation
-address.
+It can call the API, but it needs a server-minted token, so it can only
+post under a session it opened itself. It cannot replay a recording of a
+real person: telemetry far from the server clock, time running backwards,
+or a fingerprint already seen in any session is rejected. It cannot cash in
+one lucky window: a verdict needs three flushes of current behaviour. What
+remains is *synthesising* human-shaped telemetry live, which is a model
+problem rather than a transport one, and is what the forge-resistant
+features and the real-session evaluation are for.
 
 **Can a bot imitate a human?**
 A sophisticated bot that copies human timing distributions can lower its

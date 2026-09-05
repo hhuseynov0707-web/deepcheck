@@ -32,6 +32,9 @@ services:
       DEEPCHECK_SECRET: ${DEEPCHECK_SECRET:-}
       DASHBOARD_KEY: ${DASHBOARD_KEY:-}
       DEBUG: ${DEBUG:-1}
+      # Step-up code accepted by POST /api/demo/verify. A demo stand-in for
+      # the merchant's SMS / 3-D Secure provider; shown in the demo's modal.
+      DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
     ports:
       - "8000:8000"
     volumes:
@@ -51,6 +54,8 @@ services:
       # Must match the backend's DASHBOARD_KEY or the SOC dashboard shows
       # "Yetkisiz erişim". The default matches the backend's DEBUG fallback.
       VITE_DASHBOARD_KEY: ${DASHBOARD_KEY:-deepcheck-dev-dashboard-key}
+      # Displayed in the step-up modal; must match the backend's value.
+      VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
     ports:
       - "3000:3000"
     volumes:

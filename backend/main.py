@@ -1,19 +1,21 @@
 import hashlib
 import hmac
+import json
 import logging
 import math
 import os
 import statistics
+import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +52,60 @@ HISTORY_FETCH_ROWS = max(SMOOTHING_WINDOW - 1, LSTM_HISTORY_ROWS)
 # demo stand running all day in front of visitors.
 SESSIONS_PAGE_LIMIT = 200
 HISTORY_LIMIT = 200
+
+# --- Replay protection for /api/analyze -------------------------------------
+#
+# Telemetry timestamps used to be checked only for being between 1970 and
+# 2100. That let an attacker record one genuine human session once and replay
+# its flushes, byte for byte, under a freshly minted token before every
+# fraudulent checkout: the score came out human, the token was valid, and
+# /api/decision said "allow". No ML evasion was needed at all.
+#
+# Three checks close the cheap versions of that attack:
+#   1. The newest event in a flush must be within MAX_CLOCK_SKEW_MS of the
+#      server clock. A recording is, by definition, old.
+#   2. Time must move forward within a session: the newest event of each
+#      flush must not be older than the previous flush's newest event.
+#   3. A clock-independent fingerprint of the telemetry (timestamps rebased to
+#      the flush's first event before hashing) must not already exist in the
+#      database, in ANY session. Rewriting a recording's timestamps to "now"
+#      defeats check 1; it does not change this hash.
+#
+# A recording that is perturbed as well as re-timed gets past the hash. That
+# is the point where replay stops being a transport problem and becomes a
+# model problem (is the perturbed behaviour still human-shaped?), which the
+# LSTM history and the real-session evaluation are there to answer.
+#
+# 15 s is generous on purpose: phones and laptops drift by seconds, and the
+# SDK's window can legitimately end up to ~10 s before the flush when the user
+# is idle. Log the observed skew for a while before tightening.
+MAX_CLOCK_SKEW_MS = 15_000
+
+# --- Evidence and freshness for /api/decision -------------------------------
+#
+# One 2-second flush is not enough behaviour to trust: a script can produce
+# a single plausible window far more easily than it can sustain one. Three
+# flushes is six seconds of observed behaviour and also the point at which
+# the 5-flush median smoothing starts to mean something.
+MIN_FLUSHES_FOR_DECISION = 3
+
+# A verdict is about the behaviour that produced it, and that behaviour must
+# be current. Without this, a token lifted from a shared machine (or via XSS
+# on the merchant page) could be cashed in an hour later on the strength of
+# the real customer's earlier browsing.
+DECISION_MAX_AGE_S = 30
+
+# How long a successful step-up verification keeps upgrading "verify" to
+# "allow". Long enough to finish the checkout, short enough not to become a
+# standing bypass.
+VERIFICATION_VALID_S = 300
+
+# Fixed demo step-up code. The real integration replaces /api/demo/verify with
+# the merchant's SMS / 3-D Secure provider; the demo shows the *pattern*
+# (verification recorded on the server, never asserted by the browser) and
+# prints this code in the modal so a jury can see it is a deliberate demo
+# value, not an "any six digits" bypass.
+DEMO_VERIFY_CODE = os.getenv("DEMO_VERIFY_CODE", "482913").strip()
 
 logger = logging.getLogger("deepcheck")
 
@@ -131,6 +187,17 @@ ACTION_MESSAGES = {
     "block": "Islem Reddedildi - Supheli Davranis Tespit Edildi",
 }
 
+# Why a decision came out the way it did. `reason` lets the host page tell
+# "not enough behaviour yet, try again in a moment" apart from "the score
+# itself is high" without the ladder leaving the server.
+REASON_MESSAGES = {
+    "score": None,  # ACTION_MESSAGES[action] already says it
+    "unknown_session": "Oturum bulunamadi - davranis analizi yapilamadi",
+    "insufficient_evidence": "Karar icin yeterli davranis verisi yok, lutfen birkac saniye sonra tekrar deneyin",
+    "stale": "Oturumun davranis verisi guncel degil, ek dogrulama gerekli",
+    "verified": "Ek dogrulama basariyla tamamlandi, islem onaylandi",
+}
+
 
 def get_action(risk_score: float | None) -> str:
     """Fail closed. A missing or non-finite score is not evidence of
@@ -143,6 +210,57 @@ def get_action(risk_score: float | None) -> str:
         if risk_score < threshold:
             return action
     return ACTION_LADDER[-1][1]
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Postgres returns tz-aware datetimes for timestamptz columns; a stub or
+    an old row may hand back a naive one. Treat naive as UTC."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+_STAMPED_CHANNELS = ("mouse_trajectory", "click_timing", "scroll_events", "key_events")
+
+
+def _all_timestamps(raw: dict) -> list[float]:
+    stamps = [e["t"] for key in _STAMPED_CHANNELS for e in raw[key]]
+    stamps.extend(raw["focus_changes"])
+    return stamps
+
+
+def _newest_event_ms(raw: dict) -> int | None:
+    """The most recent timestamp anywhere in a flush, or None if the flush
+    carries no timestamped events at all (a hesitation-only window after the
+    user has been idle long enough for everything else to roll out)."""
+    stamps = _all_timestamps(raw)
+    return int(max(stamps)) if stamps else None
+
+
+def _payload_fingerprint(raw: dict) -> str:
+    """Clock-independent SHA-256 of a flush's telemetry.
+
+    Every timestamp is rebased to the flush's earliest event before hashing,
+    so the same recording replayed with its clock shifted to "now" produces
+    the same fingerprint. Coordinates are rounded to 0.1 px so float
+    formatting differences between clients do not defeat the match.
+    """
+    stamps = _all_timestamps(raw)
+    base = min(stamps) if stamps else 0
+    # float() before round(): an integer 300 and a float 300.0 must hash the
+    # same, and JSON renders them differently otherwise.
+    canonical = {
+        "m": [[round(float(p["x"]), 1), round(float(p["y"]), 1), int(p["t"] - base)] for p in raw["mouse_trajectory"]],
+        "c": [[round(float(c["x"]), 1), round(float(c["y"]), 1), int(c["t"] - base)] for c in raw["click_timing"]],
+        "s": [[round(float(e["scrollY"]), 1), int(e["t"] - base)] for e in raw["scroll_events"]],
+        "k": [int(k["t"] - base) for k in raw["key_events"]],
+        "f": [int(round(f - base)) for f in raw["focus_changes"]],
+        "h": [int(round(h)) for h in raw["hesitation_intervals"]],
+    }
+    encoded = json.dumps(canonical, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def utcnow() -> datetime:
@@ -302,6 +420,29 @@ class DecisionResponse(BaseModel):
     risk_score: float | None
     label: str
     message: str
+    reason: str
+
+
+class VerifyRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    code: str = Field(min_length=1, max_length=16)
+
+
+class VerifyResponse(BaseModel):
+    verified: bool
+    message: str
+
+
+class ChargeRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    amount: float = Field(gt=0, le=1_000_000, allow_inf_nan=False)
+
+
+class ChargeResponse(BaseModel):
+    status: str  # "charged" | "declined"
+    charge_id: str | None
+    amount: float
+    decision: DecisionResponse
 
 
 @app.post("/api/session", response_model=SessionCreateResponse, status_code=201)
@@ -346,8 +487,9 @@ async def analyze(
     }
 
     # Read this session's recent flushes BEFORE scoring: the LSTM needs them
-    # as its input sequence, and the median smoothing below needs their
-    # scores. Newest first; both consumers re-order as they need.
+    # as its input sequence, the median smoothing below needs their scores,
+    # and the replay checks need the previous flush's newest timestamp.
+    # Newest first; consumers re-order as they need.
     recent_result = await db.execute(
         select(BehaviorData)
         .where(BehaviorData.session_id == session_id)
@@ -355,6 +497,35 @@ async def analyze(
         .limit(HISTORY_FETCH_ROWS)
     )
     recent_rows = list(recent_result.scalars().all())
+
+    # Replay protection. See the MAX_CLOCK_SKEW_MS comment for the attack.
+    newest_event_at = _newest_event_ms(raw)
+    if newest_event_at is not None:
+        skew_ms = int(time.time() * 1000) - newest_event_at
+        if abs(skew_ms) > MAX_CLOCK_SKEW_MS:
+            logger.warning("replay/skew rejected for session %s: skew=%dms", session_id, skew_ms)
+            raise HTTPException(
+                status_code=422,
+                detail="Telemetri zaman damgasi sunucu saatiyle uyumsuz (tekrar oynatma suphesi)",
+            )
+        previous_newest = getattr(recent_rows[0], "newest_event_at", None) if recent_rows else None
+        if previous_newest is not None and newest_event_at < previous_newest:
+            logger.warning("replay/backwards-time rejected for session %s", session_id)
+            raise HTTPException(
+                status_code=422,
+                detail="Telemetri zamani geriye gidiyor (tekrar oynatma suphesi)",
+            )
+
+    payload_hash = _payload_fingerprint(raw)
+    duplicate = await db.execute(
+        select(BehaviorData.id).where(BehaviorData.payload_hash == payload_hash).limit(1)
+    )
+    if duplicate.scalars().first() is not None:
+        logger.warning("replay/duplicate rejected for session %s: hash=%s", session_id, payload_hash[:12])
+        raise HTTPException(
+            status_code=422,
+            detail="Bu davranis penceresi daha once gonderilmis (tekrar oynatma suphesi)",
+        )
 
     # Oldest -> newest, so the sequence handed to the LSTM runs forward in
     # time and the current flush lands on the last timestep.
@@ -428,6 +599,8 @@ async def analyze(
         tiklama_yogunlugu=features["tiklama_yogunlugu"],
         odak_degisimi=features["odak_degisimi"],
         risk_score=result["risk_score"],
+        payload_hash=payload_hash,
+        newest_event_at=newest_event_at,
     )
     db.add(behavior_row)
 
@@ -443,50 +616,135 @@ async def analyze(
     )
 
 
+def _verify_response(reason: str, risk_score: float | None = None, label: str = "Degerlendirilemedi") -> DecisionResponse:
+    return DecisionResponse(
+        action="verify",
+        risk_score=risk_score,
+        label=label,
+        message=REASON_MESSAGES[reason] or ACTION_MESSAGES["verify"],
+        reason=reason,
+    )
+
+
+async def _decide(db: AsyncSession, session_id: str) -> DecisionResponse:
+    """The enforcement logic, shared by /api/decision and /api/demo/charge.
+
+    Every failure mode resolves to step-up verification rather than to
+    "allow": an unknown session, too little observed behaviour, behaviour
+    that is not current, or a broken score. The 40/60/80 ladder is applied
+    here and nowhere else.
+    """
+    session = await db.get(Session, session_id)
+    if session is None:
+        return _verify_response("unknown_session")
+
+    # A row can exist with the default risk_score of 0.0 -- which would read
+    # as "Gercek Kullanici" for a client that never sent usable telemetry.
+    # And one flush is not enough: require MIN_FLUSHES_FOR_DECISION analyzed
+    # windows before any score is trusted.
+    flush_count = await db.scalar(
+        select(func.count()).select_from(BehaviorData).where(BehaviorData.session_id == session_id)
+    )
+    if (flush_count or 0) < MIN_FLUSHES_FOR_DECISION:
+        return _verify_response("insufficient_evidence")
+
+    now = utcnow()
+    last_seen = _as_utc(session.last_seen_at)
+    if last_seen is None or now - last_seen > timedelta(seconds=DECISION_MAX_AGE_S):
+        return _verify_response("stale", session.risk_score, session.label or "Degerlendirilemedi")
+
+    risk_score = session.risk_score
+    action = get_action(risk_score)
+    label = session.label or scorer.get_label(risk_score)
+
+    # A completed step-up upgrades "verify" to "allow" while it is fresh. It
+    # never touches "block": verification is for uncertainty, not for
+    # overriding a confident bot verdict.
+    verified_at = _as_utc(getattr(session, "verified_at", None))
+    if (
+        action == "verify"
+        and verified_at is not None
+        and now - verified_at <= timedelta(seconds=VERIFICATION_VALID_S)
+    ):
+        return DecisionResponse(
+            action="allow",
+            risk_score=risk_score,
+            label=label,
+            message=REASON_MESSAGES["verified"],
+            reason="verified",
+        )
+
+    return DecisionResponse(
+        action=action, risk_score=risk_score, label=label, message=ACTION_MESSAGES[action], reason="score"
+    )
+
+
 @app.post("/api/decision", response_model=DecisionResponse)
 async def decision(
     payload: DecisionRequest,
     x_deepcheck_token: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_db),
 ):
-    """The enforcement point. A merchant calls this at checkout and obeys
-    `action`; it is the only place the 40/60/80 ladder is applied.
+    """The enforcement point. A merchant backend calls this at checkout and
+    obeys `action`. The previous design put this decision in the browser,
+    where anyone could edit it away."""
+    _require_session_token(payload.session_id, x_deepcheck_token)
+    return await _decide(db, payload.session_id)
 
-    Every failure mode here resolves to step-up verification rather than to
-    "allow": an unknown session, a session that never sent a single flush (a
-    client that loaded the page but never ran the SDK), or a broken score.
-    The previous design put this decision in the browser, where anyone could
-    edit it away.
+
+@app.post("/api/demo/verify", response_model=VerifyResponse)
+async def demo_verify(
+    payload: VerifyRequest,
+    x_deepcheck_token: Annotated[str | None, Header()] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Records a successful step-up on the SERVER.
+
+    Stands in for the merchant's SMS / 3-D Secure provider. What matters for
+    the pattern is where the result lives: the browser used to decide for
+    itself that verification had succeeded and then run the payment. Now the
+    only thing it can do is submit a code; whether that unlocks anything is
+    decided here and read back by /api/demo/charge.
     """
     _require_session_token(payload.session_id, x_deepcheck_token)
 
+    if not hmac.compare_digest(payload.code.strip(), DEMO_VERIFY_CODE):
+        raise HTTPException(status_code=400, detail="Dogrulama kodu hatali")
+
     session = await db.get(Session, payload.session_id)
     if session is None:
-        action = "verify"
-        return DecisionResponse(
-            action=action, risk_score=None, label="Degerlendirilemedi", message=ACTION_MESSAGES[action]
-        )
+        # Nothing to attach the verification to: this client never sent a
+        # single flush. Verifying an unobserved session would be exactly the
+        # bypass the whole design exists to prevent.
+        raise HTTPException(status_code=404, detail="Oturum bulunamadi")
 
-    # A row can exist with the default risk_score of 0.0 -- which would read
-    # as "Gercek Kullanici" for a client that never sent usable telemetry.
-    # Require at least one analyzed flush before any score is trusted.
-    analyzed = await db.scalar(
-        select(BehaviorData.id).where(BehaviorData.session_id == payload.session_id).limit(1)
-    )
-    if analyzed is None:
-        action = "verify"
-        return DecisionResponse(
-            action=action, risk_score=None, label="Degerlendirilemedi", message=ACTION_MESSAGES[action]
-        )
+    session.verified_at = utcnow()
+    await db.commit()
+    return VerifyResponse(verified=True, message=REASON_MESSAGES["verified"])
 
-    risk_score = session.risk_score
-    action = get_action(risk_score)
-    return DecisionResponse(
-        action=action,
-        risk_score=risk_score,
-        label=session.label or scorer.get_label(risk_score),
-        message=ACTION_MESSAGES[action],
-    )
+
+@app.post("/api/demo/charge", response_model=ChargeResponse)
+async def demo_charge(
+    payload: ChargeRequest,
+    x_deepcheck_token: Annotated[str | None, Header()] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """The merchant side of the pattern, in miniature.
+
+    A real merchant backend would call /api/decision and then its payment
+    provider. Here both live in one endpoint so the demo proves the property
+    a jury will test for: no sequence of browser actions produces a
+    "charged" response for a session the server would not allow. Deleting
+    every check in Demo.jsx changes nothing, because Demo.jsx has no checks.
+    """
+    _require_session_token(payload.session_id, x_deepcheck_token)
+    verdict = await _decide(db, payload.session_id)
+
+    if verdict.action in ("allow", "warn"):
+        return ChargeResponse(
+            status="charged", charge_id=str(uuid.uuid4()), amount=payload.amount, decision=verdict
+        )
+    return ChargeResponse(status="declined", charge_id=None, amount=payload.amount, decision=verdict)
 
 
 @app.get("/api/score/{session_id}", dependencies=[Depends(require_dashboard_key)])

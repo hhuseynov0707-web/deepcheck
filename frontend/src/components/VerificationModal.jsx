@@ -1,17 +1,33 @@
 import { useState } from "react";
 
-export default function VerificationModal({ onVerified, onClose }) {
+// Step-up verification. The code is checked by POST /api/demo/verify on the
+// server, which records the result on the session; this component cannot
+// declare success on its own. `verify(code)` is supplied by the page and
+// resolves to { ok, message }.
+//
+// The demo code is printed on purpose: the real integration replaces this
+// screen with the merchant's SMS / 3-D Secure provider, and a jury member who
+// sees the code knows this is a deliberate demo value rather than an
+// "any six digits" bypass.
+export default function VerificationModal({ onVerified, onClose, verify, demoCode }) {
   const [code, setCode] = useState("");
   const [status, setStatus] = useState("idle"); // idle | verifying | verified
+  const [error, setError] = useState(null);
 
-  function handleVerify(e) {
+  async function handleVerify(e) {
     e.preventDefault();
     if (status !== "idle" || code.length !== 6) return;
     setStatus("verifying");
-    window.setTimeout(() => {
+    setError(null);
+    const result = await verify(code);
+    if (result.ok) {
       setStatus("verified");
-      window.setTimeout(() => onVerified(), 800);
-    }, 1500);
+      window.setTimeout(() => onVerified(), 600);
+      return;
+    }
+    setStatus("idle");
+    setCode("");
+    setError(result.message || "Doğrulama kodu hatalı");
   }
 
   return (
@@ -30,9 +46,17 @@ export default function VerificationModal({ onVerified, onClose }) {
             </button>
           )}
         </div>
-        <p className="text-sm text-zinc-400 mb-5">
+        <p className="text-sm text-zinc-400 mb-3">
           Bu işlem için ek güvenlik doğrulaması gerekiyor. Telefonunuza gönderilen 6 haneli kodu girin.
         </p>
+        {demoCode && (
+          <p className="text-xs text-zinc-500 mb-5 rounded-md border border-zinc-800 bg-[#09090b] px-3 py-2">
+            Demo doğrulama kodu: <span className="font-mono text-zinc-300 tracking-widest">{demoCode}</span>
+            <br />
+            Gerçek entegrasyonda bu adım SMS / 3-D Secure sağlayıcınız tarafından yapılır; sonuç sunucuda
+            kaydedilir, tarayıcı tarafından beyan edilmez.
+          </p>
+        )}
 
         <form onSubmit={handleVerify} className="space-y-4">
           <input
@@ -46,6 +70,12 @@ export default function VerificationModal({ onVerified, onClose }) {
             className="w-full text-center tracking-[0.5em] text-lg font-mono bg-[#09090b] border border-zinc-800 rounded-md px-4 py-3 text-zinc-100 placeholder-zinc-600 outline-none focus:border-zinc-700 transition-colors duration-200 ease-out disabled:opacity-60"
             autoFocus
           />
+
+          {error && (
+            <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+              {error}
+            </p>
+          )}
 
           <button
             type="submit"

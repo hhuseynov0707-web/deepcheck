@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     CheckConstraint,
     DateTime,
     Float,
@@ -45,6 +46,11 @@ class Session(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     shap_explanation: Mapped[dict] = mapped_column(JSON, default=list)
     response_time_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    # Set by POST /api/demo/verify when the step-up code is accepted. The
+    # decision logic upgrades a "verify" action to "allow" while this is
+    # fresh -- never a "block". Lives on the server so the browser cannot
+    # claim to have verified.
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     behavior_data: Mapped[list["BehaviorData"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
@@ -60,6 +66,10 @@ class BehaviorData(Base):
         # ordered ascending. Postgres does not auto-index foreign keys, so both
         # were sequential scans over a table growing ~0.5 rows/second/user.
         Index("ix_behavior_data_session_created", "session_id", "created_at"),
+        # Global lookup for replay detection: the same recording posted under
+        # any session hashes to the same value (timestamps are rebased before
+        # hashing, so shifting a recording's clock does not change it).
+        Index("ix_behavior_data_payload_hash", "payload_hash"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -81,5 +91,10 @@ class BehaviorData(Base):
     odak_degisimi: Mapped[float] = mapped_column(Float, default=0.0)
 
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # Replay protection (see main.py): a clock-independent fingerprint of the
+    # telemetry, and the newest event timestamp in it so the next flush can
+    # be required to move forward in time.
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    newest_event_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
     session: Mapped["Session"] = relationship(back_populates="behavior_data")
