@@ -1,0 +1,4465 @@
+{
+ "note": "Real Chromium telemetry captured via lab/capture.py",
+ "feature_keys": [
+  "scroll_hizi_varyansi",
+  "tereddut_skoru",
+  "etkilesim_entropisi",
+  "ivme_degisimi",
+  "tiklama_yogunlugu",
+  "odak_degisimi",
+  "hiz_otokorelasyonu",
+  "yon_tutarliligi",
+  "zaman_kuantasyonu",
+  "duraklama_dagilimi",
+  "tiklama_oncesi_hareket",
+  "kanal_gecis_gecikmesi"
+ ],
+ "samples": [
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.023752284154272645,
+    "etkilesim_entropisi": 0.36912463634777587,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6634166140671234,
+    "yon_tutarliligi": 0.8226228523678802,
+    "zaman_kuantasyonu": 0.19047619047619047,
+    "duraklama_dagilimi": 0.6068683170629211,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3039387720368366,
+    "etkilesim_entropisi": 0.4383632071136946,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6634166140671234,
+    "yon_tutarliligi": 0.8226228523678802,
+    "zaman_kuantasyonu": 0.19230769230769232,
+    "duraklama_dagilimi": 0.836404858564972,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.26601329752553415,
+    "etkilesim_entropisi": 0.48427942998353624,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6967348530569205,
+    "yon_tutarliligi": 0.7720280333111325,
+    "zaman_kuantasyonu": 0.12,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.28149544182339437,
+    "etkilesim_entropisi": 0.49217759506104725,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7323797938715798,
+    "yon_tutarliligi": 0.7601175917064376,
+    "zaman_kuantasyonu": 0.09722222222222222,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.37843287599806275,
+    "etkilesim_entropisi": 0.5140828738332237,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7323797938715798,
+    "yon_tutarliligi": 0.7601175917064376,
+    "zaman_kuantasyonu": 0.09210526315789473,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.64625
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.553153188513372,
+    "etkilesim_entropisi": 0.47168285164531987,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7007282234170085,
+    "yon_tutarliligi": 0.7506666618862331,
+    "zaman_kuantasyonu": 0.11320754716981132,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.0967528291478076,
+    "etkilesim_entropisi": 0.45556673762549604,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.46669516738873684,
+    "yon_tutarliligi": 0.7429153617748805,
+    "zaman_kuantasyonu": 0.13333333333333333,
+    "duraklama_dagilimi": 0.9823432952315807,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2138466158940756,
+    "etkilesim_entropisi": 0.46143387994251056,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.46669516738873684,
+    "yon_tutarliligi": 0.7429153617748805,
+    "zaman_kuantasyonu": 0.16,
+    "duraklama_dagilimi": 0.9076116670662694,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.29179079099987754,
+    "etkilesim_entropisi": 0.45603266046753294,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.544636593880776,
+    "yon_tutarliligi": 0.7218600641966,
+    "zaman_kuantasyonu": 0.125,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2853380288299464,
+    "etkilesim_entropisi": 0.4883997166994878,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6484918432815177,
+    "yon_tutarliligi": 0.7396265062546035,
+    "zaman_kuantasyonu": 0.125,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2985248643877988,
+    "etkilesim_entropisi": 0.4974742919963497,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.703319628789604,
+    "yon_tutarliligi": 0.7470022142125735,
+    "zaman_kuantasyonu": 0.10606060606060606,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2957519536531748,
+    "etkilesim_entropisi": 0.49465651412877587,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7654879359019654,
+    "yon_tutarliligi": 0.7534529245172878,
+    "zaman_kuantasyonu": 0.07547169811320754,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.44470282064123545,
+    "etkilesim_entropisi": 0.5034863131454772,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7654879359019654,
+    "yon_tutarliligi": 0.7534529245172878,
+    "zaman_kuantasyonu": 0.08695652173913043,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.21039235146584556,
+    "etkilesim_entropisi": 0.46470189762604963,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7628548492298708,
+    "yon_tutarliligi": 0.8386567530276711,
+    "zaman_kuantasyonu": 0.08333333333333333,
+    "duraklama_dagilimi": 0.7935182402266706,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2457984395185337,
+    "etkilesim_entropisi": 0.3927139700521444,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7628548492298708,
+    "yon_tutarliligi": 0.8386567530276711,
+    "zaman_kuantasyonu": 0.1111111111111111,
+    "duraklama_dagilimi": 0.5189246717068557,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.233089464922345,
+    "etkilesim_entropisi": 0.46800599182320424,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7114941932007744,
+    "yon_tutarliligi": 0.8190072399885617,
+    "zaman_kuantasyonu": 0.10869565217391304,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3345720821107321,
+    "etkilesim_entropisi": 0.4671422449494243,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7069098684220403,
+    "yon_tutarliligi": 0.7782146043388019,
+    "zaman_kuantasyonu": 0.0967741935483871,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3375195898506928,
+    "etkilesim_entropisi": 0.4806343681955807,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7150394910772164,
+    "yon_tutarliligi": 0.7432474060825878,
+    "zaman_kuantasyonu": 0.08823529411764706,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.7225
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5321570735777283,
+    "etkilesim_entropisi": 0.4793776277077059,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.635055664037997,
+    "yon_tutarliligi": 0.6928969861317964,
+    "zaman_kuantasyonu": 0.1,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.22748728024987724,
+    "etkilesim_entropisi": 0.3970459942160887,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7789279395852309,
+    "yon_tutarliligi": 0.9217274743330934,
+    "zaman_kuantasyonu": 0.14285714285714285,
+    "duraklama_dagilimi": 0.44540926700812783,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3774710971846641,
+    "etkilesim_entropisi": 0.4327232919315374,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7539426047807769,
+    "yon_tutarliligi": 0.8036830580666595,
+    "zaman_kuantasyonu": 0.10526315789473684,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3046072074478137,
+    "etkilesim_entropisi": 0.4802831031429352,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.746569617740611,
+    "yon_tutarliligi": 0.7701523208996826,
+    "zaman_kuantasyonu": 0.08928571428571429,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3046072074478137,
+    "etkilesim_entropisi": 0.5112483285943002,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7274792881049411,
+    "yon_tutarliligi": 0.7534259763636934,
+    "zaman_kuantasyonu": 0.09090909090909091,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.64
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6055283495968692,
+    "etkilesim_entropisi": 0.5112483285943002,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7274792881049411,
+    "yon_tutarliligi": 0.7534259763636934,
+    "zaman_kuantasyonu": 0.09090909090909091,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.64
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.7956754684929706,
+    "etkilesim_entropisi": 0.48894932641491345,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.667753670824718,
+    "yon_tutarliligi": 0.7163073664991852,
+    "zaman_kuantasyonu": 0.1111111111111111,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.28460078931789495,
+    "etkilesim_entropisi": 0.33867578548533167,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6530315728691218,
+    "yon_tutarliligi": 0.7690397719252597,
+    "zaman_kuantasyonu": 0.16666666666666666,
+    "duraklama_dagilimi": 0.7065750420382523,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.23029426220047583,
+    "etkilesim_entropisi": 0.4331375187133756,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7795388146140216,
+    "yon_tutarliligi": 0.7749704166406043,
+    "zaman_kuantasyonu": 0.09523809523809523,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.23383287552533802,
+    "etkilesim_entropisi": 0.44132752864613234,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7795388146140216,
+    "yon_tutarliligi": 0.7749704166406043,
+    "zaman_kuantasyonu": 0.07547169811320754,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.24765675353740504,
+    "etkilesim_entropisi": 0.4707751529213256,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7948332269712042,
+    "yon_tutarliligi": 0.7768927733409836,
+    "zaman_kuantasyonu": 0.07246376811594203,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.75625
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4446351451693818,
+    "etkilesim_entropisi": 0.47743650018099054,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7948332269712042,
+    "yon_tutarliligi": 0.7768927733409836,
+    "zaman_kuantasyonu": 0.07142857142857142,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.75625
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6071741457368547,
+    "etkilesim_entropisi": 0.46824892442723537,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7908408425537652,
+    "yon_tutarliligi": 0.812375747237897,
+    "zaman_kuantasyonu": 0.08,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.12947990818207478,
+    "etkilesim_entropisi": 0.42324123190342267,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6416523543327066,
+    "yon_tutarliligi": 0.8844527282029484,
+    "zaman_kuantasyonu": 0.16666666666666666,
+    "duraklama_dagilimi": 0.4306033679608771,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2620191070775482,
+    "etkilesim_entropisi": 0.46898965158647116,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6416523543327066,
+    "yon_tutarliligi": 0.8844527282029484,
+    "zaman_kuantasyonu": 0.10714285714285714,
+    "duraklama_dagilimi": 0.5046070438258342,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2528759444408233,
+    "etkilesim_entropisi": 0.44952645812441666,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7181733752470362,
+    "yon_tutarliligi": 0.7491042095538943,
+    "zaman_kuantasyonu": 0.12,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.28563269631147886,
+    "etkilesim_entropisi": 0.46693997228751993,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7733716490963414,
+    "yon_tutarliligi": 0.8037271050679993,
+    "zaman_kuantasyonu": 0.08333333333333333,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.336405849995378,
+    "etkilesim_entropisi": 0.5102452689609183,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.780879037366236,
+    "yon_tutarliligi": 0.7908653025602438,
+    "zaman_kuantasyonu": 0.07792207792207792,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.74125
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4938047600882954,
+    "etkilesim_entropisi": 0.477249930160382,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8146267471893018,
+    "yon_tutarliligi": 0.774960258374144,
+    "zaman_kuantasyonu": 0.08771929824561403,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6730561149336414,
+    "etkilesim_entropisi": 0.44295787426591215,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8146267471893018,
+    "yon_tutarliligi": 0.774960258374144,
+    "zaman_kuantasyonu": 0.10638297872340426,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.1674804679548607,
+    "etkilesim_entropisi": 0.5408921875441085,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6121678039576083,
+    "yon_tutarliligi": 0.6954632166959811,
+    "zaman_kuantasyonu": 0.16666666666666666,
+    "duraklama_dagilimi": 0.6940466254818527,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3251648146097106,
+    "etkilesim_entropisi": 0.4608231625590978,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7037797638722061,
+    "yon_tutarliligi": 0.7181824841872456,
+    "zaman_kuantasyonu": 0.08333333333333333,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3059420692796027,
+    "etkilesim_entropisi": 0.4722257675463904,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7038181677069548,
+    "yon_tutarliligi": 0.7156036594814467,
+    "zaman_kuantasyonu": 0.07547169811320754,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.24546996289587925,
+    "etkilesim_entropisi": 0.4897358446822085,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7388366608586047,
+    "yon_tutarliligi": 0.6955872883045502,
+    "zaman_kuantasyonu": 0.07042253521126761,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.6825
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4059009712922247,
+    "etkilesim_entropisi": 0.49471040603198035,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7388366608586047,
+    "yon_tutarliligi": 0.6955872883045502,
+    "zaman_kuantasyonu": 0.08108108108108109,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.6825
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5874787878001814,
+    "etkilesim_entropisi": 0.46885094264585403,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7521004684654728,
+    "yon_tutarliligi": 0.7012142381360441,
+    "zaman_kuantasyonu": 0.10909090909090909,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.5264600547618983,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.691545466482324,
+    "yon_tutarliligi": 0.7527359615528799,
+    "zaman_kuantasyonu": 0.1111111111111111,
+    "duraklama_dagilimi": 0.40547733533654867,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.19205649147847875,
+    "etkilesim_entropisi": 0.5820455840385764,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.691545466482324,
+    "yon_tutarliligi": 0.7527359615528799,
+    "zaman_kuantasyonu": 0.08333333333333333,
+    "duraklama_dagilimi": 0.624202325507136,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.18028453493283622,
+    "etkilesim_entropisi": 0.5627489405496531,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7443148774169066,
+    "yon_tutarliligi": 0.7105932274986617,
+    "zaman_kuantasyonu": 0.1276595744680851,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.17943854537559215,
+    "etkilesim_entropisi": 0.5862148852515647,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7358437947150425,
+    "yon_tutarliligi": 0.7337432234499728,
+    "zaman_kuantasyonu": 0.09375,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2503957150687365,
+    "etkilesim_entropisi": 0.5977392553897961,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7358437947150425,
+    "yon_tutarliligi": 0.7337432234499728,
+    "zaman_kuantasyonu": 0.08823529411764706,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.5975
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4151259841392136,
+    "etkilesim_entropisi": 0.5613510214380384,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.7226351006168963,
+    "yon_tutarliligi": 0.7855882321606771,
+    "zaman_kuantasyonu": 0.10416666666666667,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H1_human",
+   "run_id": "H1_human#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.40885516042763903,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.14285714285714285,
+    "duraklama_dagilimi": 0.2807534230030252,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2045951361856201,
+    "etkilesim_entropisi": 0.5141350371712978,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.08695652173913043,
+    "duraklama_dagilimi": 0.45476121841074457,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.10152773010508247,
+    "etkilesim_entropisi": 0.5308525103212511,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.058823529411764705,
+    "duraklama_dagilimi": 0.4315258106412716,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4404257802760375,
+    "etkilesim_entropisi": 0.5441736262491655,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.4419479600712037,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6114658925670664,
+    "etkilesim_entropisi": 0.5441736262491655,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.4419479600712037,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.4437179567777442,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.07142857142857142,
+    "duraklama_dagilimi": 0.28433366285514466,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.33815517752405133,
+    "etkilesim_entropisi": 0.545831924690507,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05555555555555555,
+    "duraklama_dagilimi": 0.4148279643540362,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3403749704939251,
+    "etkilesim_entropisi": 0.5260840916374075,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.03571428571428571,
+    "duraklama_dagilimi": 0.6480434190885229,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3440845012690245,
+    "etkilesim_entropisi": 0.5801420977136971,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.058823529411764705,
+    "duraklama_dagilimi": 0.6789455330745989,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4505644209321417,
+    "etkilesim_entropisi": 0.5977198211860736,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.679026443527636,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5738262854045287,
+    "etkilesim_entropisi": 0.5766370325810947,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.1,
+    "duraklama_dagilimi": 0.6135912624431991,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2263611669957906,
+    "etkilesim_entropisi": 0.55583362792012,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.1,
+    "duraklama_dagilimi": 0.4799744820448087,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2689272230883154,
+    "etkilesim_entropisi": 0.5405128633815007,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.1111111111111111,
+    "duraklama_dagilimi": 0.4878616141474163,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2699836798222919,
+    "etkilesim_entropisi": 0.5122474707333688,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.4958483325698165,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2428363021423881,
+    "etkilesim_entropisi": 0.5509575977491914,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.5450732322134192,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4864724487731336,
+    "etkilesim_entropisi": 0.5509575977491914,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.5450732322134192,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.08848679755301218,
+    "etkilesim_entropisi": 0.579542070810345,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.09090909090909091,
+    "duraklama_dagilimi": 0.6138442656888375,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.18299653256307624,
+    "etkilesim_entropisi": 0.5725855816455144,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.0625,
+    "duraklama_dagilimi": 0.8252431419712,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.1896789904494157,
+    "etkilesim_entropisi": 0.6366456009939397,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.037037037037037035,
+    "duraklama_dagilimi": 0.7364445550339934,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.1740656740762407,
+    "etkilesim_entropisi": 0.6236760420272573,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.058823529411764705,
+    "duraklama_dagilimi": 0.6728773596241333,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.29403457022847085,
+    "etkilesim_entropisi": 0.6257508113539961,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.6537683053669384,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.43004742333184304,
+    "etkilesim_entropisi": 0.5987528325552012,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.08695652173913043,
+    "duraklama_dagilimi": 0.5014083174992247,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.33794923107914215,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.13333333333333333,
+    "duraklama_dagilimi": 0.3576204903637052,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6242396953428478,
+    "etkilesim_entropisi": 0.46634042006095533,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.11764705882352941,
+    "duraklama_dagilimi": 0.9290223147318164,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.42929988756160065,
+    "etkilesim_entropisi": 0.5959331238782932,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.11538461538461539,
+    "duraklama_dagilimi": 0.8094468867923582,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4355038675034851,
+    "etkilesim_entropisi": 0.5789236983392619,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.08823529411764706,
+    "duraklama_dagilimi": 0.7869246853512712,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5089342665628243,
+    "etkilesim_entropisi": 0.5965362332223364,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.08571428571428572,
+    "duraklama_dagilimi": 0.8728003640741301,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6036119852988409,
+    "etkilesim_entropisi": 0.6468709110391416,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05263157894736842,
+    "duraklama_dagilimi": 0.7730265506786219,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2699836798222919,
+    "etkilesim_entropisi": 0.5,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.1111111111111111,
+    "duraklama_dagilimi": 0.30181493530847847,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.1637764964208424,
+    "etkilesim_entropisi": 0.6002790241557511,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05,
+    "duraklama_dagilimi": 0.5950090142933523,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3153763088313643,
+    "etkilesim_entropisi": 0.6241677435543336,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.043478260869565216,
+    "duraklama_dagilimi": 0.6305064579753132,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.358981162653933,
+    "etkilesim_entropisi": 0.6073720064337681,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06666666666666667,
+    "duraklama_dagilimi": 0.6539660049827523,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3301262198852834,
+    "etkilesim_entropisi": 0.6161137307828081,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.6337745333336923,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.45657434890123016,
+    "etkilesim_entropisi": 0.6378425757722977,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.08,
+    "duraklama_dagilimi": 0.6178623477765922,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.48579704035446303,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.0625,
+    "duraklama_dagilimi": 0.33668361384368284,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.243056172034181,
+    "etkilesim_entropisi": 0.556111630695969,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.038461538461538464,
+    "duraklama_dagilimi": 0.5069997665675763,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.28425646476582866,
+    "etkilesim_entropisi": 0.596563078116327,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.058823529411764705,
+    "duraklama_dagilimi": 0.6501454190420813,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4221981400576743,
+    "etkilesim_entropisi": 0.6136716307200569,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.6342369316843272,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5730134777000838,
+    "etkilesim_entropisi": 0.6136716307200569,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.6342369316843272,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.4633394289966923,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.125,
+    "duraklama_dagilimi": 0.39859611193591765,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.15379734601348022,
+    "etkilesim_entropisi": 0.49680442622500465,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.08,
+    "duraklama_dagilimi": 0.5374952614112523,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.13045682720021975,
+    "etkilesim_entropisi": 0.519154863052698,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.058823529411764705,
+    "duraklama_dagilimi": 0.5490834741867922,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.357717720343336,
+    "etkilesim_entropisi": 0.5534836238032285,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.5818173561090979,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5074578027480474,
+    "etkilesim_entropisi": 0.5534836238032285,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.05714285714285714,
+    "duraklama_dagilimi": 0.5818173561090979,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 0,
+   "scenario": "H2_keyboard_only",
+   "run_id": "H2_keyboard_only#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9367642563817737,
+    "etkilesim_entropisi": 0.10759003359629875,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.5806451612903226,
+    "duraklama_dagilimi": 0.21612666547304393,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9889753124843258,
+    "etkilesim_entropisi": 0.10759003359629875,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.5806451612903226,
+    "duraklama_dagilimi": 0.21612666547304393,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9146773503855748,
+    "etkilesim_entropisi": 0.1438145815636472,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.4838709677419355,
+    "duraklama_dagilimi": 0.19748271645572243,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9806738210644208,
+    "etkilesim_entropisi": 0.1438145815636472,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.4838709677419355,
+    "duraklama_dagilimi": 0.19748271645572243,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9406324195819925,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.6129032258064516,
+    "duraklama_dagilimi": 0.1691261775459353,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9902295618980878,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.6129032258064516,
+    "duraklama_dagilimi": 0.1691261775459353,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9383142182938045,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.5806451612903226,
+    "duraklama_dagilimi": 0.16507905205199672,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9896923156010714,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.5806451612903226,
+    "duraklama_dagilimi": 0.16507905205199672,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9348217183146235,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.6451612903225806,
+    "duraklama_dagilimi": 0.15358505332280437,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9907663752228898,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.6451612903225806,
+    "duraklama_dagilimi": 0.15358505332280437,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9417885017312817,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.7419354838709677,
+    "duraklama_dagilimi": 0.15880884839477752,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.990408547746575,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.7419354838709677,
+    "duraklama_dagilimi": 0.15880884839477752,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9417885017312817,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.7096774193548387,
+    "duraklama_dagilimi": 0.16101964536036115,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9913027562727895,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.7096774193548387,
+    "duraklama_dagilimi": 0.16101964536036115,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9417885017312817,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.6451612903225806,
+    "duraklama_dagilimi": 0.15046014889162568,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9911240105770595,
+    "etkilesim_entropisi": 0.0906449023035766,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.6451612903225806,
+    "duraklama_dagilimi": 0.15046014889162568,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A1_naive",
+   "run_id": "A1_naive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.006731487807226215,
+    "etkilesim_entropisi": 0.5076791114958086,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.13333333333333333,
+    "duraklama_dagilimi": 0.35133449918387716,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.006731487807226215,
+    "etkilesim_entropisi": 0.5736079589167823,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06666666666666667,
+    "duraklama_dagilimi": 0.4493964993720376,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.04625
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6729600457287244,
+    "etkilesim_entropisi": 0.5664708345915608,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.44061829877092057,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.04625
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.8164834369017242,
+    "etkilesim_entropisi": 0.5664708345915608,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.44061829877092057,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.04625
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.504596952812909,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.125,
+    "duraklama_dagilimi": 0.40199826543874195,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.5460859712614813,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.39558382205043024,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.0375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.5460859712614813,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.39558382205043024,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.0375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.5460859712614813,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.39558382205043024,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.0375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.2197433018640202,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.13333333333333333,
+    "duraklama_dagilimi": 0.17278330758934454,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.4534636080787222,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.319612873045305,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03875
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.4534636080787222,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.319612873045305,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03875
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.4534636080787222,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.319612873045305,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03875
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.4734051121389241,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.0625,
+    "duraklama_dagilimi": 0.36704255739676866,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.5720172447139934,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.38349307150253953,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.035
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.5720172447139934,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.38349307150253953,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.035
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.5720172447139934,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.38349307150253953,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.035
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.4680249412060838,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06666666666666667,
+    "duraklama_dagilimi": 0.2814935548452794,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.5306519122363564,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.36768944352771454,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.5306519122363564,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.36768944352771454,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 1.0,
+    "etkilesim_entropisi": 0.5306519122363564,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.36768944352771454,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.07092922250632534,
+    "etkilesim_entropisi": 0.6176449980339334,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.058823529411764705,
+    "duraklama_dagilimi": 0.6400487152569864,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.05069916082377865,
+    "etkilesim_entropisi": 0.6093915317766974,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.5800790610036478,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.04375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.615499793350875,
+    "etkilesim_entropisi": 0.6093915317766974,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.5800790610036478,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.04375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.7469483658399955,
+    "etkilesim_entropisi": 0.6093915317766974,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.5800790610036478,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.04375
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.0,
+    "etkilesim_entropisi": 0.4472447580995497,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.0625,
+    "duraklama_dagilimi": 0.49668055318208326,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.0,
+    "etkilesim_entropisi": 0.4625607639586318,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.4402072848076977,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03875
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.7651394522460667,
+    "etkilesim_entropisi": 0.4625607639586318,
+    "ivme_degisimi": 0.513,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.487,
+    "yon_tutarliligi": 0.824,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 0.4402072848076977,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.03875
+   },
+   "label": 1,
+   "scenario": "A2_randomized",
+   "run_id": "A2_randomized#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.23899950565696257,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4745575511077973,
+    "yon_tutarliligi": 1.0,
+    "zaman_kuantasyonu": 0.3076923076923077,
+    "duraklama_dagilimi": 0.18337901687071023,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.3289643593930407,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9187992736360368,
+    "yon_tutarliligi": 1.0,
+    "zaman_kuantasyonu": 0.2641509433962264,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.3430339485670332,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9065334806255574,
+    "yon_tutarliligi": 1.0,
+    "zaman_kuantasyonu": 0.2564102564102564,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.38
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.8801099590934098,
+    "etkilesim_entropisi": 0.34523989511046876,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9065334806255574,
+    "yon_tutarliligi": 1.0,
+    "zaman_kuantasyonu": 0.24691358024691357,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.38
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.9628218627742348,
+    "etkilesim_entropisi": 0.34523989511046876,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9065334806255574,
+    "yon_tutarliligi": 1.0,
+    "zaman_kuantasyonu": 0.24691358024691357,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.38
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.30733720804281356,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.482161270666382,
+    "yon_tutarliligi": 0.9997731028466906,
+    "zaman_kuantasyonu": 0.3181818181818182,
+    "duraklama_dagilimi": 0.18240574621184347,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.00043266232464445346,
+    "etkilesim_entropisi": 0.3274850466538919,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9125473230065455,
+    "yon_tutarliligi": 0.9999127318641117,
+    "zaman_kuantasyonu": 0.28,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.06305481146480235,
+    "etkilesim_entropisi": 0.3035414652453001,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8981432111051102,
+    "yon_tutarliligi": 0.9999484324651571,
+    "zaman_kuantasyonu": 0.2727272727272727,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.4060444182252955,
+    "etkilesim_entropisi": 0.3237631995947623,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8981432111051102,
+    "yon_tutarliligi": 0.9999484324651571,
+    "zaman_kuantasyonu": 0.25925925925925924,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6282588515632825,
+    "etkilesim_entropisi": 0.3237631995947623,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8981432111051102,
+    "yon_tutarliligi": 0.9999484324651571,
+    "zaman_kuantasyonu": 0.25925925925925924,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.28795119427567073,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.44965944496259913,
+    "yon_tutarliligi": 0.9999536376511424,
+    "zaman_kuantasyonu": 0.2608695652173913,
+    "duraklama_dagilimi": 0.18822219579216323,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.13078214873593677,
+    "etkilesim_entropisi": 0.34318853334156363,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8637608671220882,
+    "yon_tutarliligi": 0.999978601992835,
+    "zaman_kuantasyonu": 0.24489795918367346,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.19047243405858924,
+    "etkilesim_entropisi": 0.33925565425108223,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.862737042162836,
+    "yon_tutarliligi": 0.9999853592582555,
+    "zaman_kuantasyonu": 0.3,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.46660292247859886,
+    "etkilesim_entropisi": 0.3571946804679727,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8584022312285526,
+    "yon_tutarliligi": 0.9999853592582555,
+    "zaman_kuantasyonu": 0.28,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.30375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6616232076303683,
+    "etkilesim_entropisi": 0.3571946804679727,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8584022312285526,
+    "yon_tutarliligi": 0.9999853592582555,
+    "zaman_kuantasyonu": 0.28,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.30375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.1088204290178825,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.48847202372033455,
+    "yon_tutarliligi": 0.9997355376228633,
+    "zaman_kuantasyonu": 0.5,
+    "duraklama_dagilimi": 0.14202131299121454,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.02527827756199666,
+    "etkilesim_entropisi": 0.18691845175917834,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6312996068232115,
+    "yon_tutarliligi": 0.9998530764571463,
+    "zaman_kuantasyonu": 0.4406779661016949,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.04554416459368324,
+    "etkilesim_entropisi": 0.18562311664462236,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6903849904412154,
+    "yon_tutarliligi": 0.9998942150491453,
+    "zaman_kuantasyonu": 0.43373493975903615,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.40976323647617857,
+    "etkilesim_entropisi": 0.20110852518606182,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6903849904412154,
+    "yon_tutarliligi": 0.9998942150491453,
+    "zaman_kuantasyonu": 0.41379310344827586,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.33375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6294906518794526,
+    "etkilesim_entropisi": 0.20110852518606182,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6903849904412154,
+    "yon_tutarliligi": 0.9998942150491453,
+    "zaman_kuantasyonu": 0.41379310344827586,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.33375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.2740821206518087,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.47839883879976564,
+    "yon_tutarliligi": 0.9997355376228633,
+    "zaman_kuantasyonu": 0.4,
+    "duraklama_dagilimi": 0.1550194977832968,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.28472452449435726,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.861558299659853,
+    "yon_tutarliligi": 0.9998347110142896,
+    "zaman_kuantasyonu": 0.3018867924528302,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.0,
+    "etkilesim_entropisi": 0.3014977190186301,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8974905022117872,
+    "yon_tutarliligi": 0.9998677688114317,
+    "zaman_kuantasyonu": 0.2777777777777778,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5193344676750412,
+    "etkilesim_entropisi": 0.31074610813429765,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8762032008791496,
+    "yon_tutarliligi": 0.9998769942431922,
+    "zaman_kuantasyonu": 0.25,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.28375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.739208760165683,
+    "etkilesim_entropisi": 0.31074610813429765,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8762032008791496,
+    "yon_tutarliligi": 0.9998769942431922,
+    "zaman_kuantasyonu": 0.25,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.28375
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.21384684895464529,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.46406187950203187,
+    "yon_tutarliligi": 0.9996794021817008,
+    "zaman_kuantasyonu": 0.35714285714285715,
+    "duraklama_dagilimi": 0.14261184493399584,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.11631553047123594,
+    "etkilesim_entropisi": 0.2408230563615691,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9032523562381796,
+    "yon_tutarliligi": 0.9998296824090286,
+    "zaman_kuantasyonu": 0.34545454545454546,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.11631553047123594,
+    "etkilesim_entropisi": 0.2747534710026821,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9146027196085907,
+    "yon_tutarliligi": 0.9998788852686424,
+    "zaman_kuantasyonu": 0.28205128205128205,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.44205836891474776,
+    "etkilesim_entropisi": 0.29050210548797,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9146027196085907,
+    "yon_tutarliligi": 0.9998788852686424,
+    "zaman_kuantasyonu": 0.2682926829268293,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.255
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6478490842861355,
+    "etkilesim_entropisi": 0.29050210548797,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.9146027196085907,
+    "yon_tutarliligi": 0.9998788852686424,
+    "zaman_kuantasyonu": 0.2682926829268293,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.255
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.31173626180431274,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4988220149904473,
+    "yon_tutarliligi": 0.9997731028466906,
+    "zaman_kuantasyonu": 0.21739130434782608,
+    "duraklama_dagilimi": 0.25409663557318385,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.30263368251122585,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5691340953485086,
+    "yon_tutarliligi": 0.9999217596023071,
+    "zaman_kuantasyonu": 0.22641509433962265,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.05362705930128087,
+    "etkilesim_entropisi": 0.27233311477885186,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5735050140430717,
+    "yon_tutarliligi": 0.9999536944585083,
+    "zaman_kuantasyonu": 0.2926829268292683,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.627024769077552,
+    "etkilesim_entropisi": 0.29664082690964,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5735050140430717,
+    "yon_tutarliligi": 0.9999536944585083,
+    "zaman_kuantasyonu": 0.27906976744186046,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.35
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.7950758682804236,
+    "etkilesim_entropisi": 0.29664082690964,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5735050140430717,
+    "yon_tutarliligi": 0.9999536944585083,
+    "zaman_kuantasyonu": 0.27906976744186046,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.35
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.20862914299725185,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.1,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.49956442485321706,
+    "yon_tutarliligi": 0.9992891418405286,
+    "zaman_kuantasyonu": 0.37037037037037035,
+    "duraklama_dagilimi": 0.1786526911776292,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.12424533640082204,
+    "etkilesim_entropisi": 0.30488486872703624,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8987471411160255,
+    "yon_tutarliligi": 0.9996667852377478,
+    "zaman_kuantasyonu": 0.2777777777777778,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.12424533640082204,
+    "etkilesim_entropisi": 0.33184190149574555,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8640357941682331,
+    "yon_tutarliligi": 0.9997576619910893,
+    "zaman_kuantasyonu": 0.22784810126582278,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.31
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6654236330397055,
+    "etkilesim_entropisi": 0.3371630290983851,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8640357941682331,
+    "yon_tutarliligi": 0.9997576619910893,
+    "zaman_kuantasyonu": 0.2345679012345679,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.31
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.8141557845698694,
+    "etkilesim_entropisi": 0.3371630290983851,
+    "ivme_degisimi": 1.0,
+    "tiklama_yogunlugu": 0.2,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.8640357941682331,
+    "yon_tutarliligi": 0.9997576619910893,
+    "zaman_kuantasyonu": 0.2345679012345679,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 1.0,
+    "kanal_gecis_gecikmesi": 0.31
+   },
+   "label": 1,
+   "scenario": "A3_human_mimic",
+   "run_id": "A3_human_mimic#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.2621244681157677,
+    "ivme_degisimi": 0.6919995938030992,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4769605581534249,
+    "yon_tutarliligi": 0.856817461521983,
+    "zaman_kuantasyonu": 0.10526315789473684,
+    "duraklama_dagilimi": 0.17904296263752575,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.25395814749145024,
+    "etkilesim_entropisi": 0.2454936149173286,
+    "ivme_degisimi": 0.6232707555720267,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6477727283663572,
+    "yon_tutarliligi": 0.7269068206351732,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.18853838366531647,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.25395814749145024,
+    "etkilesim_entropisi": 0.3686313428344221,
+    "ivme_degisimi": 0.5857503517218516,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6131287180577312,
+    "yon_tutarliligi": 0.7085637359297304,
+    "zaman_kuantasyonu": 0.10416666666666667,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.36979137214896896,
+    "etkilesim_entropisi": 0.41775913213110116,
+    "ivme_degisimi": 0.5575487125428046,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6174118872414414,
+    "yon_tutarliligi": 0.7076533023230511,
+    "zaman_kuantasyonu": 0.08333333333333333,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3359279622567356,
+    "etkilesim_entropisi": 0.4323372732463777,
+    "ivme_degisimi": 0.5218662785885689,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6003153011096508,
+    "yon_tutarliligi": 0.7154585722862717,
+    "zaman_kuantasyonu": 0.06944444444444445,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.291535337178476,
+    "etkilesim_entropisi": 0.4969881547425905,
+    "ivme_degisimi": 0.3104698299857796,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5984831349820806,
+    "yon_tutarliligi": 0.561691854337918,
+    "zaman_kuantasyonu": 0.0625,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.445625
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5745187796540372,
+    "etkilesim_entropisi": 0.49328731925901104,
+    "ivme_degisimi": 0.22426703745740054,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.646862669982389,
+    "yon_tutarliligi": 0.6028381446280956,
+    "zaman_kuantasyonu": 0.0784313725490196,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.12125
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#0"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.2765544011834849,
+    "ivme_degisimi": 0.5063580924431251,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6376815403432196,
+    "yon_tutarliligi": 0.8228217752624025,
+    "zaman_kuantasyonu": 0.1111111111111111,
+    "duraklama_dagilimi": 0.17942952702905898,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3597196281742929,
+    "etkilesim_entropisi": 0.346998523231597,
+    "ivme_degisimi": 0.5838649228783336,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5521415947654853,
+    "yon_tutarliligi": 0.8484530518680137,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.18483809733436998,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3597196281742929,
+    "etkilesim_entropisi": 0.39103055923952074,
+    "ivme_degisimi": 0.6348851819303241,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4777302171102952,
+    "yon_tutarliligi": 0.8287008670439762,
+    "zaman_kuantasyonu": 0.08163265306122448,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3414820990446584,
+    "etkilesim_entropisi": 0.42961343043923755,
+    "ivme_degisimi": 0.6272635422817427,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.48174936867742707,
+    "yon_tutarliligi": 0.8399656614820687,
+    "zaman_kuantasyonu": 0.06349206349206349,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2945095532688168,
+    "etkilesim_entropisi": 0.44176119692725213,
+    "ivme_degisimi": 0.5907855474491964,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.47019443083227136,
+    "yon_tutarliligi": 0.844946406577811,
+    "zaman_kuantasyonu": 0.05333333333333334,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.69875
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.40668954741000124,
+    "etkilesim_entropisi": 0.46862146251451875,
+    "ivme_degisimi": 0.5982162538040201,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.37813844053229023,
+    "yon_tutarliligi": 0.8034599481924584,
+    "zaman_kuantasyonu": 0.06153846153846154,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.414375
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6375942934447804,
+    "etkilesim_entropisi": 0.4872093982210592,
+    "ivme_degisimi": 0.5538988563801434,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.3764791934020223,
+    "yon_tutarliligi": 0.7741659577184496,
+    "zaman_kuantasyonu": 0.058823529411764705,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.13
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#1"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.2579062911039112,
+    "ivme_degisimi": 0.5513800480057792,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.37844448164256606,
+    "yon_tutarliligi": 0.7149580785725593,
+    "zaman_kuantasyonu": 0.10526315789473684,
+    "duraklama_dagilimi": 0.17645589660617786,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.42554957269342375,
+    "etkilesim_entropisi": 0.22834873559150065,
+    "ivme_degisimi": 0.7171880584568606,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.49128717067089966,
+    "yon_tutarliligi": 0.6558292868733029,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.1883705385507891,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.42554957269342375,
+    "etkilesim_entropisi": 0.328741304494163,
+    "ivme_degisimi": 0.6946205521499802,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5253800248473302,
+    "yon_tutarliligi": 0.6776949122451437,
+    "zaman_kuantasyonu": 0.0851063829787234,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.48162438263222457,
+    "etkilesim_entropisi": 0.3521023462957184,
+    "ivme_degisimi": 0.6536072047194431,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5358804145091062,
+    "yon_tutarliligi": 0.6906913397180011,
+    "zaman_kuantasyonu": 0.06779661016949153,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.37851830027918526,
+    "etkilesim_entropisi": 0.3757422322322263,
+    "ivme_degisimi": 0.6118484566372345,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5542604610708931,
+    "yon_tutarliligi": 0.6840975674948512,
+    "zaman_kuantasyonu": 0.06944444444444445,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.36271125379555486,
+    "etkilesim_entropisi": 0.4246593569475221,
+    "ivme_degisimi": 0.3388044523921203,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6803320816426722,
+    "yon_tutarliligi": 0.7388762131045321,
+    "zaman_kuantasyonu": 0.06349206349206349,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39625
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.5950814642013147,
+    "etkilesim_entropisi": 0.42324496810140855,
+    "ivme_degisimi": 0.2488181601068544,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5240005118402622,
+    "yon_tutarliligi": 0.7964401438623638,
+    "zaman_kuantasyonu": 0.0784313725490196,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.16625
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#2"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.35745657426341987,
+    "ivme_degisimi": 0.7370834342546908,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.46403028843364535,
+    "yon_tutarliligi": 0.7272685830524542,
+    "zaman_kuantasyonu": 0.1,
+    "duraklama_dagilimi": 0.16703287405567688,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.49831558431014383,
+    "etkilesim_entropisi": 0.3174904496706853,
+    "ivme_degisimi": 0.7090108518881791,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.49240141319003566,
+    "yon_tutarliligi": 0.6812699594244871,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.1728791621327617,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.49831558431014383,
+    "etkilesim_entropisi": 0.37666150873161003,
+    "ivme_degisimi": 0.6889823598395538,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5203885437681057,
+    "yon_tutarliligi": 0.6739301351472832,
+    "zaman_kuantasyonu": 0.08695652173913043,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3207777790073391,
+    "etkilesim_entropisi": 0.4039734312627735,
+    "ivme_degisimi": 0.6424330980056294,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.515928515908149,
+    "yon_tutarliligi": 0.6907289548449108,
+    "zaman_kuantasyonu": 0.06451612903225806,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3776207984620984,
+    "etkilesim_entropisi": 0.40013016065314994,
+    "ivme_degisimi": 0.5895187792785049,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5646466804422078,
+    "yon_tutarliligi": 0.6798613023669293,
+    "zaman_kuantasyonu": 0.05555555555555555,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.43364873324531045,
+    "etkilesim_entropisi": 0.43016335223397967,
+    "ivme_degisimi": 0.3739552717925403,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.546093146839018,
+    "yon_tutarliligi": 0.688231764314339,
+    "zaman_kuantasyonu": 0.06349206349206349,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.349375
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6291829152922555,
+    "etkilesim_entropisi": 0.4455092962784766,
+    "ivme_degisimi": 0.14470135216356692,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4949185248529976,
+    "yon_tutarliligi": 0.7010928353190923,
+    "zaman_kuantasyonu": 0.0784313725490196,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.1075
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#3"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.3242402723325522,
+    "ivme_degisimi": 0.692457952855511,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.38875909534512965,
+    "yon_tutarliligi": 0.712099042110832,
+    "zaman_kuantasyonu": 0.1,
+    "duraklama_dagilimi": 0.19727111026595154,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.1600518129159945,
+    "etkilesim_entropisi": 0.35040299432647865,
+    "ivme_degisimi": 0.6193779738343776,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4381702964647447,
+    "yon_tutarliligi": 0.6942494961526379,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.17741322883203492,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.1600518129159945,
+    "etkilesim_entropisi": 0.4041964736397662,
+    "ivme_degisimi": 0.6064583712610201,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.41097070559993254,
+    "yon_tutarliligi": 0.6597366145296646,
+    "zaman_kuantasyonu": 0.06382978723404255,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.08291856591157258,
+    "etkilesim_entropisi": 0.410324646169238,
+    "ivme_degisimi": 0.5906246169012841,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.41357507021511075,
+    "yon_tutarliligi": 0.665925747980583,
+    "zaman_kuantasyonu": 0.046875,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.25826946242063475,
+    "etkilesim_entropisi": 0.4313913579396626,
+    "ivme_degisimi": 0.5844713444201196,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4310605192548148,
+    "yon_tutarliligi": 0.6622137658035044,
+    "zaman_kuantasyonu": 0.05333333333333334,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.525
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.39781823581033604,
+    "etkilesim_entropisi": 0.46135276905849615,
+    "ivme_degisimi": 0.5815535238942543,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5019381208463558,
+    "yon_tutarliligi": 0.6516632801599492,
+    "zaman_kuantasyonu": 0.06349206349206349,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.34625
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6583904396953661,
+    "etkilesim_entropisi": 0.4622865675392811,
+    "ivme_degisimi": 0.639773075364951,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5207273961081167,
+    "yon_tutarliligi": 0.7024357630145729,
+    "zaman_kuantasyonu": 0.08163265306122448,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.1675
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#4"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.24118997384100352,
+    "ivme_degisimi": 0.42315742315426863,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4251123065311038,
+    "yon_tutarliligi": 0.885423659951225,
+    "zaman_kuantasyonu": 0.05555555555555555,
+    "duraklama_dagilimi": 0.17566928464415707,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.47777188009925275,
+    "etkilesim_entropisi": 0.2515009772709235,
+    "ivme_degisimi": 0.6621045998812398,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6332182463490668,
+    "yon_tutarliligi": 0.8935447183213179,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.1969621201046402,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.47777188009925275,
+    "etkilesim_entropisi": 0.32725903667837003,
+    "ivme_degisimi": 0.6621045998812398,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6332182463490668,
+    "yon_tutarliligi": 0.8935447183213179,
+    "zaman_kuantasyonu": 0.075,
+    "duraklama_dagilimi": 0.22259814769137454,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.37612226952603717,
+    "etkilesim_entropisi": 0.37240638166931966,
+    "ivme_degisimi": 0.760170986857539,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.5983579531345712,
+    "yon_tutarliligi": 0.8946967821220825,
+    "zaman_kuantasyonu": 0.07407407407407407,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.37612226952603717,
+    "etkilesim_entropisi": 0.4114709971295511,
+    "ivme_degisimi": 0.7201711375542542,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6121442827176178,
+    "yon_tutarliligi": 0.8750869411911453,
+    "zaman_kuantasyonu": 0.07142857142857142,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.44720199162577184,
+    "etkilesim_entropisi": 0.4998241544914712,
+    "ivme_degisimi": 0.7677536037902214,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.6665489477076216,
+    "yon_tutarliligi": 0.8675772217893638,
+    "zaman_kuantasyonu": 0.06349206349206349,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.451875
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6791759014773681,
+    "etkilesim_entropisi": 0.5044169939480632,
+    "ivme_degisimi": 0.6957004136648217,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.534157800473972,
+    "yon_tutarliligi": 0.853281743031443,
+    "zaman_kuantasyonu": 0.07547169811320754,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.13125
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.7886866999293203,
+    "etkilesim_entropisi": 0.4820194295085735,
+    "ivme_degisimi": 0.6957004136648217,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.534157800473972,
+    "yon_tutarliligi": 0.853281743031443,
+    "zaman_kuantasyonu": 0.07142857142857142,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.13125
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#5"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.3525121727154817,
+    "ivme_degisimi": 0.5959166316494213,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.53287032194511,
+    "yon_tutarliligi": 0.7102570185423556,
+    "zaman_kuantasyonu": 0.09523809523809523,
+    "duraklama_dagilimi": 0.18249612385025338,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.24852946356219938,
+    "etkilesim_entropisi": 0.37935853437650113,
+    "ivme_degisimi": 0.6179747783806232,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.46749684407622405,
+    "yon_tutarliligi": 0.7668129350383472,
+    "zaman_kuantasyonu": 0.08333333333333333,
+    "duraklama_dagilimi": 0.1957852932333538,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.24852946356219938,
+    "etkilesim_entropisi": 0.4042065282047171,
+    "ivme_degisimi": 0.5717320391350522,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4403296962657389,
+    "yon_tutarliligi": 0.7489204621483263,
+    "zaman_kuantasyonu": 0.08,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.393008858735399,
+    "etkilesim_entropisi": 0.4283178218885805,
+    "ivme_degisimi": 0.556937773305925,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.44460284108889425,
+    "yon_tutarliligi": 0.7505258618832455,
+    "zaman_kuantasyonu": 0.06666666666666667,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.37069947839888123,
+    "etkilesim_entropisi": 0.4328944437682623,
+    "ivme_degisimi": 0.5770077389323134,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4533934073543027,
+    "yon_tutarliligi": 0.736519105949966,
+    "zaman_kuantasyonu": 0.06944444444444445,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.35625097341102,
+    "etkilesim_entropisi": 0.48161787194752737,
+    "ivme_degisimi": 0.5120544697496435,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.3864603298192372,
+    "yon_tutarliligi": 0.7448786303502802,
+    "zaman_kuantasyonu": 0.0967741935483871,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.500625
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6194157119257355,
+    "etkilesim_entropisi": 0.4773232389880364,
+    "ivme_degisimi": 0.4313521245987997,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4975033667885629,
+    "yon_tutarliligi": 0.7211776011657498,
+    "zaman_kuantasyonu": 0.08695652173913043,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.2375
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#6"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.398,
+    "etkilesim_entropisi": 0.3510748299752192,
+    "ivme_degisimi": 0.8727394092309854,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.47060698803772016,
+    "yon_tutarliligi": 0.6508601056112786,
+    "zaman_kuantasyonu": 0.1,
+    "duraklama_dagilimi": 0.17144914915437073,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.18928191393623173,
+    "etkilesim_entropisi": 0.3022743299450082,
+    "ivme_degisimi": 0.8242574710718366,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.46777973209868673,
+    "yon_tutarliligi": 0.6983678359921375,
+    "zaman_kuantasyonu": 0.06896551724137931,
+    "duraklama_dagilimi": 0.17322789909882755,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.18928191393623173,
+    "etkilesim_entropisi": 0.3929636813424317,
+    "ivme_degisimi": 0.7902040279729361,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.45668205361117586,
+    "yon_tutarliligi": 0.6972782347222,
+    "zaman_kuantasyonu": 0.0784313725490196,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.274717108727035,
+    "etkilesim_entropisi": 0.40125839460305407,
+    "ivme_degisimi": 0.7822029411893368,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4604532835318613,
+    "yon_tutarliligi": 0.6917982837576944,
+    "zaman_kuantasyonu": 0.0967741935483871,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.39
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.2393821647541133,
+    "etkilesim_entropisi": 0.4381838932882561,
+    "ivme_degisimi": 0.7661388500282769,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4854984655572019,
+    "yon_tutarliligi": 0.7223866207251208,
+    "zaman_kuantasyonu": 0.09210526315789473,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.67125
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.3668314473313681,
+    "etkilesim_entropisi": 0.47598516228026805,
+    "ivme_degisimi": 0.5688982599519149,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.44394521900166034,
+    "yon_tutarliligi": 0.7520241897931048,
+    "zaman_kuantasyonu": 0.1111111111111111,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.4575
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#7"
+  },
+  {
+   "features": {
+    "scroll_hizi_varyansi": 0.349,
+    "tereddut_skoru": 0.6336312401959993,
+    "etkilesim_entropisi": 0.48626706543034376,
+    "ivme_degisimi": 0.5455030094287627,
+    "tiklama_yogunlugu": 0.0,
+    "odak_degisimi": 0.0,
+    "hiz_otokorelasyonu": 0.4589013562339837,
+    "yon_tutarliligi": 0.7382955363766616,
+    "zaman_kuantasyonu": 0.14,
+    "duraklama_dagilimi": 1.0,
+    "tiklama_oncesi_hareket": 0.634,
+    "kanal_gecis_gecikmesi": 0.24375
+   },
+   "label": 1,
+   "scenario": "A4_evasive",
+   "run_id": "A4_evasive#7"
+  }
+ ]
+}

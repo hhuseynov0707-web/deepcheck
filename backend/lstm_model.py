@@ -14,6 +14,44 @@ FEATURE_NAMES = [
     "ivme_degisimi",
     "tiklama_yogunlugu",
     "odak_degisimi",
+    # --- Evasion-resistant kinematics and timing --------------------------
+    # The six features above are marginal statistics -- variances, entropies,
+    # means -- and an attacker reproduces them by emitting independent
+    # per-step gaussian noise. Measured: a straight-line bot with two pixels
+    # of jitter halved its risk score and was approved. Those features answer
+    # "does this look noisy like a person?", and noise is free.
+    #
+    # These measure STRUCTURE that independent noise does not have:
+    #
+    #   hiz_otokorelasyonu  real pointer motion carries momentum, so speed
+    #                       correlates with its own previous value. IID
+    #                       jitter has ~zero autocorrelation.
+    #   yon_tutarliligi     real motion is target-directed, so consecutive
+    #                       move vectors point roughly the same way. IID
+    #                       jitter re-rolls direction every step (~0.5 after
+    #                       mapping); a linear script never turns (~1).
+    #   zaman_kuantasyonu   scripted timers repeat the SAME millisecond gap
+    #                       over and over. Human input, dispatched on real
+    #                       hardware timing, effectively never does.
+    #   duraklama_dagilimi  human gaps are heavy-tailed (mostly quick,
+    #                       occasionally long), so their coefficient of
+    #                       variation is high. A fixed delay gives ~0 and a
+    #                       uniform(a,b) delay is capped well below human.
+    #
+    # Reproducing these requires modelling human motor control rather than
+    # adding noise, which is a materially higher bar.
+    "hiz_otokorelasyonu",
+    "yon_tutarliligi",
+    "zaman_kuantasyonu",
+    "duraklama_dagilimi",
+    # --- Cross-channel structure ------------------------------------------
+    # Within-channel structure can be faked one channel at a time. These
+    # measure how one person's channels relate to each other: the cursor
+    # arrives before the click, and a hand takes real time to move between
+    # keyboard and mouse. Count and ratio statistics by design, so they stay
+    # valid on thin flushes where variance estimates would be noise.
+    "tiklama_oncesi_hareket",
+    "kanal_gecis_gecikmesi",
 ]
 
 # Per-timestep features fed into the LSTM

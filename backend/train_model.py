@@ -20,6 +20,7 @@ formula automatically flows into training data too, since both paths run the
 same code.
 """
 
+import json
 import os
 import sys
 
@@ -438,6 +439,102 @@ PILOT_PASSES = 2
 SCALING_SESSIONS = int(os.getenv("SCALING_SESSIONS", "1500"))
 
 
+REAL_TELEMETRY_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lab", "real_telemetry.json"
+)
+
+# Real rows are vastly outnumbered by synthetic ones, so without a weight they
+# would be rounding error. This makes the real set count for roughly as much in
+# aggregate as the synthetic set, while keeping synthetic coverage of the
+# personas the browser lab does not enumerate.
+REAL_TELEMETRY_WEIGHT = 120.0
+
+# Fraction of real RUNS -- not flushes -- held out for evaluation. Splitting by
+# run matters: every flush from one browser session is correlated with its
+# siblings, so a random per-flush split puts the same session on both sides and
+# reports a number that will not reproduce on a fresh session.
+REAL_HOLDOUT_FRACTION = 0.3
+
+
+def load_real_telemetry(path: str = REAL_TELEMETRY_PATH):
+    """Labelled real-browser telemetry, split by run.
+
+    This is the answer to the project's oldest weakness: the models were
+    trained entirely on personas written by the same author as the detector,
+    so their separation was partly self-fulfilling. The browser lab showed
+    what that costs -- the same evasive attack scored 88.9 (blocked) in the
+    simulator and 36.5 (approved) through real Chromium, because the heaviest
+    timing features are inverted between the two distributions.
+
+    Returns (X_train, y_train, X_eval, y_eval, eval_scenarios) or None.
+    """
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    samples = payload.get("samples", [])
+    if not samples:
+        return None
+
+    # A capture taken before a feature was added cannot be blended: the vector
+    # would be the wrong width, or worse, silently mis-ordered.
+    missing = [s for s in samples if any(n not in s["features"] for n in FEATURE_NAMES)]
+    if missing:
+        print(
+            f"  WARNING: {len(missing)}/{len(samples)} real rows predate the current "
+            "feature set and are being skipped. Re-run lab/capture.py."
+        )
+        samples = [s for s in samples if all(n in s["features"] for n in FEATURE_NAMES)]
+    if not samples:
+        return None
+
+    runs = sorted({s.get("run_id", s["scenario"]) for s in samples})
+    holdout_rng = np.random.default_rng(1234)
+    holdout_rng.shuffle(runs)
+    holdout = set(runs[: max(1, int(len(runs) * REAL_HOLDOUT_FRACTION))])
+
+    def vec(sample):
+        return [sample["features"][name] for name in FEATURE_NAMES]
+
+    train = [s for s in samples if s.get("run_id", s["scenario"]) not in holdout]
+    evaluate = [s for s in samples if s.get("run_id", s["scenario"]) in holdout]
+    if not train or not evaluate:
+        return None
+
+    return (
+        np.array([vec(s) for s in train], dtype=float),
+        np.array([s["label"] for s in train]),
+        np.array([vec(s) for s in evaluate], dtype=float),
+        np.array([s["label"] for s in evaluate]),
+        [s["scenario"] for s in evaluate],
+    )
+
+
+def report_real_holdout(rf, scaler, X_eval, y_eval, scenarios):
+    """Accuracy on held-out REAL browser runs, broken down by scenario.
+
+    The aggregate number hides the only asymmetry that matters: blocking a
+    legitimate keyboard-only user costs a sale and a support call, while
+    missing one bot costs one fraudulent attempt.
+    """
+    if len(y_eval) == 0:
+        return
+    proba = rf.predict_proba(scaler.transform(X_eval))[:, 1]
+    print("\nHeld-out REAL browser runs (never seen in training):")
+    print(f"  {'scenario':<20}{'n':>5}{'mean p(bot)':>14}{'flagged >=0.5':>15}")
+    for name in sorted(set(scenarios)):
+        idx = [i for i, sc in enumerate(scenarios) if sc == name]
+        p = proba[idx]
+        flagged = 100.0 * float((p >= 0.5).mean())
+        print(f"  {name:<20}{len(idx):>5}{p.mean():>14.3f}{flagged:>14.0f}%")
+    human = proba[y_eval == 0]
+    bot = proba[y_eval == 1]
+    if len(human) and len(bot):
+        fpr = 100.0 * float((human >= 0.5).mean())
+        recall = 100.0 * float((bot >= 0.5).mean())
+        print(f"  overall: false positives {fpr:.1f}%, bot recall {recall:.1f}%")
+
+
 def compute_feature_scaling(n_sessions: int = SCALING_SESSIONS) -> dict:
     """Measures where each heavy-tailed feature actually lives, and returns the
     log10 endpoints used to map it onto 0..1.
@@ -526,7 +623,7 @@ def compute_neutral_defaults(X: np.ndarray, y: np.ndarray) -> dict:
     return defaults
 
 
-def train_tabular_models(X_train, y_train, X_test, y_test):
+def train_tabular_models(X_train, y_train, X_test, y_test, sample_weight=None):
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
@@ -550,7 +647,7 @@ def train_tabular_models(X_train, y_train, X_test, y_test):
         random_state=42,
         n_jobs=-1,
     )
-    rf.fit(X_train_scaled, y_train)
+    rf.fit(X_train_scaled, y_train, sample_weight=sample_weight)
 
     y_pred = rf.predict(X_test_scaled)
     rf_acc = accuracy_score(y_test, y_pred)
@@ -651,8 +748,30 @@ def main():
 
     print(f"Neutral defaults in force: {neutral_defaults}")
 
+    real = load_real_telemetry()
+    if real is None:
+        print(
+            "\nNo usable lab/real_telemetry.json -- training on synthetic data only.\n"
+            "Run lab/capture.py: the simulator alone teaches the wrong sign on the\n"
+            "timing features, which is a measured result, not a worry."
+        )
+        X_fit, y_fit, weights = X_train, y_train, None
+    else:
+        X_real, y_real, X_real_eval, y_real_eval, real_eval_scenarios = real
+        print(
+            f"\nBlending {len(y_real)} real-browser rows into training "
+            f"({len(y_real_eval)} held out by run)."
+        )
+        X_fit = np.vstack([X_train, X_real])
+        y_fit = np.concatenate([y_train, y_real])
+        weights = np.concatenate(
+            [np.ones(len(y_train)), np.full(len(y_real), REAL_TELEMETRY_WEIGHT)]
+        )
+
     print("Training RandomForest + IsolationForest...")
-    scaler, rf, iso_forest = train_tabular_models(X_train, y_train, X_test, y_test)
+    scaler, rf, iso_forest = train_tabular_models(X_fit, y_fit, X_test, y_test, weights)
+    if real is not None:
+        report_real_holdout(rf, scaler, X_real_eval, y_real_eval, real_eval_scenarios)
 
     print("Training LSTM on real flush sequences...")
     lstm = train_lstm(seq_train, y_train, seq_test, y_test)

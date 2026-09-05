@@ -295,6 +295,14 @@ değildir; SDK'yı hiç çalıştırmayan bir istemcinin durumu tam olarak budur
 
 ---
 
+## Evaluation
+
+Measured against **real Chromium telemetry**, not the simulator: 0% false positives on both legitimate scenarios (including keyboard-only), 76.1% bot recall on held-out browser runs. The honest caveat is in [docs/evaluation.md](docs/evaluation.md) — the detector catches attack techniques it has samples of and does not generalise to techniques it has not seen, which an independently written adversarial harness demonstrates directly.
+
+`lab/` drives a real browser through the real SDK and records labelled telemetry; `backend/train_model.py` blends it into training with a run-level holdout.
+
+---
+
 ## Performance
 
 Measured on a development machine against the shipped models, 60 runs after warm-up:

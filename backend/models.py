@@ -91,6 +91,13 @@ class BehaviorData(Base):
     tiklama_yogunlugu: Mapped[float] = mapped_column(Float, default=0.0)
     odak_degisimi: Mapped[float] = mapped_column(Float, default=0.0)
 
+    # Structural / cross-channel features (see lstm_model.FEATURE_NAMES).
+    hiz_otokorelasyonu: Mapped[float] = mapped_column(Float, default=0.0)
+    yon_tutarliligi: Mapped[float] = mapped_column(Float, default=0.0)
+    zaman_kuantasyonu: Mapped[float] = mapped_column(Float, default=0.0)
+    duraklama_dagilimi: Mapped[float] = mapped_column(Float, default=0.0)
+    tiklama_oncesi_hareket: Mapped[float] = mapped_column(Float, default=0.0)
+    kanal_gecis_gecikmesi: Mapped[float] = mapped_column(Float, default=0.0)
     risk_score: Mapped[float] = mapped_column(Float, default=0.0)
     # Replay protection (see main.py): a clock-independent fingerprint of the
     # telemetry, and the newest event timestamp in it so the next flush can

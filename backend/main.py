@@ -809,12 +809,10 @@ async def analyze(
         hesitation_intervals=raw["hesitation_intervals"],
         focus_changes=raw["focus_changes"],
         key_events=raw["key_events"],
-        scroll_hizi_varyansi=features["scroll_hizi_varyansi"],
-        tereddut_skoru=features["tereddut_skoru"],
-        etkilesim_entropisi=features["etkilesim_entropisi"],
-        ivme_degisimi=features["ivme_degisimi"],
-        tiklama_yogunlugu=features["tiklama_yogunlugu"],
-        odak_degisimi=features["odak_degisimi"],
+        # Built from FEATURE_NAMES rather than listed by hand, so adding a
+        # feature does not silently stop persisting it -- which would also
+        # break the LSTM history read, since that reads the same columns.
+        **{name: features[name] for name in FEATURE_NAMES},
         risk_score=result["risk_score"],
         payload_hash=payload_hash,
         newest_event_at=newest_event_at,
@@ -1000,12 +998,7 @@ async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
             {
                 "timestamp": row.created_at,
                 "risk_score": row.risk_score,
-                "scroll_hizi_varyansi": row.scroll_hizi_varyansi,
-                "tereddut_skoru": row.tereddut_skoru,
-                "etkilesim_entropisi": row.etkilesim_entropisi,
-                "ivme_degisimi": row.ivme_degisimi,
-                "tiklama_yogunlugu": row.tiklama_yogunlugu,
-                "odak_degisimi": row.odak_degisimi,
+                **{name: getattr(row, name) for name in FEATURE_NAMES},
                 # Recorded, not scored -- see ClientSignals.
                 "client_signals": row.client_signals or {},
             }

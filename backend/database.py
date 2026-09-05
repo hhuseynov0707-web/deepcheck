@@ -75,6 +75,13 @@ _ADDITIVE_MIGRATIONS = (
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS newest_event_at BIGINT",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS client_signals JSON",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS raw_purged BOOLEAN NOT NULL DEFAULT FALSE",
+    # Structural features added alongside the browser-lab work.
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS hiz_otokorelasyonu DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS yon_tutarliligi DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS zaman_kuantasyonu DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS duraklama_dagilimi DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS tiklama_oncesi_hareket DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS kanal_gecis_gecikmesi DOUBLE PRECISION DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS ix_behavior_data_payload_hash ON behavior_data (payload_hash)",
 )
 

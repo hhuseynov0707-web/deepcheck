@@ -1,66 +1,101 @@
 # Evaluation
 
-## Status: no real-session measurement exists yet
+Measured 2026-09-06 against the running stack. Every number here comes from
+telemetry that travelled the real path: browser input events → `sdk/deepcheck.js`
+→ `POST /api/analyze` → the same scoring code that serves the demo.
 
-**There is no accuracy number for DeepCheck against real traffic, and this
-page will not invent one.** Every figure the project has published so far —
-including the RandomForest accuracy `train_model.py` prints at the end of a
-training run — is measured on data produced by `train_model.py`'s own
-simulator. Training and test split the same generator, so those numbers
-describe how well the models fit the simulator. They are not evidence about
-people.
+## What changed
 
-That distinction is the whole reason this file exists. A fintech jury is
-entitled to ask "how well does it work?", and the honest answer today is
-"unmeasured against real users, by construction".
+Until now this page said, correctly, that no accuracy figure existed against
+anything but the simulator. That is no longer true. `lab/capture.py` drives a
+real Chromium browser through the real SDK and records labelled telemetry;
+234 samples were captured across six scenarios, and the models are now trained
+on that data blended with the synthetic set.
 
-## What is in place
+## Held-out real browser runs
 
-The measurement pipeline is built and runnable. What is missing is the data.
+Runs are held out whole, not flushes. Every flush from one browser session is
+correlated with its siblings, so a per-flush split would put the same session
+on both sides and report a number that will not reproduce.
 
-| Piece | State |
-|---|---|
-| `backend/record_session.py` | Freezes a labelled real session out of Postgres into `data/real/{label}/{id}.json` |
-| `tools/bot_session.py` | Drives the demo checkout with Playwright, in a naive and a human-mimicking variant |
-| `backend/evaluate.py` | Replays recorded sessions through the real serving path and reports accuracy, false-positive rate, recall, precision and ROC-AUC |
-| `data/real/` | Empty. Recordings are personal data and are gitignored |
+| Scenario | n | mean p(bot) | flagged |
+|---|---|---|---|
+| H1_human (legitimate) | 25 | 0.043 | **0%** |
+| H2_keyboard_only (legitimate) | 11 | 0.088 | **0%** |
+| A2_randomized | 8 | 0.671 | 75% |
+| A3_human_mimic | 10 | 0.927 | 100% |
+| A4_evasive | 28 | 0.599 | 68% |
 
-`evaluate.py` replays through `scorer.compute_risk()` with each flush's real
-predecessors as LSTM history, and applies the same median smoothing
-`/api/analyze` does, so a replayed score is the score the API would have
-produced — not a re-derivation that quietly skips half the pipeline.
+**False positives 0%, bot recall 76.1%.**
 
-## How to produce the numbers
+H2 matters as much as the attack rows. Blocking a keyboard-only user is worse
+for a payment product than missing a bot, and a lab that only measured
+detection would never surface it.
+
+## The number that is not in that table
+
+The scenarios above all appear in training, held out by run. So the table
+answers "does it recognise more sessions of an attack it has samples of?"
+and the answer is yes. It does not answer "does it recognise an attack it has
+never seen", which is the question that decides whether this works in
+production.
+
+For that, a separate adversarial harness was written from motor-control first
+principles — minimum-jerk trajectories, Fitts's law, log-normal keystroke
+intervals — with no reference to either the simulator's personas or the lab's
+scenarios. 125 sessions, 25 per class:
+
+| Persona | Mean score | Stopped |
+|---|---|---|
+| human | 11.3 | 0% false positives |
+| naive headless script | 34.3 | 100%, by the evidence rule |
+| straight-line automation | 81.6 | **92% blocked** |
+| independent humanised bot | 11.3 | **0%** |
+| independent feature-aware bot | 10.3 | **0%** |
+
+Straight-line automation went from being charged with a warning to being
+blocked 92% of the time. But an independently written humanised bot scores
+11.3 against a human 11.3 — indistinguishable — even though the lab's own
+`A3_human_mimic` is now caught 100% of the time.
+
+**So the honest summary is: the detector catches attack techniques it has
+samples of, and does not generalise to techniques it has not seen.** The 76%
+recall is real and the 0% false-positive rate is real, and neither should be
+read as "76% of bots are caught in the wild".
+
+## What this means for deployment
+
+The capture loop is the product, more than any single trained model. A
+deployment that never records new labelled traffic will decay as attackers
+change technique. What makes that workable is that capture is cheap: a few
+minutes of browser time produces a few hundred labelled rows, and retraining
+is one command.
+
+## Reproducing
 
 ```bash
-docker-compose up --build            # demo at http://localhost:3000/demo
+docker-compose up --build
 
-# Humans: 30+ sessions, different people, mice, trackpads, machines.
-cd backend && python record_session.py --list
-python record_session.py --label human <session-id> [<session-id> ...]
+pip install -r lab/requirements.txt
+python -m playwright install chromium
 
-# Bots: 30+ sessions, both variants.
-python tools/bot_session.py --variant naive  --runs 15
-python tools/bot_session.py --variant jitter --runs 15
-cd backend && python record_session.py --label bot --since <start-time>
+# Record labelled real-browser telemetry (writes lab/real_telemetry.json)
+python lab/capture.py --api http://127.0.0.1:8000 --repeats 8 --port 3100
 
-# Measure, and overwrite this file with the result.
-python evaluate.py --markdown ../docs/evaluation.md
+# Retrain; prints the held-out table above
+cd backend && python train_model.py
 ```
 
-The sample-size floor matters. Thirty sessions per class is enough to expose
-an obviously broken detector and nowhere near enough to quote a false-positive
-rate to three decimal places; report the count alongside every number, which
-is what `evaluate.py` does.
+## Honest scope
 
-## What to watch for
-
-- **Collection bias.** Sessions recorded from one person on one machine
-  measure that person and that machine. Vary the input device above all: the
-  mouse-acceleration feature is the most hardware-sensitive of the six.
-- **The false-positive rate is the number that matters.** A blocked customer
-  is a lost sale and a support call; a missed bot costs one fraudulent
-  attempt. They are not symmetric, and accuracy alone hides the difference.
-- **Label discipline.** The directory name is the ground truth. A human
-  session filed under `bot/` does not produce a slightly worse number, it
-  produces a misleading one.
+- 234 samples from one machine and one browser build. Input device, screen
+  size and operating system all shape pointer kinematics, and none of that
+  variation is represented. A real false-positive rate needs many people on
+  their own hardware.
+- The "human" scenarios are scripted approximations of a person, driven
+  through a real browser. They are far better than simulated feature vectors
+  and still not recordings of actual customers.
+- Scripted attacks establish a floor, not a ceiling. A determined attacker
+  with unlimited attempts against a live endpoint is a different adversary,
+  and the SHAP breakdown returned by `POST /api/analyze` currently gives that
+  attacker a tuning signal.

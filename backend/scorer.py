@@ -1,9 +1,11 @@
 """Feature extraction, model inference, SHAP explanation and risk scoring."""
 
+import bisect
 import logging
 import math
 import os
 import time
+from collections import Counter
 
 import joblib
 import numpy as np
@@ -76,6 +78,32 @@ FEATURE_SCALING = {
 CLICK_DENSITY_DIVISOR = 10.0
 FOCUS_CHANGE_DIVISOR = 5.0
 
+# --- Small-sample gates for the structural features -------------------------
+#
+# These are correctness requirements, not tuning. An autocorrelation estimated
+# from four speed samples is dominated by its own sampling error, and feeding
+# that to the model as though it were a measurement is how a mostly-typing
+# human ends up scored as a bot. Below each threshold there is no measurement,
+# so extract_raw returns None and the neutral fallback applies.
+MIN_AUTOCORRELATION_SAMPLES = 8  # speed samples, i.e. >=9 trajectory points
+MIN_DIRECTION_SAMPLES = 6  # consecutive-vector pairs, i.e. >=8 trajectory points
+MIN_TIMING_GAPS = 5
+MIN_CLICKS_FOR_MOTION_RATIO = 2
+MIN_CHANNEL_TRANSITIONS = 5
+
+# A click counts as "preceded by motion" if any mousemove landed within this
+# window before it.
+CLICK_MOTION_LOOKBACK_MS = 1500
+
+# Hand travel between keyboard and pointer costs a person a few hundred ms.
+TRANSITION_LAG_DIVISOR = 800.0
+
+# The coefficient of variation of human inter-event gaps sits near 0.5
+# (lognormal-ish), uniform-random script delays near 0.3, fixed delays at 0.
+# Dividing by 1.5 keeps the human range off the clip ceiling, so the feature
+# still discriminates ABOVE the human mean instead of saturating there.
+DISPERSION_DIVISOR = 1.5
+
 # Inter-event gaps are binned on a FIXED log10-millisecond grid rather than
 # over each session's own [min, max].
 #
@@ -120,6 +148,16 @@ NEUTRAL_DEFAULTS = {
     "tereddut_skoru": 0.45,
     "etkilesim_entropisi": 0.66,
     "ivme_degisimi": 0.35,
+    # Structural features. Fallbacks measured on the browser lab's captures:
+    # human / bot means were 0.70/0.51, 0.87/0.85, 0.13/0.24, 0.72/0.18,
+    # 0.75/0.61 and 0.49/0.30 respectively; these are the midpoints. Training
+    # recomputes them, so these are the legacy-bundle fallback only.
+    "hiz_otokorelasyonu": 0.60,
+    "yon_tutarliligi": 0.86,
+    "zaman_kuantasyonu": 0.18,
+    "duraklama_dagilimi": 0.45,
+    "tiklama_oncesi_hareket": 0.68,
+    "kanal_gecis_gecikmesi": 0.39,
 }
 
 # Features that never need a neutral fallback: they are simple counts (clicks
@@ -187,6 +225,18 @@ class ModelBundle:
         self.rf = bundle["rf"]
         self.iso_forest = bundle["iso_forest"]
         self.feature_names = bundle["feature_names"]
+        # The feature set is part of the contract between a bundle and the code
+        # that serves it. Adding a feature changes the width and the order of
+        # every vector the forest was fitted on, so a bundle trained against a
+        # different list cannot be used -- it would read column 7 as though it
+        # were column 3 and score confidently on nonsense. Same reasoning as the
+        # scikit-learn and feature_scaling checks; entrypoint.sh retrains.
+        if list(self.feature_names) != list(FEATURE_NAMES):
+            raise ModelUnavailableError(
+                "model.pkl farkli bir ozellik kumesiyle egitilmis "
+                f"({len(self.feature_names)} ozellik, kod {len(FEATURE_NAMES)} bekliyor). "
+                "`python train_model.py` ile yeniden egitin."
+            )
 
         # Computed by train_model.py from the generated dataset (the midpoint
         # between the human and bot means of each feature). Missing only in a
@@ -347,6 +397,118 @@ def _channel_entropy(times: list[float]) -> tuple[float, int] | None:
     return _entropy(gaps), len(gaps)
 
 
+def _channel_gaps(times: list[float]) -> list[float]:
+    ts = sorted(times)
+    return [b - a for a, b in zip(ts, ts[1:])]
+
+
+def _weighted_channel_mean(channel_times, metric, min_gaps: int) -> float | None:
+    """Applies `metric` to each channel's own gaps and averages by gap count.
+
+    Per channel and then averaged, for the same reason the entropy is: merging
+    several independently regular channels into one stream produces
+    beat-frequency artefacts that look irregular even when each channel is
+    perfectly robotic on its own.
+    """
+    values, weights = [], []
+    for times in channel_times:
+        gaps = _channel_gaps(times)
+        if len(gaps) < min_gaps:
+            continue
+        value = metric(gaps)
+        if value is None or not math.isfinite(value):
+            continue
+        values.append(value)
+        weights.append(len(gaps))
+    if not values:
+        return None
+    return float(np.average(values, weights=weights))
+
+
+def _autocorrelation(values: list[float], lag: int = 1) -> float | None:
+    """Lag-1 autocorrelation in [-1, 1], or None when it is undefined.
+
+    A near-constant series returns None rather than a fake 0.0: that case is a
+    fixed-velocity script, which ivme_degisimi already answers, and folding it
+    in here would collide with the genuinely different "IID noise" case.
+    """
+    if len(values) < max(lag + 2, MIN_AUTOCORRELATION_SAMPLES):
+        return None
+    v = np.asarray(values, dtype=float)
+    v = v - v.mean()
+    denom = float(np.dot(v, v))
+    # Relative epsilon: an absolute one misjudges series whose values are all
+    # tiny, and pointer speeds in px/ms routinely are.
+    if denom <= 1e-12 * max(len(v), 1) or denom <= 1e-18:
+        return None
+    return float(np.clip(float(np.dot(v[:-lag], v[lag:])) / denom, -1.0, 1.0))
+
+
+def _modal_repeat_ratio(gaps: list[float]) -> float | None:
+    """Fraction of gaps taking the single most common millisecond value.
+
+    A scripted timer (`t += 80`, setInterval, a fixed sleep) emits the same gap
+    repeatedly, driving this toward 1.0. Human input sits near 1/n.
+    """
+    if not gaps:
+        return None
+    counts = Counter(round(g) for g in gaps)
+    return counts.most_common(1)[0][1] / len(gaps)
+
+
+def _coefficient_of_variation(gaps: list[float]) -> float | None:
+    """std/mean of gaps: a shape statistic, not a scale one."""
+    if len(gaps) < 2:
+        return None
+    arr = np.asarray(gaps, dtype=float)
+    mean = float(arr.mean())
+    if mean <= 1e-9:
+        return None
+    return float(arr.std() / mean)
+
+
+def _click_motion_ratio(mouse: list[dict], clicks: list[dict]) -> float | None:
+    """Fraction of clicks preceded by pointer motion.
+
+    A person moves the cursor to a target and then clicks. A scripted click
+    (`element.click()`, `dispatchEvent`) fires with no pointer motion at all.
+    A ratio of counts rather than a distribution statistic, so it degrades
+    gracefully on thin flushes: whether motion preceded a click is a fact
+    about that click, not an estimate.
+    """
+    if len(clicks) < MIN_CLICKS_FOR_MOTION_RATIO:
+        return None
+    mouse_times = sorted(m.get("t", 0) for m in mouse)
+    if not mouse_times:
+        return 0.0  # clicks with no pointer motion anywhere: a real observation
+    with_motion = 0
+    for click in clicks:
+        t = click.get("t", 0)
+        lo = bisect.bisect_left(mouse_times, t - CLICK_MOTION_LOOKBACK_MS)
+        if bisect.bisect_right(mouse_times, t) > lo:
+            with_motion += 1
+    return with_motion / len(clicks)
+
+
+def _channel_transition_lag(mouse: list[dict], keys: list[dict]) -> float | None:
+    """Median pause when the actor switches between keyboard and pointer.
+
+    Moving a hand costs a person a few hundred milliseconds. A script
+    alternating between dispatching keydowns and mousemoves pays nothing. This
+    is a relationship BETWEEN channels, so imitating typing rhythm and pointer
+    motion separately does not satisfy it.
+    """
+    events = sorted([(m.get("t", 0), "m") for m in mouse] + [(k.get("t", 0), "k") for k in keys])
+    lags = [
+        b_t - a_t
+        for (a_t, a_c), (b_t, b_c) in zip(events, events[1:])
+        if a_c != b_c and b_t >= a_t
+    ]
+    if len(lags) < MIN_CHANNEL_TRANSITIONS:
+        return None
+    return float(np.median(lags))
+
+
 def extract_raw(raw: dict) -> dict:
     """Raw, unnormalised quantities from one flush.
 
@@ -425,6 +587,55 @@ def extract_raw(raw: dict) -> dict:
     else:
         clicks_in_window = 0
 
+    # --- Structural features ------------------------------------------
+    # These target the evasion the marginal statistics above cannot see:
+    # independent per-step gaussian noise, which reproduces human-looking
+    # spread while having none of the temporal structure motor control
+    # produces.
+
+    # Speed autocorrelation, mapped from [-1, 1] onto [0, 1]. Real motion
+    # accelerates, peaks and decelerates, so consecutive speeds are related;
+    # IID jitter gives ~0, landing at the 0.5 midpoint.
+    speed_autocorr = _autocorrelation([s for _, s in speed_samples])
+    autocorr_raw = None if speed_autocorr is None else (speed_autocorr + 1.0) / 2.0
+
+    # Direction consistency: mean cosine between consecutive move vectors,
+    # mapped from [-1, 1] onto [0, 1]. Target-directed motion keeps pointing
+    # the same way within a sub-movement; IID jitter re-rolls direction each
+    # step (~0.5); a straight-line script never turns (~1). Both extremes are
+    # informative and the forest handles the non-monotonic relationship.
+    vectors = [
+        (b.get("x", 0) - a.get("x", 0), b.get("y", 0) - a.get("y", 0))
+        for a, b in zip(mouse_trajectory, mouse_trajectory[1:])
+    ]
+    cosines = []
+    for (ax, ay), (bx, by) in zip(vectors, vectors[1:]):
+        na, nb = math.hypot(ax, ay), math.hypot(bx, by)
+        if na < 1e-9 or nb < 1e-9:
+            continue  # zero-length step: direction undefined, not opposed
+        cosines.append((ax * bx + ay * by) / (na * nb))
+    direction_raw = (
+        (float(np.mean(cosines)) + 1.0) / 2.0 if len(cosines) >= MIN_DIRECTION_SAMPLES else None
+    )
+
+    channel_times = [
+        [m.get("t", 0) for m in mouse_trajectory],
+        [c.get("t", 0) for c in click_timing],
+        [s.get("t", 0) for s in scroll_events],
+        [k.get("t", 0) for k in key_events],
+    ]
+    quantization_raw = _weighted_channel_mean(
+        channel_times, _modal_repeat_ratio, MIN_TIMING_GAPS
+    )
+    dispersion = _weighted_channel_mean(
+        channel_times, _coefficient_of_variation, MIN_TIMING_GAPS
+    )
+    dispersion_raw = None if dispersion is None else dispersion / DISPERSION_DIVISOR
+
+    motion_ratio_raw = _click_motion_ratio(mouse_trajectory, click_timing)
+    lag = _channel_transition_lag(mouse_trajectory, key_events)
+    transition_raw = None if lag is None else lag / TRANSITION_LAG_DIVISOR
+
     return {
         "scroll_hizi_varyansi": scroll_raw,
         "tereddut_skoru": hesitation_raw,
@@ -432,6 +643,12 @@ def extract_raw(raw: dict) -> dict:
         "ivme_degisimi": accel_raw,
         "tiklama_yogunlugu": float(clicks_in_window),
         "odak_degisimi": float(len(focus_changes)),
+        "hiz_otokorelasyonu": autocorr_raw,
+        "yon_tutarliligi": direction_raw,
+        "zaman_kuantasyonu": quantization_raw,
+        "duraklama_dagilimi": dispersion_raw,
+        "tiklama_oncesi_hareket": motion_ratio_raw,
+        "kanal_gecis_gecikmesi": transition_raw,
     }
 
 
