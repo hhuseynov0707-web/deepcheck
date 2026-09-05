@@ -1,0 +1,26 @@
+# Force LF in the working tree, on every platform.
+#
+# Without this, Git on Windows (core.autocrlf=true, which is the default there)
+# checks text files out with CRLF. docker-compose mounts ./backend into the
+# Linux backend container, so a CRLF entrypoint.sh arrives with its shebang
+# reading "#!/bin/sh\r" and the container dies in a restart loop with:
+#
+#     exec ./entrypoint.sh: no such file or directory
+#
+# which names the wrong thing entirely and costs an hour to diagnose. Every
+# text file in this repository is either read by a Linux container or by a
+# tool that is happy with LF, so LF everywhere is simply correct.
+* text=auto eol=lf
+
+# Shell scripts must never be CRLF, whatever a local Git config says.
+*.sh text eol=lf
+entrypoint.sh text eol=lf
+
+# Binary artifacts: never touch these.
+*.pkl binary
+*.pt binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

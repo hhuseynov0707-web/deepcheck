@@ -20,8 +20,8 @@ ENV/
 # permanently, it is fully reproducible from train_model.py (fixed seed 42),
 # and a pickle is version-fragile -- it must be loaded by the same
 # scikit-learn version that wrote it (see requirements.txt).
-backend/model.pkl
-backend/lstm_model.pt
+backend/model*.pkl
+backend/lstm_model*.pt
 
 # --- Node / frontend ---
 node_modules/

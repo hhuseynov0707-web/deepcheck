@@ -73,6 +73,8 @@ _ADDITIVE_MIGRATIONS = (
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS payload_hash VARCHAR(64)",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS newest_event_at BIGINT",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS client_signals JSON",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS raw_purged BOOLEAN NOT NULL DEFAULT FALSE",
     "CREATE INDEX IF NOT EXISTS ix_behavior_data_payload_hash ON behavior_data (payload_hash)",
 )
 

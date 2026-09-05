@@ -47,24 +47,22 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      # Vite inlines these at build time, so they are build args rather than
+      # runtime environment. Change one and rebuild the image.
+      #
+      # There is deliberately NO dashboard key here: a key compiled into the
+      # bundle is served to every visitor, which makes the header check on the
+      # SOC endpoints decoration rather than authentication. The analyst types
+      # it into the dashboard instead.
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
     container_name: deepcheck-frontend
     restart: unless-stopped
-    environment:
-      VITE_API_URL: http://localhost:8000
-      # Must match the backend's DASHBOARD_KEY or the SOC dashboard shows
-      # "Yetkisiz erişim". The default matches the backend's DEBUG fallback.
-      VITE_DASHBOARD_KEY: ${DASHBOARD_KEY:-deepcheck-dev-dashboard-key}
-      # Displayed in the step-up modal; must match the backend's value.
-      VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
     ports:
       - "3000:3000"
-    volumes:
-      - ./frontend:/app/frontend
-      - ./sdk:/app/sdk
-      - /app/frontend/node_modules
     depends_on:
       - backend
-    command: npm run dev -- --host 0.0.0.0 --port 3000
 
 volumes:
   deepcheck-db-data:

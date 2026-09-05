@@ -1,0 +1,23 @@
+# Development override: hot-reloading Vite dev server instead of the built
+# nginx image.
+#
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# The default `docker-compose up` builds the production bundle, which is what
+# a reviewer should see. Use this while editing the frontend, because the
+# production image has to be rebuilt for every change.
+services:
+  frontend:
+    build:
+      # Stop at the Node stage; nginx is not wanted here.
+      target: build
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
+    volumes:
+      - ./frontend:/app/frontend
+      - ./sdk:/app/sdk
+      # Anonymous volume so the container keeps its own node_modules rather
+      # than having them shadowed by the host mount above.
+      - /app/frontend/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 3000

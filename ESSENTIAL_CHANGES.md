@@ -14,14 +14,38 @@ README integration guide, model warm-up at boot. Twelve tests cover them.
 This revision is a fresh audit of the code as it stands now. The findings
 below are new.
 
-**Status of this revision.** Items 2, 3 and 4 are implemented (replay
-protection, minimum evidence and freshness, server-side charge), and item 9
-came along with 4 because a server-side charge needs a server-side step-up:
-`POST /api/demo/verify` records verification on the session and only ever
-upgrades `verify` to `allow`. Seven tests cover the four items. Item 11 got
-a stop-gap: `init_db` now applies additive `ALTER TABLE ... IF NOT EXISTS`
-statements at boot, so existing volumes keep working. Items 1, 5, 6, 7, 8,
-10, 12 and 13 remain open.
+**Status of this revision.** Every item except 1 is implemented; the test
+suite is at 23. What landed, in two passes:
+
+| # | Item | State |
+|---|---|---|
+| 1 | Real evaluation set | **Open — needs people, not code** |
+| 2 | Replay protection | Done |
+| 3 | Evidence and freshness before a verdict | Done |
+| 4 | Server-side charge | Done |
+| 5 | Dashboard key out of the bundle | Done |
+| 6 | Missing LSTM weights must fail loudly | Done |
+| 7 | Rate limiting | Done |
+| 8 | Telemetry retention | Done |
+| 9 | Real step-up verification | Done, with item 4 |
+| 10 | Continuous integration | Done |
+| 11 | Schema changes on an existing volume | Stop-gap: additive `ALTER TABLE ... IF NOT EXISTS` at boot |
+| 12 | Production frontend build | Done — nginx image, `docker-compose.dev.yml` for hot reload |
+| 13 | Forge-resistance signals | Collected and stored; **not** wired to the model, by design |
+
+**Item 1 is the one thing that cannot be written.** It needs 30+ real people
+using the demo on their own machines. Everything around it is ready: the
+recorder, the Playwright bot in two variants, the evaluation script, and the
+directory layout. Until those recordings exist, no accuracy number this
+project reports describes anything but the simulator, and `docs/evaluation.md`
+says so.
+
+**Item 13 is deliberately half-done.** The SDK now reports how many events
+arrived with `isTrusted` false, whether `navigator.webdriver` was set, and the
+pointer-type mix, and every flush stores them. None of it reaches the model.
+Wiring a self-reported signal into the score before measuring it on real
+traffic is how a detector acquires a feature that a two-line patch defeats;
+the columns exist so the measurement can happen the moment item 1 does.
 
 ---
 
@@ -120,7 +144,7 @@ edit. A jury member opening DevTools will see it.
 
 ---
 
-## 5. The dashboard key is public  (P1)
+## 5. The dashboard key is public  (P1) — DONE
 
 **Weakness.** `VITE_DASHBOARD_KEY` is compiled into the frontend bundle and
 served to anyone who opens `/dashboard`. The header check on
@@ -138,7 +162,7 @@ authentication but is not.
 
 ---
 
-## 6. A missing LSTM file silently runs random weights  (P1)
+## 6. A missing LSTM file silently runs random weights  (P1) — DONE
 
 **Weakness.** `scorer.ModelBundle` loads `lstm_model.pt` only if it exists.
 If `model.pkl` is present but the LSTM file is not, the LSTM runs with
@@ -156,7 +180,7 @@ no error anywhere. `entrypoint.sh` only checks for `model.pkl`.
 
 ---
 
-## 7. No rate limiting anywhere  (P1)
+## 7. No rate limiting anywhere  (P1) — DONE
 
 **Weakness.** `/api/session` and `/api/analyze` accept unlimited calls.
 Each analyze costs about 50 ms of CPU, so one client can saturate all four
@@ -175,7 +199,7 @@ tenth.
 
 ---
 
-## 8. Unbounded storage of raw telemetry  (P1)
+## 8. Unbounded storage of raw telemetry  (P1) — DONE
 
 **Weakness.** Every flush stores the full raw telemetry JSON, up to 2000
 mouse points, and nothing is ever deleted. A day at a stand produces
@@ -215,7 +239,7 @@ as clearly labelled demo behaviour.
 
 ---
 
-## 10. Continuous integration  (P2)
+## 10. Continuous integration  (P2) — DONE
 
 **Weakness.** No `.github/workflows`. Twelve tests exist but nothing runs
 them on push, and a jury reading the repo sees no green check.
@@ -244,7 +268,7 @@ or fails at boot with a clear Turkish message, never at request time.
 
 ---
 
-## 12. Production frontend build  (P2)
+## 12. Production frontend build  (P2) — DONE
 
 **Weakness.** Compose runs the Vite dev server as the "product" frontend.
 It works, but a jury may ask why a fintech product ships a dev server.
@@ -258,7 +282,7 @@ nginx on port 3000.
 
 ---
 
-## 13. Cheap forge-resistance signals  (P2, after item 1)
+## 13. Cheap forge-resistance signals  (P2, after item 1) — COLLECTION DONE, scoring deferred
 
 **Weakness.** All six features are timing and geometry, which a
 sufficiently careful script can imitate.
@@ -276,9 +300,14 @@ new features, or they are dropped with that result recorded.
 
 ---
 
-## Order of work
+## What is left
 
-Items 2, 3 and 4 close the remaining ways past the server-side gate and
-should go first, together, in one commit. Item 1 is data collection and
-runs in parallel from day one. Items 5 to 9 are each an afternoon. Items
-10 to 13 are polish and can be done in any order.
+1. **Record the real evaluation set (item 1).** This is now the only
+   substantial open item, and it is the one a jury will ask about first.
+2. **Measure the provenance signals (item 13)** against that set, then either
+   wire them into the model or record why they did not help.
+3. **Alembic (item 11)** to replace the boot-time `ALTER TABLE` stop-gap.
+4. **Smaller things:** a shared rate-limit backend if the service ever runs on
+   more than one host, per-analyst dashboard logins instead of a shared key,
+   `DEEPCHECK_SECRET` rotation without invalidating every live session, and a
+   test for the retention sweep against a real database.

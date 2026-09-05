@@ -9,6 +9,7 @@ from collections import Counter
 import joblib
 import numpy as np
 import shap
+import sklearn
 import torch
 
 from lstm_model import FEATURE_NAMES, SEQUENCE_LENGTH, BehaviorLSTM, build_sequence
@@ -16,8 +17,19 @@ from lstm_model import FEATURE_NAMES, SEQUENCE_LENGTH, BehaviorLSTM, build_seque
 logger = logging.getLogger("deepcheck.scorer")
 
 MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(MODEL_DIR, "model.pkl")
-LSTM_PATH = os.path.join(MODEL_DIR, "lstm_model.pt")
+
+# The artifact names carry the scikit-learn version that wrote them.
+#
+# backend/ is bind-mounted into the container, so the host and the container
+# share this directory while pinning DIFFERENT scikit-learn versions (the host
+# has whatever is installed there; the container has the pin from
+# requirements.txt). With one fixed "model.pkl" they overwrite each other's
+# work, and each side then loads a pickle the other wrote -- which sklearn
+# permits with a warning and "possibly invalid results". Version-scoped names
+# let both sides keep a correct model of their own, and cost nothing: the files
+# are reproducible from a fixed seed and are not in git.
+MODEL_PATH = os.path.join(MODEL_DIR, f"model-sklearn{sklearn.__version__}.pkl")
+LSTM_PATH = os.path.join(MODEL_DIR, f"lstm_model-sklearn{sklearn.__version__}.pt")
 
 CLICK_DENSITY_WINDOW_MS = 5000
 
@@ -76,13 +88,54 @@ LABELS = [
 ]
 
 
+class ModelUnavailableError(FileNotFoundError):
+    """The model cannot be used and the caller must not fall back to scoring.
+
+    Subclasses FileNotFoundError so every existing `except FileNotFoundError`
+    (the 503 in /api/analyze, the model_loaded flag in /api/health) keeps
+    working, while the name says what actually happened.
+    """
+
+
 class ModelBundle:
     def __init__(self):
         if not os.path.exists(MODEL_PATH):
-            raise FileNotFoundError(
+            raise ModelUnavailableError(
                 "model.pkl bulunamadı. Önce `python train_model.py` çalıştırın."
             )
+        # Both artifacts or neither. The LSTM used to be loaded only "if the
+        # file happens to exist", which meant a deployment with model.pkl but
+        # no lstm_model.pt ran the sequence model with RANDOM initial weights
+        # -- contributing 30% of every risk score as noise, with nothing
+        # logged and /api/health still reporting the model as loaded. A
+        # missing weight file is a broken install, not a degraded mode.
+        if not os.path.exists(LSTM_PATH):
+            raise ModelUnavailableError(
+                "lstm_model.pt bulunamadı. Model dosyaları eksik; "
+                "`python train_model.py` çalıştırın."
+            )
         bundle = joblib.load(MODEL_PATH)
+
+        # A pickle is only loadable by the scikit-learn that wrote it.
+        # Loading one written by a different version makes sklearn print
+        # "InconsistentVersionWarning ... may lead to breaking code or invalid
+        # results" and then carry on scoring, which is the worst of both
+        # worlds: a warning nobody reads and risk scores nobody can trust.
+        #
+        # This is not hypothetical here. backend/ is bind-mounted into the
+        # container, so a model trained on the host (whatever Python and
+        # scikit-learn happen to be installed there) is the exact file the
+        # container loads with the pinned scikit-learn from requirements.txt.
+        # Refusing is safe because the artifacts are reproducible: entrypoint.sh
+        # retrains automatically when this check fails.
+        trained_with = bundle.get("sklearn_version")
+        if trained_with != sklearn.__version__:
+            raise ModelUnavailableError(
+                "model.pkl farkli bir scikit-learn surumuyle egitilmis "
+                f"(model: {trained_with or 'bilinmiyor'}, calisan: {sklearn.__version__}). "
+                "Skorlar guvenilmez olurdu; `python train_model.py` ile yeniden egitin."
+            )
+
         self.scaler = bundle["scaler"]
         self.rf = bundle["rf"]
         self.iso_forest = bundle["iso_forest"]
@@ -116,8 +169,7 @@ class ModelBundle:
         self.explainer = shap.TreeExplainer(self.rf)
 
         self.lstm = BehaviorLSTM()
-        if os.path.exists(LSTM_PATH):
-            self.lstm.load_state_dict(torch.load(LSTM_PATH, map_location="cpu"))
+        self.lstm.load_state_dict(torch.load(LSTM_PATH, map_location="cpu"))
         self.lstm.eval()
 
 

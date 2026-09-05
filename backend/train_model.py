@@ -20,12 +20,14 @@ formula automatically flows into training data too, since both paths run the
 same code.
 """
 
+import os
 import sys
 
 import joblib
 import numpy as np
 import torch
 import torch.nn as nn
+import sklearn
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
@@ -40,7 +42,9 @@ from scorer import extract_features
 # which the 25,000 final windows train the tabular models and all 250,000
 # train the sequence model. Sized so a cold `docker-compose up` finishes
 # training in a few minutes rather than ten.
-N_SESSIONS = 25_000
+# Overridable so CI can train a small model quickly. The default is what
+# ships; anything smaller is for a smoke test, not for a real model.
+N_SESSIONS = int(os.getenv("N_SESSIONS", "25000"))
 HESITATION_THRESHOLD_MS = 400  # must match sdk/deepcheck.js's HESITATION_THRESHOLD_MS
 
 # Mirrors sdk/deepcheck.js's default flush interval. One simulated session is
@@ -65,7 +69,19 @@ CONTAMINATION_RATE = 0.10
 # not already say.
 DRIFT_RATE = 0.12
 
-rng = np.random.default_rng(42)
+SEED = 42
+rng = np.random.default_rng(SEED)
+
+# The forests take random_state=42, but NOTHING seeded torch. The LSTM's weight
+# initialisation, its dropout masks and the batch shuffling below all drew from
+# torch's global RNG, so every run of this script produced a different sequence
+# model -- one carrying 30% of the ensemble weight. Two runs of "the same"
+# pipeline disagreed by more than ten risk points on the same session, and the
+# claim that the artifacts are reproducible from a fixed seed was true only of
+# the forests. Retraining could therefore turn a detected bot into a merely
+# "suspicious" one with no code change at all, which is precisely the kind of
+# result nobody can defend.
+torch.manual_seed(SEED)
 
 
 def _hesitation_intervals(event_times: list[int], flush_checkpoint: int | None = None) -> list[int]:
@@ -414,7 +430,7 @@ def generate_synthetic_dataset(n_rows: int = N_SESSIONS):
 # Sessions used to find the neutral fallbacks before the real dataset is
 # generated. Small on purpose: this only needs to locate the human/bot
 # midpoint, not to train anything.
-PILOT_SESSIONS = 2_500
+PILOT_SESSIONS = int(os.getenv("PILOT_SESSIONS", "2500"))
 PILOT_PASSES = 2
 
 
@@ -593,12 +609,16 @@ def main():
             "rf": rf,
             "iso_forest": iso_forest,
             "feature_names": FEATURE_NAMES,
+            # Read back by scorer.ModelBundle, which refuses to load a pickle
+            # written by a different scikit-learn rather than scoring with it
+            # and hoping.
+            "sklearn_version": sklearn.__version__,
             "neutral_defaults": neutral_defaults,
         },
-        "model.pkl",
+        scorer.MODEL_PATH,
     )
-    torch.save(lstm.state_dict(), "lstm_model.pt")
-    print("Saved model.pkl and lstm_model.pt")
+    torch.save(lstm.state_dict(), scorer.LSTM_PATH)
+    print(f"Saved {os.path.basename(scorer.MODEL_PATH)} and {os.path.basename(scorer.LSTM_PATH)}")
 
 
 if __name__ == "__main__":

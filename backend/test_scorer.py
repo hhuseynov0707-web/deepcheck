@@ -32,7 +32,7 @@ os.environ.setdefault("DEBUG", "0")
 
 import main  # noqa: E402  (must follow the environment setup above)
 from fastapi.testclient import TestClient  # noqa: E402
-from lstm_model import FEATURE_NAMES  # noqa: E402
+from lstm_model import FEATURE_NAMES, BehaviorLSTM  # noqa: E402
 
 BASE_T = 1_751_470_045_000
 
@@ -759,6 +759,159 @@ def test_demo_verify_upgrades_verify_but_not_block():
         _clear_overrides()
 
 
+def test_rate_limit_rejects_a_burst():
+    """Unlimited /api/session minting is free database growth, and unlimited
+    /api/analyze is ~50ms of CPU per call against a fixed worker pool. Both
+    were unbounded."""
+    main._rate_hits.clear()
+    client = _client(_StubDB(session=_stub_session()))
+    try:
+        limit, _ = main.RATE_LIMITS["session"]
+        for i in range(limit):
+            res = client.post("/api/session")
+            assert res.status_code == 201, f"{i + 1}. istek {res.status_code} dondu"
+
+        blocked = client.post("/api/session")
+        assert blocked.status_code == 429, f"limit asildiktan sonra {blocked.status_code} dondu"
+        assert blocked.headers.get("Retry-After"), "429 yanitinda Retry-After yok"
+
+        # The limiter must not leak across buckets: analyze is keyed by session
+        # id and has its own budget.
+        session_id = "0b0b0b0b-0000-0000-0000-000000000001"
+        ok = client.post(
+            "/api/analyze",
+            json=_analyze_payload(session_id),
+            headers={"X-DeepCheck-Token": main.sign_session(session_id)},
+        )
+        assert ok.status_code == 200, f"ayri kovadaki istek {ok.status_code} dondu"
+    finally:
+        main._rate_hits.clear()
+        _clear_overrides()
+
+
+def test_rate_limiter_memory_is_bounded():
+    """An attacker rotating session ids must not be able to grow the limiter's
+    own bookkeeping without limit."""
+    main._rate_hits.clear()
+    try:
+        for i in range(main._RATE_KEY_CAP + 500):
+            main._rate_limit("analyze", f"key-{i}")
+        assert len(main._rate_hits) <= main._RATE_KEY_CAP, (
+            f"limiter {len(main._rate_hits)} anahtar tutuyor, tavan {main._RATE_KEY_CAP}"
+        )
+    finally:
+        main._rate_hits.clear()
+
+
+def test_bundle_requires_lstm_weights():
+    """model.pkl without lstm_model.pt used to load a RANDOMLY initialised
+    LSTM and let it contribute 30% of every score, with nothing logged and
+    /api/health still reporting the model as loaded."""
+    if not os.path.exists(scorer.LSTM_PATH):
+        raise AssertionError("lstm_model.pt yok; once `python train_model.py` calistirin")
+
+    hidden = scorer.LSTM_PATH + ".hidden"
+    saved_bundle = scorer._bundle
+    os.rename(scorer.LSTM_PATH, hidden)
+    try:
+        scorer._bundle = None
+        raised = False
+        try:
+            scorer.get_bundle()
+        except FileNotFoundError:
+            raised = True
+        assert raised, "lstm_model.pt eksikken model yuklendi; FileNotFoundError bekleniyordu"
+    finally:
+        os.rename(hidden, scorer.LSTM_PATH)
+        scorer._bundle = saved_bundle
+
+    # And /api/health reports the failure rather than claiming to be healthy.
+    scorer._bundle = None
+    os.rename(scorer.LSTM_PATH, hidden)
+    try:
+        client = _client(_StubDB())
+        body = client.get("/api/health").json()
+        assert body["model_loaded"] is False, "eksik agirlik dosyasiyla saglikli bildirildi"
+        assert body["status"] == "model yüklenmedi"
+    finally:
+        os.rename(hidden, scorer.LSTM_PATH)
+        scorer._bundle = saved_bundle
+        _clear_overrides()
+
+
+def test_client_signals_recorded_but_not_scored():
+    """Provenance signals are stored for later measurement. Until they have
+    been evaluated against real sessions they must not move the score -- a
+    self-reported flag is something the client being judged can simply lie
+    about."""
+    session_id = "0b0b0b0b-0000-0000-0000-000000000002"
+    token = main.sign_session(session_id)
+    base = _headless_bot_session()
+
+    plain = _analyze_payload(session_id, base)
+    db_plain = _StubDB(session=_stub_session())
+    client = _client(db_plain)
+    try:
+        first = client.post("/api/analyze", json=plain, headers={"X-DeepCheck-Token": token}).json()
+    finally:
+        _clear_overrides()
+
+    flagged = _analyze_payload(session_id, base)
+    flagged["client_signals"] = {
+        "untrusted_events": 41,
+        "webdriver": True,
+        "pointer_mouse": 3,
+        "pointer_pen": 0,
+        "pointer_touch": 0,
+    }
+    db_flagged = _StubDB(session=_stub_session())
+    client = _client(db_flagged)
+    try:
+        second = client.post("/api/analyze", json=flagged, headers={"X-DeepCheck-Token": token}).json()
+    finally:
+        _clear_overrides()
+
+    assert second["risk_score"] == first["risk_score"], (
+        f"istemci sinyalleri skoru degistirdi ({first['risk_score']} -> {second['risk_score']}); "
+        "bu alanlar yalnizca kaydedilmeli, puanlanmamali"
+    )
+
+    stored = db_flagged.added[-1].client_signals
+    assert stored["webdriver"] is True and stored["untrusted_events"] == 41, (
+        f"istemci sinyalleri kaydedilmedi: {stored}"
+    )
+    # An older SDK that sends nothing must still be accepted, with defaults.
+    assert db_plain.added[-1].client_signals["untrusted_events"] == 0
+
+
+def test_training_seeds_torch():
+    """The forests take random_state=42, but torch was left unseeded, so the
+    LSTM's weight init, dropout and batch shuffling differed on every training
+    run -- a different sequence model each time, carrying 30% of the ensemble
+    weight. Retraining could move a session by more than ten risk points with
+    no code change, and it made the "reproducible from a fixed seed" claim
+    true only of the forests."""
+    import importlib
+
+    import torch
+
+    import train_model
+
+    importlib.reload(train_model)
+    assert torch.initial_seed() == train_model.SEED, (
+        f"train_model torch tohumunu ekmiyor (initial_seed={torch.initial_seed()}); "
+        "LSTM her egitimde farkli cikar"
+    )
+
+    # And the seed actually makes initialisation reproducible.
+    def fingerprint():
+        torch.manual_seed(train_model.SEED)
+        model = BehaviorLSTM()
+        return torch.cat([p.detach().flatten() for p in model.parameters()])
+
+    assert torch.equal(fingerprint(), fingerprint()), "ayni tohum farkli agirliklar uretti"
+
+
 def test_lstm_reacts_to_trajectory():
     """The sequence model must respond to a session's HISTORY, not only to
     its latest flush.
@@ -809,6 +962,11 @@ def _run_all():
         test_decision_verifies_when_stale,
         test_demo_charge_never_charges_blocked_session,
         test_demo_verify_upgrades_verify_but_not_block,
+        test_rate_limit_rejects_a_burst,
+        test_rate_limiter_memory_is_bounded,
+        test_bundle_requires_lstm_weights,
+        test_client_signals_recorded_but_not_scored,
+        test_training_seeds_torch,
     ]
     failures = []
     for test in tests:

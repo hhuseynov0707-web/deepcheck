@@ -44,6 +44,19 @@
 
   function createState() {
     return {
+      // Provenance counters, reported to the server but NOT scored -- see the
+      // ClientSignals note in backend/main.py. They are collected now so their
+      // value can be measured against real recorded sessions before anything
+      // depends on them.
+      //
+      // untrustedEvents counts events whose isTrusted is false, i.e. events
+      // synthesised by page JavaScript (element.click(), dispatchEvent). Note
+      // that a browser driven by Playwright or Puppeteer emits TRUSTED events,
+      // so this does not catch driven browsers; navigator.webdriver is the
+      // signal for those, and it is trivially patched out. Neither is proof of
+      // anything alone, which is exactly why neither is wired to the score.
+      untrustedEvents: 0,
+      pointerTypes: { mouse: 0, pen: 0, touch: 0 },
       mouseTrajectory: [],
       clickTiming: [],
       scrollEvents: [],
@@ -116,17 +129,30 @@
     state.lastEventAt = t;
   }
 
+  // Counts an event's provenance. Called for every tracked event, before the
+  // event itself is recorded.
+  function noteProvenance(e) {
+    if (e && e.isTrusted === false) state.untrustedEvents += 1;
+    const kind = e && e.pointerType;
+    if (kind && Object.prototype.hasOwnProperty.call(state.pointerTypes, kind)) {
+      state.pointerTypes[kind] += 1;
+    }
+  }
+
   function onMouseMove(e) {
+    noteProvenance(e);
     recordHesitation();
     state.mouseTrajectory.push({ x: e.clientX, y: e.clientY, t: now() });
   }
 
   function onClick(e) {
+    noteProvenance(e);
     recordHesitation();
     state.clickTiming.push({ x: e.clientX, y: e.clientY, t: now() });
   }
 
-  function onScroll() {
+  function onScroll(e) {
+    noteProvenance(e);
     recordHesitation();
     const y = window.scrollY;
     state.scrollEvents.push({ scrollY: y, t: now() });
@@ -143,7 +169,8 @@
   // must never capture *what* was typed (card numbers, CVV, names). Only the
   // timestamp of the keydown is recorded -- never e.key, e.code, or any
   // field value. Do not add anything here that reads input content.
-  function onKeyDown() {
+  function onKeyDown(e) {
+    noteProvenance(e);
     recordHesitation();
     state.keyEvents.push({ t: now() });
   }
@@ -207,9 +234,18 @@
       hesitation_intervals: capTail(state.hesitationIntervals, LIMITS.hesitation).map((h) => h.gap),
       focus_changes: capTail(state.focusChanges, LIMITS.focus),
       key_events: capTail(state.keyEvents, LIMITS.key),
+      client_signals: {
+        untrusted_events: state.untrustedEvents,
+        webdriver: navigator.webdriver === true,
+        pointer_mouse: state.pointerTypes.mouse,
+        pointer_pen: state.pointerTypes.pen,
+        pointer_touch: state.pointerTypes.touch,
+      },
     };
 
     // Nothing collected yet at all — skip the request
+    // client_signals deliberately does not count as data: a flush carrying
+    // only provenance counters and no behavior has nothing to score.
     const hasData =
       payload.mouse_trajectory.length ||
       payload.click_timing.length ||

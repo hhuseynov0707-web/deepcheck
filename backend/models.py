@@ -3,6 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     Float,
@@ -96,5 +97,20 @@ class BehaviorData(Base):
     # be required to move forward in time.
     payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     newest_event_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Provenance signals reported by the SDK: how many events arrived with
+    # isTrusted false, whether navigator.webdriver was set, and the pointer
+    # type mix. RECORDED ONLY -- nothing here reaches the model or the risk
+    # score. They are being collected so that, once the real-session
+    # evaluation set exists, their value as features can be MEASURED rather
+    # than assumed. A signal the client reports about itself is also a signal
+    # the client can lie about, which is exactly why it needs measuring
+    # before it is trusted.
+    client_signals: Mapped[dict] = mapped_column(JSON, default=dict)
+    # True once the retention sweep has blanked this row's raw telemetry. An
+    # explicit flag rather than "is the JSON empty?": a keyboard-only flush
+    # legitimately has an empty mouse_trajectory, so emptiness cannot
+    # distinguish "never had data" from "already purged", and Postgres has no
+    # equality operator for the json type to test it with anyway.
+    raw_purged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     session: Mapped["Session"] = relationship(back_populates="behavior_data")

@@ -92,6 +92,18 @@ getSessionId }`.
 
 All listeners are `passive`, so they never delay the page.
 
+Alongside these, each flush carries three **provenance counters**: how many
+events arrived with `isTrusted` false, whether `navigator.webdriver` is set,
+and the pointer-type mix (mouse / pen / touch). They are stored and shown in
+the session detail but **do not reach the model or the score**. Two reasons.
+First, they are self-reported by the very client being judged, so they are
+evidence only once measured. Second, each catches a different and partial
+thing: `isTrusted` is false for events synthesised by page JavaScript but
+true for a browser driven by Playwright or Puppeteer, while
+`navigator.webdriver` flags the driven browser and is trivially patched out.
+Collecting them now means their value can be measured against the real
+evaluation set instead of assumed.
+
 ### 4.2 Hesitation
 
 Every tracked event calls `recordHesitation()`. If the gap since the previous
@@ -367,7 +379,7 @@ through to the harshest label.
 ## 8. Training pipeline
 
 `python train_model.py` (run automatically by the container if
-`model.pkl` is absent; seed 42, fully reproducible).
+the artifacts are absent or unusable; seed 42, reproducible).
 
 1. **Simulate 25 000 sessions**, half human, half bot. Each session is ten
    consecutive flush windows — the same ~20 seconds the LSTM reads back out
@@ -409,8 +421,27 @@ through to the harshest label.
 3. 80 / 20 stratified `train_test_split`, `StandardScaler` fit on train.
 4. Train RF and IsoForest on the aggregate rows; train the LSTM on
    sequences built by repeating each row 10 times with N(0, 0.02) jitter.
-5. Save `model.pkl` (scaler, rf, iso_forest, feature_names) and
-   `lstm_model.pt`. Both are git-ignored and regenerated on demand.
+5. Save `model-sklearn<version>.pkl` (scaler, rf, iso_forest,
+   feature_names, neutral_defaults and the scikit-learn version) and
+   `lstm_model-sklearn<version>.pt`. Both are git-ignored and regenerated on
+   demand.
+
+**Reproducibility.** Seed 42 covers the whole pipeline: `np.random.default_rng`
+for the data, `random_state=42` for both forests, and `torch.manual_seed` for
+the LSTM. That last one was missing until recently, and its absence mattered:
+weight initialisation, dropout masks and batch shuffling all came from torch's
+global RNG, so every training run produced a different sequence model while it
+carried 30% of the ensemble weight. Retraining alone could move a session by
+more than ten risk points and turn a detected bot into a merely "suspicious"
+one. A test now asserts the seed is set.
+
+**Why the filenames carry a version.** A pickle is only safely loadable by the
+scikit-learn that wrote it; another version loads it with a warning about
+"possibly invalid results" and scores anyway. `backend/` is bind-mounted into
+the container, so a host-trained model is exactly what the container loads with
+its own pinned version. Version-scoped names let both keep a correct model,
+`ModelBundle` refuses a mismatched pickle outright, and `entrypoint.sh`
+retrains when the check fails.
 
 The 10 % contamination personas exist so the classes are *not* trivially
 separable. A synthetic dataset where accuracy is 100 % is a modelling
@@ -477,12 +508,14 @@ is the raw per-flush signal kept for analysis and charting.
   success and routes to step-up. The modal posts its code to
   `POST /api/demo/verify` and then charges again so the server can apply
   the recorded verification.
-- **Dashboard.jsx** — dark SOC theme. Session table coloured by label,
-  D3 line chart of the selected session's raw history, horizontal SHAP bars
-  with Turkish feature names, metric cards, 3 s refresh.
-- `VITE_API_URL` selects the backend; defaults to `http://localhost:8000`.
-  `VITE_DASHBOARD_KEY` must match the backend's `DASHBOARD_KEY` or the SOC
-  dashboard shows "Yetkisiz erişim".
+- **Dashboard.jsx** — dark SOC theme. Opens on a key prompt; the entered
+  key goes to `sessionStorage` and is sent as `X-Dashboard-Key`. A 401 from
+  either poll clears it and returns to the prompt. Then: session table
+  coloured by label, D3 line chart of the selected session's raw history,
+  horizontal SHAP bars with Turkish feature names, metric cards, 3 s refresh.
+- `VITE_API_URL` selects the backend and is compiled in at build time;
+  defaults to `http://localhost:8000`. The dashboard key is deliberately not
+  a build variable — see the comment at the top of `Dashboard.jsx`.
 
 ---
 
@@ -497,14 +530,24 @@ is the raw per-flush signal kept for analysis and charting.
   not grow the dashboard payload without limit.
 - Database check constraints keep scores inside 0 – 100.
 - **Privacy:** the SDK never reads key values, field contents, or the DOM.
-  Only coordinates and timestamps leave the browser. No PII is stored.
-- Model artefacts are reproducible from a fixed seed and kept out of git.
+  Only coordinates, timestamps and the three provenance counters leave the
+  browser. No PII is stored, and recordings are deleted on the retention
+  schedule rather than kept indefinitely.
+- Model artefacts are reproducible from a fixed seed (data, forests and
+  the LSTM alike) and kept out of git. A pickle written by a different
+  scikit-learn is refused rather than scored with.
+- Rate limits on minting, scoring and checkout, including the step-up code so
+  a six-digit secret cannot be guessed at unlimited speed.
+- Raw telemetry is blanked after an hour and rows deleted after a day, so
+  behavioural recordings of real people do not accumulate.
+- Both model artefacts are required; a half-trained directory fails loudly
+  rather than scoring with a randomly initialised LSTM.
 
 ---
 
 ## 13. Tests
 
-`backend/test_scorer.py` runs nineteen tests. Seven scoring scenarios go
+`backend/test_scorer.py` runs twenty-three tests. Seven scoring scenarios go
 through the real `compute_risk`:
 
 - natural human scores low
@@ -532,6 +575,14 @@ Eleven cover the API's authorization and enforcement:
 - `/api/demo/verify` rejects a wrong code, upgrades verify to allow, and cannot lift a block
 - the SOC endpoints reject a missing or wrong dashboard key
 
+And four cover the newer defences:
+
+- a burst past the rate limit gets 429 with `Retry-After`, and a different bucket is unaffected
+- the limiter's own key table stays bounded under rotating keys
+- a bundle missing its LSTM weights refuses to load instead of scoring with random weights
+- training seeds torch, so the LSTM is reproducible rather than different on every run
+- client provenance signals are stored but do not move the risk score
+
 Those run against a stub database rather than Postgres, deliberately: an
 authorization check that needs infrastructure to test is an authorization
 check that stops being tested.
@@ -555,13 +606,28 @@ Then:
 - Dashboard: http://localhost:3000/dashboard
 - API docs: http://localhost:8000/docs
 
+The dashboard asks for the access key on first open. It is the value of
+`DASHBOARD_KEY`, typed rather than compiled in, and it is kept in
+`sessionStorage` for the tab only.
+
 Environment variables: `DATABASE_URL`, `CORS_ORIGINS`, `UVICORN_WORKERS`
-(default 4), `VITE_API_URL`, `VITE_DASHBOARD_KEY`, and the two secrets —
-`DEEPCHECK_SECRET` (signs session tokens) and `DASHBOARD_KEY` (guards the
-SOC endpoints). See `.env.example`. With `DEBUG=1` the backend falls back to
-fixed development values and warns on every boot; with `DEBUG=0` it refuses
-to start without both, because a missing secret must never quietly mean
-"authentication off".
+(default 4), `VITE_API_URL`, `DEMO_VERIFY_CODE`, `RAW_RETENTION_HOURS`,
+`ROW_RETENTION_HOURS`, and the two secrets — `DEEPCHECK_SECRET` (signs
+session tokens) and `DASHBOARD_KEY` (guards the SOC endpoints). See
+`.env.example`. With `DEBUG=1` the backend falls back to fixed development
+values and warns on every boot; with `DEBUG=0` it refuses to start without
+both, because a missing secret must never quietly mean "authentication off".
+
+The frontend image builds the bundle and serves it with nginx. `vite dev` is
+available as an override for development:
+
+```bash
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+CI (`.github/workflows/ci.yml`) trains a reduced model, runs the test suite
+without a database, builds the frontend, and fails if a dashboard key ever
+appears in the built bundle.
 
 ---
 
@@ -582,14 +648,30 @@ are in `ESSENTIAL_CHANGES.md`.
    persona at only p ≈ 0.25. Planned mitigations: kinematic plausibility
    checks, `event.isTrusted`, pointer provenance, and the real-data
    evaluation above to measure them.
-3. **No rate limiting.** `POST /api/session` will mint tokens as fast as it
-   is asked to.
+3. **Rate limits are per worker.** Counters live in each uvicorn worker's
+   memory, so the four workers give up to 4x the configured ceiling, and a
+   restart forgets them. Correct for abuse control, not for quota; a shared
+   Redis backend is the fix once there is more than one host.
 4. **No schema migration tool.** `create_all()` creates tables but does not
    alter existing ones. As a stop-gap, `init_db` applies a short list of
    additive `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements at boot so
    existing volumes keep working; Alembic is the proper fix.
 5. **No key rotation.** Changing `DEEPCHECK_SECRET` invalidates every live
    session token at once.
+6. **The dashboard key is a shared secret, not a login.** It is no longer
+   shipped in the bundle, but there are still no per-analyst identities and
+   no audit trail of who looked at which session.
+7. **The retention sweep has no automated test.** It was exercised by hand
+   against the live database (9 rows blanked, features and scores intact),
+   but nothing in CI covers it, because it needs a real Postgres.
+8. **A clock that steps backwards blinds the SDK.** The replay guard requires
+   each flush's newest event not to precede the previous flush's. A client
+   whose clock is corrected backwards has its flushes rejected until real
+   time catches up. It fails closed (the host page sees an error and routes
+   to step-up), but the session is unscored meanwhile.
+9. **The demo machine is memory-bound before it is CPU-bound.** Two workers
+   fit Docker Desktop's default ~2 GB; four swapped badly enough to make
+   `/api/health` take 25 seconds.
 
 Resolved since the first draft of this guide: client-side enforcement
 (now `POST /api/decision`), unauthenticated endpoints (now signed session
