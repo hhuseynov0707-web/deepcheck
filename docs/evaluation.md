@@ -69,6 +69,47 @@ samples of, and does not generalise to techniques it has not seen.** The 76%
 recall is real and the 0% false-positive rate is real, and neither should be
 read as "76% of bots are caught in the wild".
 
+## A correction, and the first movement on mimicry
+
+Until 2026-09-07 the container served a model trained on **synthetic data
+only**. It resolves the telemetry path to `/lab`, the parent of `/app`, and
+`lab/` was not mounted into it, so training silently fell back and printed one
+line about it. The host, where `lab/` sits beside `backend/`, trained on the
+real rows. Every adversarial number published before that date therefore
+described the host model rather than the one serving the demo, and the
+conformal guard was inert because a synthetic-only run produces no held-out
+human scores to calibrate on.
+
+`lab/` is mounted now, the fallback prints a banner instead of a line, and the
+path takes a `REAL_TELEMETRY_PATH` override. Re-measured against the corrected
+model, 12 sessions per class:
+
+| Persona | Mean | Enforcement | AUC vs human |
+|---|---|---|---|
+| human | 17.3 | 100% allow | — |
+| naive headless script | 22.2 | 100% verify | 0.33 |
+| straight-line automation | 84.8 | **100% block** | 1.00 |
+| independent humanised bot | 22.7 | 100% allow | **0.92** |
+| independent feature-aware bot | 13.4 | 100% allow | 0.08 |
+
+**The humanised bot's separability went from 0.56 to 0.92.** That is the first
+real movement on mimicry this project has measured, and training on real
+browser telemetry is what produced it: means separated (22.7 against 17.3)
+rather than drifting up together. The signal now exists.
+
+It is still not stopped, and the reason is the ladder rather than the model —
+22.7 sits far below the 40 where anything happens. Repositioning the thresholds
+against an in-house adversary would be fitting the product to the attacker
+rather than to real users, so that calibration waits for recorded human
+sessions. Which is the same conclusion as everything else on this page.
+
+Straight-line automation reached 100% blocked. Human false positives stayed at
+zero. The feature-aware bot is unmoved at 0.08, below the human mean, because
+it was tuned against feature definitions that did not change.
+
+Caveat: 12 sessions per class. The separation of the means is real; the
+precision of 0.92 is not.
+
 ## Decision-layer additions, and what they measured
 
 Three statistical layers were added on top of the unchanged ensemble.

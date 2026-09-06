@@ -52,6 +52,13 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./backend:/app
+      # The real-browser telemetry the model trains on. Without this the
+      # container resolves lab/real_telemetry.json to /lab (the parent of
+      # /app) and finds nothing, so it trains on synthetic data ONLY and says
+      # so in one line nobody reads -- while the host, where lab/ sits next to
+      # backend/, trains on the real rows. The two then disagree about what
+      # the model has learned, and the deployed one is the weaker.
+      - ./lab:/lab:ro
     depends_on:
       db:
         condition: service_healthy

@@ -439,8 +439,16 @@ PILOT_PASSES = 2
 SCALING_SESSIONS = int(os.getenv("SCALING_SESSIONS", "1500"))
 
 
-REAL_TELEMETRY_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lab", "real_telemetry.json"
+# Overridable, because the default only holds when lab/ sits next to backend/.
+# In the container backend/ is mounted at /app, so the default resolves to /lab
+# -- which is why docker-compose mounts ./lab there. Without that mount the
+# container trained on synthetic data ONLY, said so in one line, and served a
+# model the published evaluation numbers did not describe.
+REAL_TELEMETRY_PATH = os.getenv(
+    "REAL_TELEMETRY_PATH",
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lab", "real_telemetry.json"
+    ),
 )
 
 # Real rows are vastly outnumbered by synthetic ones, so without a weight they
@@ -751,9 +759,15 @@ def main():
     real = load_real_telemetry()
     if real is None:
         print(
-            "\nNo usable lab/real_telemetry.json -- training on synthetic data only.\n"
-            "Run lab/capture.py: the simulator alone teaches the wrong sign on the\n"
-            "timing features, which is a measured result, not a worry."
+            "\n" + "==================================================================" + "\n"
+            f" UYARI: {REAL_TELEMETRY_PATH} bulunamadi.\n"
+            " Model YALNIZCA SENTETIK VERIYLE egitiliyor. Simulator zamanlama"
+            " ozelliklerinde yanlis isareti ogretir: ayni kacamak saldiri\n"
+            " simulasyonda 88.9 (bloklandi), gercek Chromium uzerinden 36.5\n"
+            " (onaylandi) aldi. Boyle egitilen model, yayinlanan degerlendirme"
+            " sayilarinin tarif ettigi model DEGILDIR.\n"
+            " Cozum: lab/capture.py calistirin veya REAL_TELEMETRY_PATH ayarlayin."
+            + "\n" + "=================================================================="
         )
         X_fit, y_fit, weights = X_train, y_train, None
     else:
