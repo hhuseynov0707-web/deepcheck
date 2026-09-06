@@ -104,6 +104,29 @@ change technique. What makes that workable is that capture is cheap: a few
 minutes of browser time produces a few hundred labelled rows, and retraining
 is one command.
 
+## Recording real people
+
+The gap above closes one way only: sessions from actual people. The tooling is
+now wired end to end, which it was not before —
+
+```bash
+cd backend
+python record_session.py --list
+python record_session.py --label human --to-training <session-id>
+python train_model.py
+```
+
+`--to-training` is the part that was missing. Recordings previously landed in
+`data/real/`, which only `evaluate.py` reads, so a session captured from a real
+person never reached the model. They are now merged into the file training
+blends, and they appear in the holdout table as `R1_human_live` and
+`R2_bot_live`, separate from the lab's scripted scenarios.
+
+See `data/real/README.md` for what to collect. Variety matters more than
+volume: pointer kinematics vary more with input device than with anything
+else, and keyboard-only users are both the group most at risk of being wrongly
+blocked and the group the model has the least evidence about.
+
 ## Reproducing
 
 ```bash
