@@ -82,6 +82,8 @@ _ADDITIVE_MIGRATIONS = (
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS duraklama_dagilimi DOUBLE PRECISION DEFAULT 0",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS tiklama_oncesi_hareket DOUBLE PRECISION DEFAULT 0",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS kanal_gecis_gecikmesi DOUBLE PRECISION DEFAULT 0",
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS behavior_bucket VARCHAR(32)",
+    "CREATE INDEX IF NOT EXISTS ix_behavior_data_bucket_created ON behavior_data (behavior_bucket, created_at)",
     # Unique: see the note in models.py. Created concurrently-safe and
     # tolerant of an existing non-unique index of the same name.
     "DROP INDEX IF EXISTS ix_behavior_data_payload_hash",

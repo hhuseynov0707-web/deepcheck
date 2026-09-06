@@ -90,7 +90,84 @@ MAX_CLOCK_SKEW_MS = 15_000
 # a single plausible window far more easily than it can sustain one. Three
 # flushes is six seconds of observed behaviour and also the point at which
 # the 5-flush median smoothing starts to mean something.
-MIN_FLUSHES_FOR_DECISION = 3
+MIN_FLUSHES_FOR_DECISION = 1
+
+# --- Sequential evidence (SPRT) ---------------------------------------------
+#
+# "Three flushes" was a number chosen by judgement. Wald's sequential
+# probability ratio test replaces it with a stopping rule that adapts to how
+# clear the evidence is, and is optimal in expected sample size for a given
+# pair of error rates: a blatant bot is decided on its first flush, an
+# ambiguous session keeps collecting instead of being waved through the moment
+# a counter hits three.
+#
+# The statistic is the running sum of per-flush log-likelihood ratios. For a
+# calibrated score the logit IS that ratio, so the sum is just
+# Sum(log(p / (1 - p))) over the flushes seen so far, with p the per-flush
+# risk. Crossing the upper bound means "enough evidence, and it points at a
+# bot"; crossing the lower means "enough evidence, and it points at a person";
+# between them there is not yet enough to act on either way, which is the
+# state that maps to step-up verification.
+#
+# ALPHA is the false-positive rate the bound is built for and BETA the false
+# negative; the asymmetry is deliberate, because challenging a real customer
+# costs a sale while missing one bot costs one attempt.
+SPRT_ALPHA = 0.01
+SPRT_BETA = 0.10
+SPRT_UPPER = math.log((1.0 - SPRT_BETA) / SPRT_ALPHA)
+SPRT_LOWER = math.log(SPRT_BETA / (1.0 - SPRT_ALPHA))
+
+# A per-flush score of exactly 0 or 100 would make the logit infinite and let
+# one flush dominate every other. Clamped to the resolution the score actually
+# carries.
+SPRT_P_CLAMP = 0.005
+
+# Ambiguity cannot postpone a decision forever: past this many flushes the
+# ladder is applied on the smoothed score regardless of where the statistic
+# sits. Without it a session that hovers around the middle would be challenged
+# on every attempt, which is a bad outcome for a real customer.
+SPRT_MAX_FLUSHES = 10
+
+# --- Cross-session clustering -----------------------------------------------
+#
+# The measured hole in per-session scoring is that competent mimicry is
+# human-shaped by construction. What mimicry cannot avoid is repeating itself:
+# a script run many times produces many nearly identical behavioural
+# signatures, and people do not. Counting how many DISTINCT sessions share a
+# behaviour bucket inside a short window turns that repetition into a signal
+# the model never sees.
+#
+# It can only escalate, never approve. A cluster is evidence of automation, but
+# the absence of one is not evidence of a person.
+#
+# MEASURED LIMITATION, stated because it decides how much weight this deserves.
+# Against the adversarial harness this catches bots that repeat themselves and
+# does NOT catch a bot that randomises its own parameters between runs: 25
+# sessions of an independently written humanised generator produced 30 distinct
+# buckets, the same spread as 25 human sessions. Behavioural quantisation
+# identifies a *kind of motion*, not a *particular script*. What the industry
+# actually clusters on is identity -- device fingerprint, TLS signature, IP --
+# which is far more stable across runs than behaviour is.
+#
+# So the threshold is set where it does not fire on the measured human
+# population, and the mechanism is here for the non-randomising farms it does
+# catch, and as the place identity signals would attach later. It is not the
+# answer to mimicry.
+CLUSTER_WINDOW_S = 900
+CLUSTER_MIN_SESSIONS = 6
+
+# OFF by default, on the evidence. Measured against the adversarial harness at
+# every threshold tried, the escalation cost more legitimate sessions than it
+# caught bots: at 4 peers it challenged 40% of humans to catch 60% of mimics,
+# and at 6 peers it challenged 8% of humans to catch 4%. A control that flags
+# more customers than attackers is worse than no control, and challenging a
+# real customer costs a sale while missing one bot costs one attempt.
+#
+# The bucket is still computed and stored, because it costs almost nothing, it
+# is the natural attach point for identity signals (device, TLS, IP) which are
+# what actually cluster, and because leaving the measurement in place is how
+# the decision gets revisited when there is real traffic to revisit it with.
+CLUSTER_ESCALATION_ENABLED = os.getenv("CLUSTER_ESCALATION", "0").strip() == "1"
 
 # A verdict is about the behaviour that produced it, and that behaviour must
 # be current. Without this, a token lifted from a shared machine (or via XSS
@@ -340,6 +417,8 @@ REASON_MESSAGES = {
     "unknown_session": "Oturum bulunamadi - davranis analizi yapilamadi",
     "insufficient_evidence": "Karar icin yeterli davranis verisi yok, lutfen birkac saniye sonra tekrar deneyin",
     "stale": "Oturumun davranis verisi guncel degil, ek dogrulama gerekli",
+    "cluster": "Bu davranis kalibi kisa surede cok sayida oturumda tekrarlandi",
+    "conformal": "Skor yuksek olsa da gercek kullanici dagilimina uyuyor, ek dogrulama uygulaniyor",
     "verified": "Ek dogrulama basariyla tamamlandi, islem onaylandi",
 }
 
@@ -849,6 +928,7 @@ async def analyze(
         **{name: features[name] for name in FEATURE_NAMES},
         risk_score=result["risk_score"],
         payload_hash=payload_hash,
+        behavior_bucket=result["behavior_bucket"],
         newest_event_at=newest_event_at,
         client_signals=payload.client_signals.model_dump(),
     )
@@ -892,6 +972,29 @@ def _verify_response(reason: str, risk_score: float | None = None, label: str = 
     )
 
 
+def _sprt_statistic(scores: list[float]) -> float:
+    """Running sum of per-flush log-likelihood ratios."""
+    total = 0.0
+    for score in scores:
+        p = min(max(score / 100.0, SPRT_P_CLAMP), 1.0 - SPRT_P_CLAMP)
+        total += math.log(p / (1.0 - p))
+    return total
+
+
+async def _cluster_size(db: AsyncSession, session_id: str, bucket: str | None) -> int:
+    """Distinct OTHER sessions sharing this behaviour bucket recently."""
+    if not bucket:
+        return 0
+    cutoff = utcnow() - timedelta(seconds=CLUSTER_WINDOW_S)
+    result = await db.scalar(
+        select(func.count(func.distinct(BehaviorData.session_id)))
+        .where(BehaviorData.behavior_bucket == bucket)
+        .where(BehaviorData.created_at >= cutoff)
+        .where(BehaviorData.session_id != session_id)
+    )
+    return int(result or 0)
+
+
 async def _decide(db: AsyncSession, session_id: str) -> DecisionResponse:
     """The enforcement logic, shared by /api/decision and /api/demo/charge.
 
@@ -908,10 +1011,15 @@ async def _decide(db: AsyncSession, session_id: str) -> DecisionResponse:
     # as "Gercek Kullanici" for a client that never sent usable telemetry.
     # And one flush is not enough: require MIN_FLUSHES_FOR_DECISION analyzed
     # windows before any score is trusted.
-    flush_count = await db.scalar(
-        select(func.count()).select_from(BehaviorData).where(BehaviorData.session_id == session_id)
-    )
-    if (flush_count or 0) < MIN_FLUSHES_FOR_DECISION:
+    rows = (
+        await db.execute(
+            select(BehaviorData.risk_score, BehaviorData.behavior_bucket)
+            .where(BehaviorData.session_id == session_id)
+            .order_by(BehaviorData.created_at.desc())
+            .limit(SPRT_MAX_FLUSHES)
+        )
+    ).all()
+    if len(rows) < MIN_FLUSHES_FOR_DECISION:
         return _verify_response("insufficient_evidence")
 
     now = utcnow()
@@ -919,9 +1027,51 @@ async def _decide(db: AsyncSession, session_id: str) -> DecisionResponse:
     if last_seen is None or now - last_seen > timedelta(seconds=DECISION_MAX_AGE_S):
         return _verify_response("stale", session.risk_score, session.label or "Degerlendirilemedi")
 
+    # Sequential test over the per-flush scores. Between the bounds there is
+    # not yet enough evidence to act on, which is step-up rather than approval.
+    per_flush = [r[0] for r in rows if r[0] is not None and math.isfinite(r[0])]
+    statistic = _sprt_statistic(per_flush)
+    if SPRT_LOWER < statistic < SPRT_UPPER and len(per_flush) < SPRT_MAX_FLUSHES:
+        return _verify_response("insufficient_evidence", session.risk_score, session.label or "Degerlendirilemedi")
+
     risk_score = session.risk_score
     action = get_action(risk_score)
     label = session.label or scorer.get_label(risk_score)
+
+    # Cross-session clustering. Escalation only: many sessions behaving
+    # identically is evidence of automation, while the absence of a cluster is
+    # not evidence of a person.
+    if CLUSTER_ESCALATION_ENABLED and action in ("allow", "warn"):
+        bucket = rows[0][1] if rows else None
+        peers = await _cluster_size(db, session_id, bucket)
+        if peers >= CLUSTER_MIN_SESSIONS:
+            logger.info(
+                "cluster escalation for session %s: %d peers in bucket %s", session_id, peers, bucket
+            )
+            return DecisionResponse(
+                action="verify",
+                risk_score=risk_score,
+                label=label,
+                message=REASON_MESSAGES["cluster"],
+                reason="cluster",
+            )
+
+    # Conformal guard. De-escalation only: if this score is unremarkable among
+    # held-out real humans, refuse to block on it and ask for verification
+    # instead. Costs a challenge rather than a customer.
+    if action == "block":
+        p_value = scorer.conformal_p_value(risk_score, scorer.get_human_calibration())
+        if p_value is not None and p_value > scorer.CONFORMAL_ALPHA:
+            logger.info(
+                "conformal guard softened a block for session %s (p=%.3f)", session_id, p_value
+            )
+            return DecisionResponse(
+                action="verify",
+                risk_score=risk_score,
+                label=label,
+                message=REASON_MESSAGES["conformal"],
+                reason="conformal",
+            )
 
     # A completed step-up upgrades "verify" to "allow" while it is fresh. It
     # never touches "block": verification is for uncertainty, not for

@@ -78,6 +78,7 @@ class BehaviorData(Base):
         # turns the resulting IntegrityError into the same 422 the check
         # returns. NULLs are exempt, so rows predating the column are fine.
         Index("ix_behavior_data_payload_hash", "payload_hash", unique=True),
+        Index("ix_behavior_data_bucket_created", "behavior_bucket", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -109,6 +110,10 @@ class BehaviorData(Base):
     # Replay protection (see main.py): a clock-independent fingerprint of the
     # telemetry, and the newest event timestamp in it so the next flush can
     # be required to move forward in time.
+    # Coarse behavioural signature (see scorer.behavior_bucket). Indexed
+    # because the decision path counts distinct sessions sharing a bucket
+    # inside a short window, on every checkout.
+    behavior_bucket: Mapped[str | None] = mapped_column(String(32), nullable=True)
     payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     newest_event_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # Provenance signals reported by the SDK: how many events arrived with

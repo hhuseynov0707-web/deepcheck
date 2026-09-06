@@ -69,6 +69,33 @@ samples of, and does not generalise to techniques it has not seen.** The 76%
 recall is real and the 0% false-positive rate is real, and neither should be
 read as "76% of bots are caught in the wild".
 
+## Decision-layer additions, and what they measured
+
+Three statistical layers were added on top of the unchanged ensemble.
+
+**Sequential testing (SPRT)** replaced the fixed three-flush evidence rule.
+A blatant session is now decided on its first flush and an ambiguous one keeps
+collecting. Side effect worth naming: a mid-band score no longer charges the
+card on a few flushes, which closes the "Şüpheli means the payment goes
+through" gap the adversarial run found.
+
+**Conformal guard**, calibrated on 36 held-out real human scores. The smallest
+p-value that many samples can produce is 0.027, which just clears the 0.05
+the guard asks for. It is usable and thin; more captures make it stronger.
+
+**Cross-session behavioural clustering: measured, and shipped disabled.** The
+idea was that mimicry cannot avoid repeating itself. Against the harness it
+did not hold. 25 sessions of an independently written humanised generator
+produced 30 distinct buckets, the same spread as 25 human sessions, because a
+competent bot randomises its own parameters between runs. At 4 peers the rule
+challenged 40% of humans to catch 60% of mimics; at 6 peers, 8% of humans to
+catch 4%. A control that flags more customers than attackers is worse than no
+control, so it is off by default.
+
+That is a negative result and it is worth stating: behavioural quantisation
+identifies a *kind of motion*, not a *particular script*. What the industry
+actually clusters on is identity, which is far more stable across runs.
+
 ## What this means for deployment
 
 The capture loop is the product, more than any single trained model. A

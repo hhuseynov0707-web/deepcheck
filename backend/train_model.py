@@ -770,8 +770,28 @@ def main():
 
     print("Training RandomForest + IsolationForest...")
     scaler, rf, iso_forest = train_tabular_models(X_fit, y_fit, X_test, y_test, weights)
+    human_calibration = []
     if real is not None:
         report_real_holdout(rf, scaler, X_real_eval, y_real_eval, real_eval_scenarios)
+        # Scores the finished model gives to held-out REAL human sessions.
+        # scorer's conformal guard uses these to refuse blocking on a score
+        # that is unremarkable for a legitimate user. Held out by run, so the
+        # calibration is not measuring sessions the forest was fitted on.
+        human_rows = X_real_eval[y_real_eval == 0]
+        if len(human_rows):
+            proba = rf.predict_proba(scaler.transform(human_rows))[:, 1]
+            human_calibration = [round(float(p) * 100.0, 2) for p in proba]
+            floor = 1.0 / (len(human_calibration) + 1.0)
+            print(
+                f"Conformal calibration: {len(human_calibration)} held-out human scores, "
+                f"smallest achievable p-value {floor:.3f} "
+                f"(guard alpha {scorer.CONFORMAL_ALPHA})."
+            )
+            if floor > scorer.CONFORMAL_ALPHA:
+                print(
+                    "  NOTE: too few calibration humans to assert that alpha, so the guard "
+                    "will soften every block. Capture more real sessions before relying on it."
+                )
 
     print("Training LSTM on real flush sequences...")
     lstm = train_lstm(seq_train, y_train, seq_test, y_test)
@@ -790,6 +810,7 @@ def main():
             # than guessed. Serving must normalize exactly as training did.
             "feature_scaling": feature_scaling,
             "neutral_defaults": neutral_defaults,
+            "human_calibration": human_calibration,
         },
         scorer.MODEL_PATH,
     )

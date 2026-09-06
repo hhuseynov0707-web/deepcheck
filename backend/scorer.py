@@ -1,6 +1,7 @@
 """Feature extraction, model inference, SHAP explanation and risk scoring."""
 
 import bisect
+import hashlib
 import logging
 import math
 import os
@@ -257,6 +258,11 @@ class ModelBundle:
                 "veriyle skorlar. `python train_model.py` ile yeniden egitin."
             )
 
+        # Scores the trained model gave to held-out REAL human sessions, used
+        # by the conformal guard above. Absent on a synthetic-only run, in
+        # which case the guard is simply inactive.
+        self.human_calibration = list(bundle.get("human_calibration") or [])
+
         self.neutral_defaults = bundle.get("neutral_defaults") or {}
         if not self.neutral_defaults:
             logger.warning(
@@ -316,6 +322,13 @@ def get_neutral_defaults() -> dict:
     return NEUTRAL_DEFAULTS
 
 
+def get_human_calibration() -> list[float]:
+    """Held-out human scores from the loaded bundle, or [] if there are none."""
+    if _bundle is not None:
+        return _bundle.human_calibration
+    return []
+
+
 def get_feature_scaling() -> dict:
     """Log-percentile endpoints in force right now: from the loaded bundle
     when there is one, otherwise the module fallback. Deliberately does not
@@ -340,6 +353,110 @@ def normalize_feature(name: str, raw_value: float, scaling: dict | None = None) 
         return float(np.clip(raw_value / FOCUS_CHANGE_DIVISOR, 0.0, 1.0))
     # etkilesim_entropisi is already a 0..1 quantity by construction.
     return float(np.clip(raw_value, 0.0, 1.0))
+
+
+# --- Cross-session behaviour bucket ----------------------------------------
+#
+# Per-session scoring cannot catch competent mimicry: a bot that reproduces
+# human statistics is human-shaped by construction, and the adversarial run
+# measured exactly that (an independently written humanised bot scored 11.4
+# against a human 11.3). What that bot cannot hide is that it ran twenty-five
+# times and produced twenty-five nearly identical behavioural signatures.
+# People do not repeat themselves that way.
+#
+# So each flush is quantised onto a coarse grid and hashed. Sessions landing in
+# the same cell are behaving alike; counting how many DISTINCT sessions share a
+# cell over a short window turns per-session invisibility into a population
+# signal. This is the layer the fraud industry reaches for once velocity rules
+# have been defeated, and it needs no model.
+#
+# Only the structural features are used. The marginal statistics (variance,
+# entropy, hesitation) drift with how much data a flush happens to carry, so
+# including them scatters one script across many cells. The structural features
+# describe the generator rather than the sample, which is what should repeat.
+BUCKET_FEATURES = (
+    "hiz_otokorelasyonu",
+    "yon_tutarliligi",
+    "zaman_kuantasyonu",
+    "duraklama_dagilimi",
+    "tiklama_oncesi_hareket",
+    "kanal_gecis_gecikmesi",
+)
+
+# Grid spacing. Coarse enough that one script's run-to-run noise stays in one
+# cell, fine enough that unrelated people do not collide. 0.2 gives five levels
+# per feature; the value is measured in the adversarial harness rather than
+# guessed, and BUCKET_RESOLUTION is the knob if the population changes.
+BUCKET_RESOLUTION = 0.2
+
+
+# How many of the bucket features must have been genuinely MEASURED, rather
+# than filled in with a neutral fallback, before a flush gets a bucket at all.
+#
+# This is the difference between the mechanism working and actively harming.
+# Built from the normalised features it produced a single enormous cell: every
+# flush too thin to measure took the same fallbacks, so people, mimics and
+# scripts all landed together. Measured on the adversarial harness, the largest
+# cluster contained 37 sessions drawn equally from humans and bots, and 40% of
+# legitimate sessions were escalated on it. Two sessions cannot be said to
+# behave alike when neither one's behaviour was observed.
+BUCKET_MIN_MEASURED = 4
+
+
+def behavior_bucket(raw_values: dict) -> str | None:
+    """A short, stable key for 'this flush behaves like that flush'.
+
+    Takes RAW values, where None means the feature could not be measured, and
+    returns None when too few of them were -- no bucket rather than a shared
+    one.
+    """
+    cells = []
+    measured = 0
+    for name in BUCKET_FEATURES:
+        value = raw_values.get(name)
+        if value is None or not math.isfinite(value):
+            cells.append("x")
+        else:
+            measured += 1
+            cells.append(str(int(round(float(value) / BUCKET_RESOLUTION))))
+    if measured < BUCKET_MIN_MEASURED:
+        return None
+    return hashlib.sha256("|".join(cells).encode("utf-8")).hexdigest()[:16]
+
+
+# --- Conformal human-plausibility guard -------------------------------------
+#
+# A one-directional safety net. Given the scores the trained model assigns to
+# held-out REAL human sessions, the conformal p-value of a new score is the
+# fraction of those humans who scored at least as high. A large p-value means
+# "this score is unremarkable for a legitimate user", and the system then
+# refuses to BLOCK on it, downgrading to step-up verification instead.
+#
+# It can only ever soften a decision, never harden one, which is what makes it
+# safe to add: a mistake here costs a challenge, not a lost sale. The guarantee
+# is distribution-free and independent of the model -- it is a statement about
+# the calibration sample, not about the forest.
+#
+# Its strength is exactly the diversity of that sample. Calibrated on 30-odd
+# scripted human runs from one machine it is a weak net; calibrated on
+# recordings of real customers on their own hardware it becomes the primary
+# defence against blocking them. That is an argument for collecting the data,
+# not for skipping the mechanism.
+CONFORMAL_ALPHA = 0.05
+
+
+def conformal_p_value(risk_score: float, calibration: list[float] | None) -> float | None:
+    """Fraction of calibration humans scoring at least this high.
+
+    The +1 in numerator and denominator is the standard finite-sample
+    correction: with n calibration points the smallest achievable p-value is
+    1/(n+1), so the guarantee never claims more precision than the sample
+    supports.
+    """
+    if not calibration:
+        return None
+    at_least = sum(1 for value in calibration if value >= risk_score)
+    return (1.0 + at_least) / (len(calibration) + 1.0)
 
 
 def get_label(risk_score: float) -> str:
@@ -652,7 +769,7 @@ def extract_raw(raw: dict) -> dict:
     }
 
 
-def extract_features(raw: dict) -> dict:
+def extract_features(raw: dict, raw_values: dict | None = None) -> dict:
     """Raw SDK payload -> the six model features, each on 0..1.
 
     Normalisation comes from the training distribution (see
@@ -660,7 +777,7 @@ def extract_features(raw: dict) -> dict:
     divisors, so the features use their range instead of sitting on the
     ceiling.
     """
-    raw_values = extract_raw(raw)
+    raw_values = extract_raw(raw) if raw_values is None else raw_values
     scaling = get_feature_scaling()
     defaults = get_neutral_defaults()
 
@@ -705,7 +822,8 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
     start = time.perf_counter()
     bundle = get_bundle()
 
-    features = extract_features(raw)
+    raw_values = extract_raw(raw)
+    features = extract_features(raw, raw_values)
 
     # Defence in depth against non-finite values. The API layer rejects NaN /
     # Infinity at the boundary (see main.py's typed payload models), which is
@@ -774,6 +892,7 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
     return {
         "risk_score": risk_score,
         "label": label,
+        "behavior_bucket": behavior_bucket(raw_values),
         "confidence": round(max(fraud_probability, 1 - fraud_probability), 2),
         "shap_explanation": top_3,
         "response_time_ms": response_time_ms,

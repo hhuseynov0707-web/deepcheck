@@ -357,6 +357,9 @@ class _StubResult:
     def all(self):
         return list(self._rows)
 
+    def __iter__(self):
+        return iter(self._rows)
+
     def first(self):
         return self._rows[0] if self._rows else None
 
@@ -364,14 +367,32 @@ class _StubResult:
 class _StubDB:
     """Just enough AsyncSession for the handlers under test."""
 
-    def __init__(self, session=None, history=(), has_flushes=True, flush_count=None, known_hashes=()):
+    def __init__(
+        self,
+        session=None,
+        history=(),
+        has_flushes=True,
+        flush_count=None,
+        known_hashes=(),
+        per_flush=None,
+        cluster_peers=0,
+    ):
         self.session = session
         self.history = list(history)
-        # `flush_count` is what /api/decision counts; `has_flushes=False` is
-        # the older shorthand for "zero".
+        # `flush_count` is what /api/decision used to count; `has_flushes=False`
+        # is the older shorthand for "zero".
         if flush_count is None:
             flush_count = 5 if has_flushes else 0
         self.flush_count = flush_count
+        # Per-flush scores the sequential test reads. Defaulting them to the
+        # session's own score keeps every older test meaningful: a session
+        # sitting at 95 got there by producing flushes at 95.
+        if per_flush is None:
+            score = getattr(session, "risk_score", 0.0) if session is not None else 0.0
+            per_flush = [score] * flush_count
+        self.per_flush = list(per_flush)
+        # Distinct other sessions sharing this session's behaviour bucket.
+        self.cluster_peers = cluster_peers
         # Fingerprints the "database" already holds, for the replay check.
         self.known_hashes = set(known_hashes)
         self.added = []
@@ -385,9 +406,14 @@ class _StubDB:
             params = statement.compile().params
             hit = any(v in self.known_hashes for v in params.values() if isinstance(v, str))
             return _StubResult([1] if hit else [])
+        if text.startswith("SELECT behavior_data.risk_score, behavior_data.behavior_bucket"):
+            # The sequential test's read: (risk_score, behavior_bucket) rows.
+            return _StubResult([(score, "bucket") for score in self.per_flush])
         return _StubResult(self.history)
 
     async def scalar(self, statement):
+        if "count(DISTINCT" in str(statement).lower().replace("count(distinct", "count(DISTINCT"):
+            return self.cluster_peers
         return self.flush_count
 
     async def get(self, model, primary_key):
@@ -503,14 +529,22 @@ def test_decision_blocks_bot_session():
     token = main.sign_session(session_id)
     body = {"session_id": session_id}
 
+    # A mid-band score (40-60) no longer resolves on five flushes. The
+    # sequential test only stops once the evidence supports a verdict, and a
+    # session hovering at 48 supports neither -- so it goes to step-up rather
+    # than being charged with a warning banner, which is the outcome the
+    # adversarial run flagged: "Şüpheli" used to mean the card was charged.
+    # Past SPRT_MAX_FLUSHES the ladder applies regardless, which is the
+    # `warn` row below.
     cases = [
-        (95.0, "Bot Tespit Edildi", "block"),
-        (72.0, "Yüksek Risk", "verify"),
-        (48.0, "Şüpheli", "warn"),
-        (12.0, "Gerçek Kullanıcı", "allow"),
+        (95.0, "Bot Tespit Edildi", "block", 5),
+        (72.0, "Yüksek Risk", "verify", 5),
+        (48.0, "Şüpheli", "verify", 5),
+        (48.0, "Şüpheli", "warn", main.SPRT_MAX_FLUSHES),
+        (12.0, "Gerçek Kullanıcı", "allow", 5),
     ]
-    for score, label, expected in cases:
-        client = _client(_StubDB(session=_stub_session(score, label)))
+    for score, label, expected, flushes in cases:
+        client = _client(_StubDB(session=_stub_session(score, label), flush_count=flushes))
         try:
             res = client.post("/api/decision", json=body, headers={"X-DeepCheck-Token": token})
             assert res.status_code == 200, f"{res.status_code} dondu"
@@ -641,28 +675,123 @@ def test_analyze_rejects_replayed_payload():
         _clear_overrides()
 
 
-def test_decision_verifies_with_too_few_flushes():
-    """One plausible 2-second window is cheap to fabricate. Until
-    MIN_FLUSHES_FOR_DECISION windows have been analysed, the answer is
-    step-up, whatever the score says."""
+def test_decision_waits_for_sequential_evidence():
+    """Evidence, not a counter.
+
+    A fixed "three flushes" was a number chosen by judgement. The sequential
+    test stops as soon as the accumulated log-likelihood ratio supports a
+    verdict, so a blatant session is decided immediately and an ambiguous one
+    keeps collecting instead of being waved through the moment a counter is
+    satisfied.
+    """
     session_id = "0a0a0a0a-0000-0000-0000-000000000003"
     token = main.sign_session(session_id)
-    for count in range(main.MIN_FLUSHES_FOR_DECISION):
-        client = _client(_StubDB(session=_stub_session(12.0), flush_count=count))
+
+    def decide(db):
+        client = _client(db)
         try:
-            res = client.post("/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token})
-            body = res.json()
-            assert body["action"] == "verify", f"{count} akisla '{body['action']}' dondu, 'verify' bekleniyordu"
-            assert body["reason"] == "insufficient_evidence"
+            return client.post(
+                "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}
+            ).json()
         finally:
             _clear_overrides()
 
-    client = _client(_StubDB(session=_stub_session(12.0), flush_count=main.MIN_FLUSHES_FOR_DECISION))
+    # No telemetry at all: nothing to test on.
+    body = decide(_StubDB(session=_stub_session(12.0), flush_count=0))
+    assert body["action"] == "verify" and body["reason"] == "insufficient_evidence"
+
+    # A clear human is decided on very few flushes.
+    body = decide(_StubDB(session=_stub_session(9.0), flush_count=2))
+    assert body["action"] == "allow", f"acik insan '{body['action']}' dondu"
+
+    # A clear bot likewise, without waiting for a counter.
+    body = decide(_StubDB(session=_stub_session(96.0, "Bot Tespit Edildi"), flush_count=2))
+    assert body["action"] == "block", f"acik bot '{body['action']}' dondu"
+
+    # Genuine ambiguity keeps collecting rather than resolving either way.
+    body = decide(_StubDB(session=_stub_session(50.0, "Şüpheli"), flush_count=3))
+    assert body["reason"] == "insufficient_evidence", f"belirsiz oturum '{body['reason']}' dondu"
+
+    # And the sequential statistic really is accumulating, not just reading the
+    # latest score: the same session score with more flushes crosses the bound.
+    few = decide(_StubDB(session=_stub_session(80.0, "Bot Tespit Edildi"), per_flush=[80.0], flush_count=1))
+    many = decide(_StubDB(session=_stub_session(80.0, "Bot Tespit Edildi"), per_flush=[80.0] * 4, flush_count=4))
+    assert few["reason"] == "insufficient_evidence" and many["reason"] == "score", (
+        f"kanit birikmiyor: {few['reason']} -> {many['reason']}"
+    )
+
+
+def test_cluster_of_identical_sessions_is_escalated():
+    """Per-session scoring cannot catch competent mimicry, and the adversarial
+    run measured that: an independently written humanised bot scored 11.4
+    against a human 11.3. What it cannot hide is running twenty-five times and
+    producing twenty-five near-identical signatures."""
+    session_id = "0d0d0d0d-0000-0000-0000-000000000001"
+    token = main.sign_session(session_id)
+
+    saved_flag = main.CLUSTER_ESCALATION_ENABLED
+    main.CLUSTER_ESCALATION_ENABLED = True  # off by default; see the note there
+
+    def decide(peers):
+        client = _client(_StubDB(session=_stub_session(9.0), flush_count=4, cluster_peers=peers))
+        try:
+            return client.post(
+                "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}
+            ).json()
+        finally:
+            _clear_overrides()
+
+    alone = decide(0)
+    assert alone["action"] == "allow", f"tek basina oturum '{alone['action']}' dondu"
+
+    crowd = decide(main.CLUSTER_MIN_SESSIONS)
+    assert crowd["action"] == "verify", f"kume icindeki oturum '{crowd['action']}' dondu"
+    assert crowd["reason"] == "cluster"
+
+    # And it stays silent when disabled, which is the shipped default.
+    main.CLUSTER_ESCALATION_ENABLED = False
+    quiet = decide(main.CLUSTER_MIN_SESSIONS * 3)
+    assert quiet["action"] == "allow", "kapaliyken kume yukseltmesi tetiklendi"
+    main.CLUSTER_ESCALATION_ENABLED = saved_flag
+
+
+def test_conformal_guard_only_softens_never_hardens():
+    """A one-directional safety net: if a score is unremarkable among held-out
+    real humans, refuse to block on it. A mistake here costs a challenge, not a
+    customer -- and it must never turn an approval into a block."""
+    session_id = "0d0d0d0d-0000-0000-0000-000000000002"
+    token = main.sign_session(session_id)
+    saved = scorer._bundle
+
+    def decide(score, label):
+        client = _client(_StubDB(session=_stub_session(score, label), flush_count=5))
+        try:
+            return client.post(
+                "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}
+            ).json()
+        finally:
+            _clear_overrides()
+
     try:
-        body = client.post("/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}).json()
-        assert body["action"] == "allow", f"yeterli akisla '{body['action']}' dondu, 'allow' bekleniyordu"
-        assert body["reason"] == "score"
+        # Calibration humans who routinely score in the 90s: a 95 is then
+        # unremarkable for a person and must not be blocked on.
+        # n must clear the finite-sample floor: the smallest p-value the
+        # correction can produce is 1/(n+1), so asserting 5% needs n >= 19.
+        scorer._bundle = SimpleNamespace(human_calibration=[92.0 + i * 0.2 for i in range(30)])
+        softened = decide(95.0, "Bot Tespit Edildi")
+        assert softened["action"] == "verify", f"korumaya ragmen '{softened['action']}' dondu"
+        assert softened["reason"] == "conformal"
+
+        # The same guard must not touch an approval.
+        allowed = decide(9.0, "Gerçek Kullanıcı")
+        assert allowed["action"] == "allow", f"koruma onayi bozdu: '{allowed['action']}'"
+
+        # With a normal human calibration, a 95 is extraordinary and is blocked.
+        scorer._bundle = SimpleNamespace(human_calibration=[3.0 + i * 0.3 for i in range(30)])
+        blocked = decide(95.0, "Bot Tespit Edildi")
+        assert blocked["action"] == "block", f"olagandisi skor '{blocked['action']}' dondu"
     finally:
+        scorer._bundle = saved
         _clear_overrides()
 
 
@@ -694,7 +823,15 @@ def test_demo_charge_never_charges_blocked_session():
         (_StubDB(session=_stub_session(72.0, "Yüksek Risk")), "declined", "verify"),
         (_StubDB(session=_stub_session(12.0), flush_count=1), "declined", "verify"),
         (_StubDB(session=None), "declined", "verify"),
-        (_StubDB(session=_stub_session(48.0, "Şüpheli")), "charged", "warn"),
+        # 40-60 no longer charges on five flushes: the sequential test does not
+        # yet support a verdict, so it goes to step-up. Past the flush cap the
+        # ladder applies and it charges with a warning, as before.
+        (_StubDB(session=_stub_session(48.0, "Şüpheli")), "declined", "verify"),
+        (
+            _StubDB(session=_stub_session(48.0, "Şüpheli"), flush_count=main.SPRT_MAX_FLUSHES),
+            "charged",
+            "warn",
+        ),
         (_StubDB(session=_stub_session(12.0)), "charged", "allow"),
     ]
     for db, expected_status, expected_action in cases:
@@ -998,7 +1135,9 @@ def _run_all():
         test_analyze_rejects_stale_timestamps,
         test_analyze_rejects_backwards_time,
         test_analyze_rejects_replayed_payload,
-        test_decision_verifies_with_too_few_flushes,
+        test_decision_waits_for_sequential_evidence,
+        test_cluster_of_identical_sessions_is_escalated,
+        test_conformal_guard_only_softens_never_hardens,
         test_decision_verifies_when_stale,
         test_demo_charge_never_charges_blocked_session,
         test_demo_verify_upgrades_verify_but_not_block,

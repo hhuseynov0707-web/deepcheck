@@ -177,9 +177,24 @@ within its session, and any telemetry whose clock-independent fingerprint
 recording of a real person cannot be replayed under a fresh token, with or
 without its timestamps rewritten.
 
-**Evidence before a verdict.** `/api/decision` answers `verify` until at least
-3 flushes (6 s of behaviour) have been analysed and while the session's last
-flush is older than 30 s. One plausible window is cheap to fabricate; six
+**Evidence before a verdict.** `/api/decision` uses Wald's sequential
+probability ratio test rather than a flush counter: it accumulates the
+per-flush log-likelihood ratio and stops as soon as the evidence supports a
+verdict, so a blatant session is decided on its first flush and an ambiguous
+one keeps collecting instead of being waved through when a counter is
+satisfied. Between the bounds the answer is step-up. It also answers `verify`
+while the session's last flush is older than 30 s.
+
+One consequence worth naming: a mid-band score (40-60, "Şüpheli") no longer
+charges the card on a handful of flushes, because that evidence supports
+neither verdict. It goes to verification instead.
+
+**Conformal guard.** A one-directional safety net. If a score is unremarkable
+among held-out real human sessions, the system refuses to block on it and asks
+for verification instead. It can only soften a decision, never harden one, so
+a mistake costs a challenge rather than a customer. Distribution-free and
+independent of the model; its strength is the diversity of the calibration
+sample. One plausible window is cheap to fabricate; six
 seconds of sustained behaviour is not, and a verdict must be about behaviour
 that is happening now.
 
@@ -406,6 +421,7 @@ Copy `.env.example` to `.env` before deploying anywhere that is not a laptop.
 | `CORS_ORIGINS` | Browser origin allowlist. `*` is for a local demo only |
 | `DEMO_ENDPOINTS` | `/api/demo/*` on or off. Defaults to `DEBUG`. Their step-up code is a published constant, so anything scored `verify` can be upgraded to `allow` by anyone who reads the page |
 | `SHAP_IN_ANALYZE` | Return the SHAP breakdown to the scored client. Off by default: it is a tuning oracle |
+| `CLUSTER_ESCALATION` | Escalate sessions sharing a behaviour bucket. Off by default: measured to flag more legitimate users than bots |
 | `DEMO_VERIFY_CODE` | Step-up code for the demo's verification modal |
 | `VITE_API_URL` | Backend URL, compiled into the frontend at **build** time |
 | `RAW_RETENTION_HOURS` / `ROW_RETENTION_HOURS` | When raw telemetry is blanked (default 1 h) and whole rows deleted (default 24 h) |
