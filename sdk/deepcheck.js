@@ -93,11 +93,138 @@
   // lost while the round trip is in flight.
   let registration = null;
 
+  // Smallest non-zero gap between consecutive performance.now() readings.
+  //
+  // Every engine deliberately clamps this -- roughly 100 microseconds in
+  // Chrome, 1 millisecond in Firefox and Safari -- as a defence against timing
+  // side channels. The value is a property of the browser and the machine, not
+  // of this page, which is what makes it worth reporting: a client that
+  // fabricates telemetry has to fabricate this too, and has to know what a
+  // plausible clamp looks like.
+  function measureClockResolution(samples) {
+    var smallest = Infinity;
+    var previous = performance.now();
+    for (var i = 0; i < samples; i++) {
+      var current = performance.now();
+      var delta = current - previous;
+      if (delta > 0 && delta < smallest) smallest = delta;
+      previous = current;
+    }
+    // Milliseconds to microseconds. Infinity means the clock never advanced
+    // across the whole sample, which the server treats as implausible.
+    return isFinite(smallest) ? smallest * 1000 : 0;
+  }
+
+  // Median observed delay of setTimeout(..., 0). A real event loop never
+  // schedules in zero milliseconds, and browsers additionally clamp nested
+  // timers to about 4 ms.
+  function measureTimerLag(samples) {
+    return new Promise(function (resolve) {
+      var observed = [];
+      function step() {
+        if (observed.length >= samples) {
+          observed.sort(function (a, b) { return a - b; });
+          resolve(observed[Math.floor(observed.length / 2)]);
+          return;
+        }
+        var started = performance.now();
+        window.setTimeout(function () {
+          observed.push(performance.now() - started);
+          step();
+        }, 0);
+      }
+      step();
+    });
+  }
+
+  function sha256Hex(text) {
+    var bytes = new TextEncoder().encode(text);
+    return window.crypto.subtle.digest("SHA-256", bytes).then(function (buffer) {
+      var out = "";
+      var view = new Uint8Array(buffer);
+      for (var i = 0; i < view.length; i++) {
+        out += view[i].toString(16).padStart(2, "0");
+      }
+      return out;
+    });
+  }
+
+  function leadingZeroBits(hex) {
+    var bits = 0;
+    for (var i = 0; i < hex.length; i++) {
+      var nibble = parseInt(hex[i], 16);
+      if (nibble === 0) {
+        bits += 4;
+        continue;
+      }
+      // 8->0, 4->1, 2->2, 1->3 leading zeros within the nibble.
+      bits += nibble >= 8 ? 0 : nibble >= 4 ? 1 : nibble >= 2 ? 2 : 3;
+      break;
+    }
+    return bits;
+  }
+
+  // Find a nonce whose SHA-256 starts with `difficulty` zero bits.
+  //
+  // Not a cost tax: it is evidence that this client executed the code it was
+  // served, which is the same reason Kasada, hCaptcha and Turnstile carry a
+  // proof of work. Expected work is 2^difficulty hashes -- at the default 12
+  // bits that is a few thousand, a few hundred milliseconds in a browser, and
+  // linear in cost for anyone minting sessions in bulk.
+  //
+  // Yielding every YIELD_EVERY attempts keeps the page responsive; a solver
+  // that blocks the main thread for half a second is a worse experience than
+  // the attack it prevents.
+  var POW_YIELD_EVERY = 512;
+
+  function solveProofOfWork(challenge, difficulty) {
+    return new Promise(function (resolve, reject) {
+      var nonce = 0;
+      function attempt() {
+        var batch = 0;
+        function next() {
+          if (batch >= POW_YIELD_EVERY) {
+            window.setTimeout(attempt, 0);
+            return;
+          }
+          batch += 1;
+          var candidate = String(nonce++);
+          sha256Hex(challenge + "." + candidate)
+            .then(function (hex) {
+              if (leadingZeroBits(hex) >= difficulty) {
+                resolve(candidate);
+                return;
+              }
+              next();
+            })
+            .catch(reject);
+        }
+        next();
+      }
+      attempt();
+    });
+  }
+
   function register() {
     // React StrictMode mounts, unmounts and remounts in development, so
     // init() runs twice per page load. Minting a second session there would
     // orphan the first one and double the id count for every real visit.
     if (sessionId && sessionToken) return Promise.resolve({ session_id: sessionId, token: sessionToken });
+
+    // Two steps now. /api/session hands out a signed challenge and nothing
+    // else; the token that /api/analyze requires is only issued in exchange for
+    // a solved proof of work and runtime measurements consistent with a
+    // browser. Telemetry therefore cannot be posted by something that never
+    // executed this file.
+    //
+    // crypto.subtle is only available in a secure context, so this needs HTTPS
+    // or localhost. Without it registration fails and the host page's onError
+    // fires, which fails closed.
+    if (!window.crypto || !window.crypto.subtle) {
+      return Promise.reject(
+        new Error("DeepCheck güvenli bağlam gerektirir (HTTPS veya localhost)")
+      );
+    }
 
     return fetch(`${config.apiUrl}/api/session`, { method: "POST" })
       .then((res) => {
@@ -105,8 +232,39 @@
         return res.json();
       })
       .then((data) => {
-        if (!data || typeof data.session_id !== "string" || typeof data.token !== "string") {
+        if (!data || typeof data.session_id !== "string" || typeof data.challenge !== "string") {
           throw new Error("DeepCheck oturum yanıtı geçersiz");
+        }
+        const clockResolutionUs = measureClockResolution(2000);
+        return Promise.all([
+          data,
+          solveProofOfWork(data.challenge, data.difficulty_bits),
+          measureTimerLag(9),
+          clockResolutionUs,
+        ]);
+      })
+      .then(([data, nonce, timerLagMs, clockResolutionUs]) =>
+        fetch(`${config.apiUrl}/api/session/attest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: data.session_id,
+            challenge: data.challenge,
+            nonce,
+            runtime: {
+              clock_resolution_us: clockResolutionUs,
+              timer_lag_ms: timerLagMs,
+            },
+          }),
+        })
+      )
+      .then((res) => {
+        if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (!data || typeof data.session_id !== "string" || typeof data.token !== "string") {
+          throw new Error("DeepCheck doğrulama yanıtı geçersiz");
         }
         sessionId = data.session_id;
         sessionToken = data.token;

@@ -151,9 +151,34 @@ All six endpoints are in `backend/main.py`.
 
 ### `POST /api/session`
 
-Mints `{session_id, token}` where `token = HMAC-SHA256(DEEPCHECK_SECRET,
-session_id)`. Takes no input, deliberately: the id is never accepted from
-the caller. It writes no database row either, so a page that is opened and
+Opens a session and returns `{session_id, challenge, difficulty_bits}` — a
+signed proof-of-work challenge and **no token**. Takes no input, deliberately:
+the id is never accepted from the caller. The challenge carries the session it
+belongs to and the moment it was minted, signed, so a solution cannot be moved
+to another session or replayed once it expires; the server stores nothing.
+
+### `POST /api/session/attest`
+
+Exchanges a solved challenge for the token. Requires a nonce whose SHA-256 has
+`POW_DIFFICULTY_BITS` leading zero bits, plus two runtime measurements: the
+clamp on `performance.now()` and the median delay of `setTimeout(..., 0)`.
+Both are properties of the engine and the machine rather than of the page.
+
+Since `/api/analyze` requires the token, telemetry cannot be posted by anything
+that never executed the SDK. Holding a valid token *is* the attestation; there
+is no separate flag and no stored state.
+
+Measured rather than asserted: a 12-bit proof costs Chromium about 75 ms over
+7,600 hashes and a Python script about 2 ms over 1,500. The asymmetry runs the
+wrong way, because JavaScript SHA-256 is roughly thirty times slower than
+native, so raising the difficulty taxes customers harder than attackers. This
+is evidence that code executed, **not** a cost barrier, and the runtime values
+are trivially forged once the accepted ranges are known — they are in the
+source. It closes posting telemetry without running the SDK, which is exactly
+how this project's own adversarial harness worked. It does nothing about a bot
+driving a real browser.
+
+Chromium reports its clock clamp as exactly 100.0 µs, the documented value. It writes no database row either, so a page that is opened and
 never used leaves nothing behind; the row is created by the first flush.
 
 ### `POST /api/analyze`

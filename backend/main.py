@@ -197,6 +197,132 @@ VERIFICATION_VALID_S = 300
 # value, not an "any six digits" bypass.
 DEMO_VERIFY_CODE = os.getenv("DEMO_VERIFY_CODE", "482913").strip()
 
+# --- Runtime attestation -----------------------------------------------------
+#
+# Everything the detector scores is a summary statistic of numbers the client
+# supplies, and an adversarial harness that never opened a browser -- it signed
+# its own tokens and posted JSON -- scored 10.5 against a human 11.3. No amount
+# of work on the features answers that, because the features are computed from
+# whatever the client chose to send.
+#
+# Attestation asks a different question: did this telemetry come from code
+# running in a browser at all? Two cheap checks, neither of which claims to
+# prove a human is present.
+#
+# PROOF OF WORK. The server issues a signed challenge and the client must find
+# a nonce whose SHA-256 has POW_DIFFICULTY_BITS leading zero bits. This is what
+# Kasada, hCaptcha and Turnstile use it for: not as a cost tax, but as evidence
+# that the client executed the code it was served. It is cheap for one browser
+# (a few hundred milliseconds) and linear in cost for a farm.
+#
+# RUNTIME MEASUREMENTS. performance.now() is deliberately clamped by every
+# browser -- roughly 100 microseconds in Chrome, 1 millisecond in Firefox and
+# Safari -- and setTimeout(0) does not fire in zero milliseconds. Those numbers
+# are properties of the engine and the operating system, not of the page, so a
+# client that fabricates telemetry has to fabricate them too, which means
+# knowing what to fabricate.
+#
+# What this does NOT do, stated plainly: a bot driving a real browser produces
+# a real proof of work and real timer values. Attestation closes the
+# post-JSON-directly path. It does nothing about Playwright.
+POW_DIFFICULTY_BITS = int(os.getenv("POW_DIFFICULTY_BITS", "12"))
+
+# How long a challenge stays solvable. Long enough for a slow phone, short
+# enough that a solved challenge cannot be stockpiled.
+POW_CHALLENGE_TTL_S = 180
+
+# Plausible ranges for the runtime measurements. Deliberately wide: the point
+# is to reject values that no browser produces, not to fingerprint which
+# browser this is. A clamp finer than half a microsecond means the client is
+# not subject to any clamp at all.
+MIN_CLOCK_RESOLUTION_US = 0.5
+MAX_CLOCK_RESOLUTION_US = 5000.0
+# Measured in Chromium on an idle loop: a median of 0.1 ms, and the clock clamp
+# came back as exactly 100.0 microseconds, which is Chrome's documented value.
+# The floor sits an order of magnitude below the observed lag, because the job
+# is to reject a fabricated zero rather than to insist on a particular
+# scheduler -- a tight bound would fail real users on a fast machine, and a
+# false rejection here costs a customer.
+MIN_TIMER_LAG_MS = 0.01
+MAX_TIMER_LAG_MS = 250.0
+
+# The gate is token issuance itself: /api/session hands out a challenge and
+# nothing else, so a client that cannot attest never obtains the token that
+# /api/analyze requires. No separate flag and no stored state -- holding a
+# valid token IS the attestation.
+#
+# The obvious caveat, said out loud: in DEBUG the signing secret is a published
+# constant, so anything that reads the source can mint its own token and skip
+# all of this. That is true of every token check in the system and is why
+# DEBUG=0 refuses to start without a real secret.
+
+
+def _issue_challenge(session_id: str) -> str:
+    """A challenge the server can verify without storing anything.
+
+    Carries the session it belongs to and the moment it was minted, signed, so
+    a solution cannot be moved to another session or replayed after it expires.
+    """
+    issued_ms = int(time.time() * 1000)
+    body = f"{session_id}.{issued_ms}"
+    signature = hmac.new(SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{body}.{signature}"
+
+
+def _check_challenge(session_id: str, challenge: str) -> None:
+    parts = challenge.split(".")
+    if len(parts) != 3:
+        raise HTTPException(status_code=400, detail="Gecersiz dogrulama sorusu")
+    challenge_session, issued_raw, signature = parts
+    body = f"{challenge_session}.{issued_raw}"
+    expected = hmac.new(SECRET.encode(), body.encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=400, detail="Dogrulama sorusu imzasi gecersiz")
+    if challenge_session != session_id:
+        raise HTTPException(status_code=400, detail="Dogrulama sorusu bu oturuma ait degil")
+    try:
+        issued_ms = int(issued_raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Gecersiz dogrulama sorusu") from None
+    if abs(int(time.time() * 1000) - issued_ms) > POW_CHALLENGE_TTL_S * 1000:
+        raise HTTPException(status_code=400, detail="Dogrulama sorusunun suresi doldu")
+
+
+def _leading_zero_bits(digest: bytes) -> int:
+    bits = 0
+    for byte in digest:
+        if byte == 0:
+            bits += 8
+            continue
+        bits += 8 - byte.bit_length()
+        break
+    return bits
+
+
+def _check_proof_of_work(challenge: str, nonce: str) -> None:
+    digest = hashlib.sha256(f"{challenge}.{nonce}".encode()).digest()
+    if _leading_zero_bits(digest) < POW_DIFFICULTY_BITS:
+        raise HTTPException(status_code=400, detail="Is kaniti gecersiz")
+
+
+def _check_runtime(runtime: "RuntimeMeasurements") -> None:
+    """Reject values no browser engine produces.
+
+    Wide bounds on purpose. This is not a browser fingerprint; it is a check
+    that the numbers could have come from a clock that is actually clamped and
+    an event loop that actually costs something to schedule on.
+    """
+    if not (MIN_CLOCK_RESOLUTION_US <= runtime.clock_resolution_us <= MAX_CLOCK_RESOLUTION_US):
+        raise HTTPException(
+            status_code=400,
+            detail="Calisma zamani olcumleri bir tarayiciyla tutarsiz (saat cozunurlugu)",
+        )
+    if not (MIN_TIMER_LAG_MS <= runtime.timer_lag_ms <= MAX_TIMER_LAG_MS):
+        raise HTTPException(
+            status_code=400,
+            detail="Calisma zamani olcumleri bir tarayiciyla tutarsiz (zamanlayici gecikmesi)",
+        )
+
 # The /api/demo/* endpoints are a demonstration of the merchant-side pattern,
 # not a payment integration. The step-up code is a fixed constant that the demo
 # page prints on screen, so anything the server answers `verify` for can be
@@ -746,8 +872,35 @@ class AnalyzeResponse(BaseModel):
 
 
 class SessionCreateResponse(BaseModel):
+    """Challenge only. The token is issued by /api/session/attest."""
+
+    session_id: str
+    challenge: str
+    difficulty_bits: int
+
+
+class RuntimeMeasurements(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    # Smallest non-zero gap the client observed between consecutive
+    # performance.now() readings, in microseconds. Every engine clamps this.
+    clock_resolution_us: Annotated[float, Field(ge=0, le=1e6, allow_inf_nan=False)]
+    # Median observed delay of setTimeout(..., 0), in milliseconds. Never zero
+    # on a real event loop.
+    timer_lag_ms: Annotated[float, Field(ge=0, le=1e4, allow_inf_nan=False)]
+
+
+class SessionAttestRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    challenge: str = Field(min_length=1, max_length=256)
+    nonce: str = Field(min_length=1, max_length=64)
+    runtime: RuntimeMeasurements
+
+
+class SessionAttestResponse(BaseModel):
     session_id: str
     token: str
+    attested: bool
 
 
 class DecisionRequest(BaseModel):
@@ -801,7 +954,36 @@ async def create_session(request: Request):
     """
     _rate_limit("session", _client_ip(request))
     session_id = str(uuid.uuid4())
-    return SessionCreateResponse(session_id=session_id, token=sign_session(session_id))
+    return SessionCreateResponse(
+        session_id=session_id,
+        challenge=_issue_challenge(session_id),
+        difficulty_bits=POW_DIFFICULTY_BITS,
+    )
+
+
+@app.post("/api/session/attest", response_model=SessionAttestResponse, status_code=201)
+async def attest_session(payload: SessionAttestRequest, request: Request):
+    """Exchanges a solved challenge for the session token.
+
+    The token is what /api/analyze requires, so telemetry cannot be posted at
+    all until something has executed a proof of work and reported runtime
+    measurements consistent with a browser. That is a statement about the
+    client being real code in a real engine, not about a human being present.
+    """
+    # Deliberately NOT rate limited. Minting the challenge already consumed a
+    # slot, and charging a second one for the answer halves the real budget: a
+    # page load costs two calls, so a 10-per-minute bucket became five page
+    # loads per minute and a customer reloading twice got a 429. A solved
+    # challenge is worthless without the challenge, and that is what the limit
+    # protects.
+    _check_challenge(payload.session_id, payload.challenge)
+    _check_proof_of_work(payload.challenge, payload.nonce)
+    _check_runtime(payload.runtime)
+    return SessionAttestResponse(
+        session_id=payload.session_id,
+        token=sign_session(payload.session_id),
+        attested=True,
+    )
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)

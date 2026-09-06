@@ -949,6 +949,68 @@ def test_demo_verify_upgrades_verify_but_not_block():
         _clear_overrides()
 
 
+def test_token_requires_proof_of_work_and_browser_timers():
+    """/api/session hands out a challenge and nothing else.
+
+    The token /api/analyze demands is only issued in exchange for a solved
+    proof of work and runtime measurements a browser could actually produce,
+    so telemetry cannot be posted by something that never executed the SDK.
+    That is a statement about real code in a real engine, not about a human.
+    """
+    import hashlib as _hashlib
+
+    main._rate_hits.clear()
+    client = _client(_StubDB(session=_stub_session()))
+    try:
+        opened = client.post("/api/session").json()
+        assert "token" not in opened, "oturum acilisinda jeton verildi"
+        session_id, challenge = opened["session_id"], opened["challenge"]
+        good_runtime = {"clock_resolution_us": 100.0, "timer_lag_ms": 1.4}
+
+        def attest(**overrides):
+            body = {
+                "session_id": session_id,
+                "challenge": challenge,
+                "nonce": "0",
+                "runtime": dict(good_runtime),
+            }
+            body.update(overrides)
+            return client.post("/api/session/attest", json=body)
+
+        # An unsolved nonce buys nothing.
+        assert attest(nonce="0").status_code == 400, "cozulmemis is kaniti kabul edildi"
+
+        nonce = None
+        for candidate in range(200_000):
+            digest = _hashlib.sha256(f"{challenge}.{candidate}".encode()).digest()
+            if main._leading_zero_bits(digest) >= main.POW_DIFFICULTY_BITS:
+                nonce = str(candidate)
+                break
+        assert nonce is not None, "zorluk cozulemeyecek kadar yuksek"
+
+        # A clock with no clamp at all is not a browser.
+        assert attest(nonce=nonce, runtime={"clock_resolution_us": 0.0, "timer_lag_ms": 1.4}).status_code == 400
+        # Nor is an event loop that schedules instantly.
+        assert attest(nonce=nonce, runtime={"clock_resolution_us": 100.0, "timer_lag_ms": 0.0}).status_code == 400
+
+        ok = attest(nonce=nonce)
+        assert ok.status_code == 201, f"gecerli kanit {ok.status_code} dondu"
+        body = ok.json()
+        assert body["attested"] is True
+        assert body["token"] == main.sign_session(session_id)
+
+        # A solution cannot be carried to a different session.
+        other = "0f0f0f0f-0000-0000-0000-000000000001"
+        moved = client.post(
+            "/api/session/attest",
+            json={"session_id": other, "challenge": challenge, "nonce": nonce, "runtime": good_runtime},
+        )
+        assert moved.status_code == 400, "cozum baska oturuma tasinabildi"
+    finally:
+        main._rate_hits.clear()
+        _clear_overrides()
+
+
 def test_rate_limit_rejects_a_burst():
     """Unlimited /api/session minting is free database growth, and unlimited
     /api/analyze is ~50ms of CPU per call against a fixed worker pool. Both
@@ -1190,6 +1252,7 @@ def _run_all():
         test_decision_verifies_when_stale,
         test_demo_charge_never_charges_blocked_session,
         test_demo_verify_upgrades_verify_but_not_block,
+        test_token_requires_proof_of_work_and_browser_timers,
         test_rate_limit_rejects_a_burst,
         test_rate_limiter_memory_is_bounded,
         test_bundle_requires_lstm_weights,

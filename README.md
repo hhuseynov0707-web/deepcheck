@@ -155,7 +155,8 @@ A session's reported score is the **median of its last 5 flushes**, not the inst
 
 | Endpoint | Auth | Purpose |
 |---|---|---|
-| `POST /api/session` | — | Mint a session id and its signed token |
+| `POST /api/session` | — | Open a session: returns a signed proof-of-work challenge, no token |
+| `POST /api/session/attest` | — | Exchange a solved challenge plus runtime measurements for the token |
 | `POST /api/analyze` | `X-DeepCheck-Token` | Score a behavior window |
 | `POST /api/decision` | `X-DeepCheck-Token` | **The enforcement point.** Returns the action to take and why |
 | `POST /api/demo/charge` | `X-DeepCheck-Token` | Demo merchant backend: applies the decision and charges, or declines |
@@ -207,6 +208,30 @@ independent of the model; its strength is the diversity of the calibration
 sample. One plausible window is cheap to fabricate; six
 seconds of sustained behaviour is not, and a verdict must be about behaviour
 that is happening now.
+
+**Runtime attestation.** `POST /api/session` returns a signed challenge and no
+token. The token that `/api/analyze` requires comes only from
+`POST /api/session/attest`, in exchange for a solved proof of work and two
+runtime measurements: the clamp on `performance.now()` and the median delay of
+`setTimeout(..., 0)`. Both are properties of the engine rather than the page,
+so a client that fabricates telemetry has to fabricate them too.
+
+Measured, because the number matters more than the idea: a 12-bit proof costs
+Chromium about **75 ms over 7,600 hashes**, and costs a Python script about
+**2 ms over 1,500 hashes**. That asymmetry runs the wrong way — JavaScript
+SHA-256 is roughly thirty times slower than native, so raising the difficulty
+taxes real customers harder than attackers. This is therefore **evidence that
+code executed, not a cost barrier**, and the difficulty is set low enough that
+the user cost stays small. The runtime values are also trivially forged once
+you know the accepted ranges, which are in the source.
+
+What it does close: posting telemetry without ever executing the SDK, which is
+exactly how this project's own adversarial harness worked. What it does not
+close: a bot driving a real browser, which produces a real proof and real timer
+values.
+
+Chromium reports its clock clamp as exactly 100.0 µs, which is the documented
+value and a good sign the measurement reflects the engine.
 
 **Rate limits.** Per IP for minting (20/min) and per session for scoring
 (60/min) and checkout (20/min), returning 429 with `Retry-After`. Scoring is
