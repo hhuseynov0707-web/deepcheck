@@ -90,7 +90,17 @@ MAX_CLOCK_SKEW_MS = 15_000
 # a single plausible window far more easily than it can sustain one. Three
 # flushes is six seconds of observed behaviour and also the point at which
 # the 5-flush median smoothing starts to mean something.
-MIN_FLUSHES_FOR_DECISION = 1
+# A floor UNDER the sequential test, not a replacement for it.
+#
+# Setting this to 1 when SPRT arrived was a regression, and the arithmetic
+# shows why: the lower bound is log(beta/(1-alpha)) = -2.2925, so a single
+# flush scoring 9.17 or less already crosses into "human" and is approved.
+# Telemetry is attacker-supplied, and one fabricated window is the cheapest
+# thing an attacker can produce -- the whole point of the original rule was
+# that sustaining six seconds of plausible behaviour is harder than minting
+# one snapshot. The sequential test decides WHEN there is enough evidence;
+# this decides how little evidence can ever be enough.
+MIN_FLUSHES_FOR_DECISION = 3
 
 # --- Sequential evidence (SPRT) ---------------------------------------------
 #
@@ -418,6 +428,7 @@ REASON_MESSAGES = {
     "insufficient_evidence": "Karar icin yeterli davranis verisi yok, lutfen birkac saniye sonra tekrar deneyin",
     "stale": "Oturumun davranis verisi guncel degil, ek dogrulama gerekli",
     "cluster": "Bu davranis kalibi kisa surede cok sayida oturumda tekrarlandi",
+    "ambiguous": "Davranis yeterince uzun sure izlendi ancak kesin bir sonuca varilamadi, ek dogrulama gerekli",
     "conformal": "Skor yuksek olsa da gercek kullanici dagilimina uyuyor, ek dogrulama uygulaniyor",
     "verified": "Ek dogrulama basariyla tamamlandi, islem onaylandi",
 }
@@ -1031,8 +1042,17 @@ async def _decide(db: AsyncSession, session_id: str) -> DecisionResponse:
     # not yet enough evidence to act on, which is step-up rather than approval.
     per_flush = [r[0] for r in rows if r[0] is not None and math.isfinite(r[0])]
     statistic = _sprt_statistic(per_flush)
-    if SPRT_LOWER < statistic < SPRT_UPPER and len(per_flush) < SPRT_MAX_FLUSHES:
-        return _verify_response("insufficient_evidence", session.risk_score, session.label or "Degerlendirilemedi")
+    if SPRT_LOWER < statistic < SPRT_UPPER:
+        # Inconclusive, and it stays inconclusive: the flush cap changes what
+        # the customer is told, never whether the payment goes through.
+        #
+        # It used to fall through to the ladder here, which meant a session
+        # parked in the 40-60 band was charged with a warning banner once it
+        # had produced ten flushes. Twenty seconds of deliberately ambiguous
+        # behaviour was therefore a way to be approved. Ambiguity at a payment
+        # gate is a reason to ask for more proof, not a reason to accept.
+        reason = "insufficient_evidence" if len(per_flush) < SPRT_MAX_FLUSHES else "ambiguous"
+        return _verify_response(reason, session.risk_score, session.label or "Degerlendirilemedi")
 
     risk_score = session.risk_score
     action = get_action(risk_score)

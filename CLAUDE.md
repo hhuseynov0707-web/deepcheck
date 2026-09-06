@@ -144,9 +144,16 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 | Skor | Etiket | Rəng | Aksiyon |
 |---|---|---|---|
 | 0-40 | Gerçek Kullanıcı | Yaşıl | Müdaxilə yoxdur |
-| 40-60 | Şüpheli | Sarı | Uyarı göstərilir |
+| 40-60 | Şüpheli | Sarı | **Ek doğrulama** — bax aşağıdakı qeyd |
 | 60-80 | Yüksek Risk | Narıncı | Əlavə doğrulama tələb olunur |
 | 80-100 | Bot Tespit Edildi | Qırmızı | Session bloklanır |
+
+> **40-60 bandı haqqında.** Etiket dəyişmir, amma aksiya dəyişdi. Ardıcıl
+> testin (SPRT) nəticəsi qətiləşməyəndə — ki bu, praktikada məhz orta bantdır —
+> qərar `warn` deyil, `verify` olur. Səbəbi ölçülüb: `warn` kartı çəkir, və
+> əvvəllər bot 10 axış boyu qəsdən qeyri-müəyyən davranaraq 20 saniyəyə
+> təsdiq ala bilirdi. Ödəniş qapısında qeyri-müəyyənlik qəbul üçün əsas deyil,
+> əlavə sübut istəmək üçün əsasdır.
 
 ---
 

@@ -185,9 +185,19 @@ one keeps collecting instead of being waved through when a counter is
 satisfied. Between the bounds the answer is step-up. It also answers `verify`
 while the session's last flush is older than 30 s.
 
-One consequence worth naming: a mid-band score (40-60, "Şüpheli") no longer
-charges the card on a handful of flushes, because that evidence supports
-neither verdict. It goes to verification instead.
+One consequence worth naming: a mid-band score (40-60, "Şüpheli") never
+charges the card, however long the session runs. That evidence supports
+neither verdict, and ambiguity at a payment gate is a reason to ask for more
+proof rather than to accept. A minimum of three analysed flushes still sits
+underneath the sequential test, because a single fabricated window is the
+cheapest thing an attacker can produce.
+
+All published ports bind to loopback. `DEBUG` defaults to `1` so the stack
+runs with no configuration, and that means the published development secrets
+are in force — a session token anyone can forge and a dashboard key anyone can
+read. Those defaults are only safe together while the ports are unreachable
+from the network. Exposing the stack means setting `DEBUG=0` with real secrets
+and `DEMO_ENDPOINTS=0` first.
 
 **Conformal guard.** A one-directional safety net. If a score is unremarkable
 among held-out real human sessions, the system refuses to block on it and asks

@@ -41,8 +41,15 @@ services:
       # Step-up code accepted by POST /api/demo/verify. A demo stand-in for
       # the merchant's SMS / 3-D Secure provider; shown in the demo's modal.
       DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
+    # Loopback, like the database. DEBUG defaults to 1 so that
+    # `docker-compose up` works with no configuration, and DEBUG=1 means the
+    # published development secrets are in force -- session tokens anyone can
+    # forge and a dashboard key anyone can read. Those two defaults are only
+    # safe together if the port is not reachable from the network, so it is
+    # not. Exposing this deliberately means setting DEBUG=0 with real secrets
+    # first; see .env.example.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./backend:/app
     depends_on:
@@ -65,8 +72,10 @@ services:
         VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
     container_name: deepcheck-frontend
     restart: unless-stopped
+    # Loopback for the same reason: the demo page ships the step-up code and
+    # talks to an API running in development mode.
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - backend
 

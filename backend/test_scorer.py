@@ -408,7 +408,12 @@ class _StubDB:
             return _StubResult([1] if hit else [])
         if text.startswith("SELECT behavior_data.risk_score, behavior_data.behavior_bucket"):
             # The sequential test's read: (risk_score, behavior_bucket) rows.
-            return _StubResult([(score, "bucket") for score in self.per_flush])
+            # The real query is LIMIT SPRT_MAX_FLUSHES, so the sequential
+            # statistic can never accumulate over more than that many flushes.
+            # Without mirroring the limit here a long ambiguous session drifts
+            # across a bound in the stub and nowhere else.
+            newest = self.per_flush[: main.SPRT_MAX_FLUSHES]
+            return _StubResult([(score, "bucket") for score in newest])
         return _StubResult(self.history)
 
     async def scalar(self, statement):
@@ -536,11 +541,15 @@ def test_decision_blocks_bot_session():
     # adversarial run flagged: "Şüpheli" used to mean the card was charged.
     # Past SPRT_MAX_FLUSHES the ladder applies regardless, which is the
     # `warn` row below.
+    # A mid-band score never resolves to a charge, however long the session
+    # runs. It used to fall through to the ladder at the flush cap, which made
+    # twenty seconds of deliberately ambiguous behaviour a way to be approved.
     cases = [
         (95.0, "Bot Tespit Edildi", "block", 5),
         (72.0, "Yüksek Risk", "verify", 5),
         (48.0, "Şüpheli", "verify", 5),
-        (48.0, "Şüpheli", "warn", main.SPRT_MAX_FLUSHES),
+        (48.0, "Şüpheli", "verify", main.SPRT_MAX_FLUSHES),
+        (48.0, "Şüpheli", "verify", main.SPRT_MAX_FLUSHES * 3),
         (12.0, "Gerçek Kullanıcı", "allow", 5),
     ]
     for score, label, expected, flushes in cases:
@@ -700,12 +709,21 @@ def test_decision_waits_for_sequential_evidence():
     body = decide(_StubDB(session=_stub_session(12.0), flush_count=0))
     assert body["action"] == "verify" and body["reason"] == "insufficient_evidence"
 
-    # A clear human is decided on very few flushes.
-    body = decide(_StubDB(session=_stub_session(9.0), flush_count=2))
+    # One flush is never enough, however clean it looks. The lower SPRT bound
+    # is crossed by a single flush scoring 9.17 or less, and one fabricated
+    # window is the cheapest thing an attacker can produce -- so the floor sits
+    # under the sequential test rather than being replaced by it.
+    for count in range(1, main.MIN_FLUSHES_FOR_DECISION):
+        body = decide(_StubDB(session=_stub_session(5.0), flush_count=count))
+        assert body["action"] == "verify", f"{count} akisla '{body['action']}' dondu"
+        assert body["reason"] == "insufficient_evidence"
+
+    # Past the floor, a clear human is decided without waiting further.
+    body = decide(_StubDB(session=_stub_session(9.0), flush_count=main.MIN_FLUSHES_FOR_DECISION))
     assert body["action"] == "allow", f"acik insan '{body['action']}' dondu"
 
-    # A clear bot likewise, without waiting for a counter.
-    body = decide(_StubDB(session=_stub_session(96.0, "Bot Tespit Edildi"), flush_count=2))
+    # A clear bot likewise.
+    body = decide(_StubDB(session=_stub_session(96.0, "Bot Tespit Edildi"), flush_count=3))
     assert body["action"] == "block", f"acik bot '{body['action']}' dondu"
 
     # Genuine ambiguity keeps collecting rather than resolving either way.
@@ -714,11 +732,41 @@ def test_decision_waits_for_sequential_evidence():
 
     # And the sequential statistic really is accumulating, not just reading the
     # latest score: the same session score with more flushes crosses the bound.
-    few = decide(_StubDB(session=_stub_session(80.0, "Bot Tespit Edildi"), per_flush=[80.0], flush_count=1))
-    many = decide(_StubDB(session=_stub_session(80.0, "Bot Tespit Edildi"), per_flush=[80.0] * 4, flush_count=4))
+    few = decide(_StubDB(session=_stub_session(80.0, "Bot Tespit Edildi"), per_flush=[62.0] * 3, flush_count=3))
+    many = decide(_StubDB(session=_stub_session(80.0, "Bot Tespit Edildi"), per_flush=[62.0] * 10, flush_count=10))
     assert few["reason"] == "insufficient_evidence" and many["reason"] == "score", (
         f"kanit birikmiyor: {few['reason']} -> {many['reason']}"
     )
+
+
+def test_ambiguity_is_never_charged():
+    """A session parked in the middle band must not be approved by outlasting
+    the flush cap. Ambiguity at a payment gate is a reason to ask for more
+    proof, not a reason to accept."""
+    session_id = "0e0e0e0e-0000-0000-0000-000000000001"
+    token = main.sign_session(session_id)
+    for flushes in (main.SPRT_MAX_FLUSHES, main.SPRT_MAX_FLUSHES * 5):
+        client = _client(_StubDB(session=_stub_session(50.0, "Şüpheli"), flush_count=flushes))
+        try:
+            body = client.post(
+                "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}
+            ).json()
+            assert body["action"] == "verify", f"{flushes} akistan sonra '{body['action']}' dondu"
+            assert body["reason"] == "ambiguous", f"gerekce '{body['reason']}'"
+        finally:
+            _clear_overrides()
+
+    # And the charge endpoint honours it.
+    client = _client(_StubDB(session=_stub_session(50.0, "Şüpheli"), flush_count=main.SPRT_MAX_FLUSHES))
+    try:
+        out = client.post(
+            "/api/demo/charge",
+            json={"session_id": session_id, "amount": 10},
+            headers={"X-DeepCheck-Token": token},
+        ).json()
+        assert out["status"] == "declined", f"belirsiz oturum tahsil edildi: {out['status']}"
+    finally:
+        _clear_overrides()
 
 
 def test_cluster_of_identical_sessions_is_escalated():
@@ -829,8 +877,8 @@ def test_demo_charge_never_charges_blocked_session():
         (_StubDB(session=_stub_session(48.0, "Şüpheli")), "declined", "verify"),
         (
             _StubDB(session=_stub_session(48.0, "Şüpheli"), flush_count=main.SPRT_MAX_FLUSHES),
-            "charged",
-            "warn",
+            "declined",
+            "verify",
         ),
         (_StubDB(session=_stub_session(12.0)), "charged", "allow"),
     ]
@@ -1136,6 +1184,7 @@ def _run_all():
         test_analyze_rejects_backwards_time,
         test_analyze_rejects_replayed_payload,
         test_decision_waits_for_sequential_evidence,
+        test_ambiguity_is_never_charged,
         test_cluster_of_identical_sessions_is_escalated,
         test_conformal_guard_only_softens_never_hardens,
         test_decision_verifies_when_stale,
