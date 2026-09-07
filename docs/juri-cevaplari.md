@@ -130,4 +130,76 @@ mekanizmasını açıklayabiliyoruz.
 
 ---
 
+# İkinci Soru
+
+## Soru
+
+> Piyasada sizin yakalayamadığınız botları yakalayan sistemler var. O zaman
+> sizin çözümünüz ne işe yarıyor? Boşuna uğraşılmış bir proje olduğunu kabul
+> ediyor musunuz?
+
+## Kısa cevap
+
+**Hayır.** Gerekçesi aşağıda — teselli değil, karşılaştırma.
+
+## 1. Ticari sistemlerin gerçekte sahip olduğu şey daha iyi bir model değil
+
+Aradaki fark algoritma farkı değil, **veri ölçeği ve ağ konumu** farkı:
+
+| Sistem | Asıl avantajı |
+|---|---|
+| DataDome | Müşteriler arası trilyonlarca sinyalden oluşan korpus |
+| HUMAN (PerimeterX) | Yüzlerce siteye yayılmış cihaz parmak izi ağı |
+| Cloudflare | İnternetin büyük bir kısmında **TLS sonlandırma noktasında** oturur; el sıkışmayı sizin sunucunuzdan önce görür |
+
+Bunların hiçbiri "altı yerine on iki öznitelik kullanıyoruz" demiyor. Hiçbir
+öğrenci ekibi trilyonlarca sinyallik bir ağı yeniden üretemez. Bu bir **kaynak
+asimetrisidir**, mühendislik açığı değil.
+
+## 2. Onlar da çözmüş değil
+
+Bunun kanıtı ticari olarak sağlıklı bir **atlatma (bypass) endüstrisinin**
+varlığıdır. Bu hafta yaptığımız araştırmada DataDome, Turnstile ve Kasada için
+güncel 2026 atlatma rehberleri mevcut; Anubis'in savunma sorusu yayınlanmasından
+aylar sonra tarayıcılar tarafından çözülmüştü.
+
+Bu sistemler her şeyi yakalasaydı, o rehberler bir iş modeli olamazdı.
+Ellerindeki şey **daha iyi bir oran ve daha hızlı yineleme**, çözüm değil.
+
+## 3. Bu projenin gerçekten sağladığı
+
+- **Betik tabanlı otomasyon her seferinde bloklanıyor**, test edilen her
+  popülasyonda **%0 yanlış pozitif** ile. Kart deneme saldırılarının hacimli
+  kısmı tam olarak budur.
+- Modelin altında **gösteri değil üretim biçiminde bir uygulama katmanı** var:
+  karar tarayıcıda değiştirilemez, telemetri yeniden oynatılamaz, karar için
+  biriken kanıt gerekir, belirsizlik asla tahsil edilmez, jeton kanıt ister.
+
+Bunların çoğu sınıflandırıcının kalitesinden **bağımsız olarak** ayakta kalır.
+
+## 4. Nadir olan şey
+
+Kendi eğitim verinizden bağımsız yazılmış bir saldırganla kendi
+başarısızlığınızı ölçmüş ve mekanizmasını açıklayabiliyor olmak. Yarışmalarda
+alışılmış olan, detektörle aynı yazarın yazdığı bir simülatörden çıkan doğruluk
+oranını sunmaktır — bu proje tam olarak o tuzaktan çıktı.
+
+## 5. Eksik olan bir veri problemi, çıkmaz değil
+
+Detektör bugüne kadar **hiç insan görmedi**; öğrendiği bütün "insanlar" birer
+betik. Gerçek tarayıcı verisiyle ilk kez eğitildiğinde, insanlaştırılmış botun
+ayırt edilebilirliği tek eğitim turunda yazı-turadan **0.92'ye** çıktı. Sinyal
+orada. Eksik olan, eşikleri dürüstçe yerleştirmeye yetecek kadar gerçek oturum.
+
+## 6. Dürüst sonuç
+
+Bu sistem satılmaya hazır mı? Hayır. Kendi sınırlarını bilen, ölçen ve bir
+sonraki adımı net olan savunulabilir bir mühendislik projesi mi? Evet — ve bu
+dürüstlük bir itiraf değil, bir varlıktır.
+
+Savunmayacağımız sürüm, yakalayamadığını yakalıyorum diyen sürümdür. Elimizdeki
+o sürüm değil.
+
+---
+
 *İlgili ölçümler: [`docs/evaluation.md`](evaluation.md).*
