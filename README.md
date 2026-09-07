@@ -353,6 +353,21 @@ Measured against **real Chromium telemetry**, not the simulator: 0% false positi
 
 `lab/` drives a real browser through the real SDK and records labelled telemetry; `backend/train_model.py` blends it into training with a run-level holdout.
 
+**The first movement on mimicry.** Until 2026-09-07 the container served a model trained on synthetic data only — it resolves the telemetry path to the parent of `/app`, and `lab/` was not mounted into it, so training silently fell back. Every adversarial figure published before that date described the host model rather than the deployed one. With that fixed and the model actually trained on real browser rows, an independently written humanised bot moved from AUC 0.56 to **0.92** against humans: a randomly chosen bot session now scores higher than a randomly chosen human session 92% of the time, where before it was a coin flip.
+
+It is still approved, because 22.7 sits far below the 40 where anything happens. The signal exists; the ladder is not placed to act on it. Moving the thresholds against an in-house adversary would fit the product to the attacker rather than to real users, so that calibration waits for recorded human sessions.
+
+**Recording those sessions** is the open item, and the path works end to end:
+
+```bash
+cd backend
+python record_session.py --list
+python record_session.py --label human --to-training <session-id>
+python train_model.py
+```
+
+`--to-training` is the part that matters: without it a recording lands where only `evaluate.py` reads it and never reaches the model. See [data/real/README.md](data/real/README.md) for what to collect — variety of input device matters more than volume.
+
 ---
 
 ## Performance
@@ -426,9 +441,11 @@ Each session is generated as ten consecutive flush windows, which is what the LS
 
 This is a **competition MVP**, and worth reading as one.
 
-The detection pipeline, the SDK, and both interfaces work end to end and are what you see running. Current models are trained on synthetic behavior, so reported separation reflects the quality of that simulation rather than measured performance against real traffic — collecting labeled sessions from real users and off-the-shelf automation frameworks is the next substantive step, and no accuracy claim here should be taken as a production benchmark until then.
+The detection pipeline, the SDK, and both interfaces work end to end and are what you see running. Models are trained on synthetic personas **blended with 234 labelled real-browser rows** captured by `lab/capture.py`, held out by run. That is a real measurement and a narrow one: the "human" rows are scripted approximations driven through a real browser, not recordings of people, so no figure here should be read as production performance. Collecting sessions from real users is the next substantive step and the one everything else waits on.
 
-Risk enforcement is server-side: `POST /api/decision` is the only place the thresholds are applied, session tokens are signed, telemetry replay is rejected, a verdict needs six seconds of current behaviour, the demo's charge and step-up verification both live behind the server, and the SOC endpoints are behind a key. Rate limiting, a migration tool for the database schema, and key rotation are still tracked work rather than oversights, and the deployment is sized for a demonstration.
+Risk enforcement is server-side. `POST /api/decision` is the only place the thresholds are applied; session tokens are signed and issued only against a solved proof of work plus runtime measurements consistent with a browser; telemetry replay is rejected three ways; evidence is accumulated by a sequential probability ratio test rather than a fixed flush count, and an ambiguous session is never charged; the demo's charge and step-up both live behind the server; the SOC endpoints are behind a key; and requests are rate limited per IP for minting and per session for scoring and checkout.
+
+Still tracked work rather than oversights: a migration tool for the database schema, key rotation, training-data provenance recorded in the model bundle (the startup check knows a model's scikit-learn version and feature set but not what it was trained on, which is how a synthetic-only model served the demo unnoticed), and a detector that generalises to mimicry it has no samples of. The deployment is sized for a demonstration.
 
 ---
 
@@ -460,6 +477,8 @@ Copy `.env.example` to `.env` before deploying anywhere that is not a laptop.
 | `DEMO_VERIFY_CODE` | Step-up code for the demo's verification modal |
 | `VITE_API_URL` | Backend URL, compiled into the frontend at **build** time |
 | `RAW_RETENTION_HOURS` / `ROW_RETENTION_HOURS` | When raw telemetry is blanked (default 1 h) and whole rows deleted (default 24 h) |
+| `REAL_TELEMETRY_PATH` | Where training looks for `lab/real_telemetry.json`. The default assumes `lab/` sits beside `backend/`; docker-compose mounts it into the container so that holds there too |
+| `POW_DIFFICULTY_BITS` | Leading zero bits required of the session proof of work (default 12) |
 
 The frontend image builds the static bundle and serves it with nginx. For
 hot-reloading development use the override:
