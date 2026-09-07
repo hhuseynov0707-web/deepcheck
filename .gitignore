@@ -57,6 +57,13 @@ AUDIT.md
 AUDIT_ADVERSARIAL.md
 redteam/
 
+# --- Regenerated agent instruction copy ---
+# AGENTS.md is a byte-for-byte copy of CLAUDE.md that tooling recreates on its
+# own. Two files with the same content drift the moment one is edited, and
+# CLAUDE.md is the one this repository maintains, so the copy stays out of git
+# rather than being deleted over and over.
+AGENTS.md
+
 # --- Claude Code local settings ---
 # Machine-specific permission list containing absolute paths to this user's
 # home and temp directories. The non-.local settings.json is the shareable one.
