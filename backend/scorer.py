@@ -166,6 +166,38 @@ NEUTRAL_DEFAULTS = {
 # legitimate 0.
 NEUTRAL_FEATURES = tuple(NEUTRAL_DEFAULTS)
 
+# --- Component disagreement ------------------------------------------------
+#
+# The three models look at different time scales. RandomForest reads the flush
+# in front of it; the LSTM reads the session's trajectory. When they disagree
+# sharply, that is not noise to be averaged away -- it is the signal that this
+# session's past and present do not belong to the same actor.
+#
+# Measured on a mid-session handover (five human windows, then five automated
+# ones): at the first automated flush RandomForest said 0.99 and the LSTM said
+# 0.01, the widest gap in the whole session, and the fixed 0.5/0.2/0.3 blend
+# turned that into 0.61. The alarm was averaged down by the component that had
+# not caught up yet.
+#
+# So the blend is interpolated toward whichever component is more alarmed, in
+# proportion to how much they disagree. With d = |rf - lstm|:
+#
+#     combined = (1 - d) * blend + d * max(rf, lstm)
+#
+# At d ~ 0 this is exactly the old blend, so agreeing sessions are unchanged.
+# At d ~ 1 it is the alarmed component. Deliberately asymmetric -- it escalates
+# and never de-escalates -- because a hijack is the case worth catching and a
+# challenge is cheaper than a charge.
+#
+# The cost is real and is measured rather than assumed: this also fires when a
+# model is simply WRONG about a human, so the false-positive rate is the number
+# that decides whether it stays.
+DISAGREEMENT_ESCALATION = os.getenv("DISAGREEMENT_ESCALATION", "1").strip() == "1"
+
+# Below this the components are treated as agreeing and nothing changes, so
+# ordinary sampling jitter cannot nudge scores upward.
+DISAGREEMENT_THRESHOLD = 0.35
+
 LABELS = [
     (40, "Gerçek Kullanıcı"),
     (60, "Şüpheli"),
@@ -856,7 +888,17 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
         seq = build_sequence(past_rows + [current_row])
         lstm_proba = float(bundle.lstm(seq).item())
 
-    fraud_probability = float(np.clip(0.5 * rf_proba + 0.2 * iso_anomaly + 0.3 * lstm_proba, 0.0, 1.0))
+    blended = float(np.clip(0.5 * rf_proba + 0.2 * iso_anomaly + 0.3 * lstm_proba, 0.0, 1.0))
+
+    # How far apart the two time scales are. Reported on every flush whether or
+    # not it is acted on, so the effect can be measured from stored rows.
+    disagreement = abs(rf_proba - lstm_proba)
+    fraud_probability = blended
+    if DISAGREEMENT_ESCALATION and disagreement >= DISAGREEMENT_THRESHOLD:
+        alarmed = max(rf_proba, lstm_proba)
+        fraud_probability = float(
+            np.clip((1.0 - disagreement) * blended + disagreement * alarmed, 0.0, 1.0)
+        )
     # np.clip propagates NaN rather than clamping it, so an upstream NaN would
     # survive the clip above. Degrade to "unknown" (0.5) instead of persisting
     # a value that cannot be serialized or compared.
@@ -892,6 +934,8 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
     return {
         "risk_score": risk_score,
         "label": label,
+        "disagreement": round(float(disagreement), 3),
+        "blended_score": round(100.0 * blended, 1),
         "behavior_bucket": behavior_bucket(raw_values),
         "confidence": round(max(fraud_probability, 1 - fraud_probability), 2),
         "shap_explanation": top_3,

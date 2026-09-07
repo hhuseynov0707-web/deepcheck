@@ -202,4 +202,78 @@ o sürüm değil.
 
 ---
 
+# Üçüncü Soru — ve verdiğimiz cevap
+
+## Soru
+
+> Oturum ortasında devir teslim (hijack) olursa: Random Forest son pencereye
+> bakıp %95 bot derken, LSTM oturumun başı insan olduğu için hâlâ düşük risk
+> gösterirse, sabit ağırlıklı ansambl (0.5 RF + 0.2 IF + 0.3 LSTM) bu keskin
+> çelişkiyi nasıl yönetiyor? Doğrusal ortalama yerine modeller arasındaki
+> **uyuşmazlığı** tek başına bir risk sinyali olarak kullanmayı düşündünüz mü?
+
+## Ölçüm
+
+Soru haklıydı ve varsayımla değil deneyle cevapladık. Beş insan penceresi,
+ardından beş otomasyon penceresi — aynı oturum, devir teslim 6. akışta:
+
+| Akış | Kaynak | RF | LSTM | Harman | Yumuşatılmış | Karar |
+|---|---|---|---|---|---|---|
+| 5 | insan | 0.09 | 0.00 | 15.4 | 15.4 | allow |
+| **6** | **BOT** | **0.99** | **0.01** | 61.2 | **15.4** | **allow** |
+| 8 | BOT | 0.82 | 0.00 | 53.5 | 53.5 | warn |
+| 10 | BOT | 0.99 | 1.00 | 91.0 | 61.2 | verify |
+
+**Asıl suçlu ansambl ağırlıkları değildi.** 6. akışta harmanlanmış skor zaten
+61.2 idi; medyan yumuşatma bunu 15.4'e bastırdı. Devir teslimden `verify`'a
+kadar yaklaşık **10 saniye** geçiyordu.
+
+Bir düzeltme: LSTM sorudaki gibi %15 demiyor, üç pencere boyunca **%0** deyip
+sonra **%100'e** sıçrıyor. Yani ilk üç pencerede tahminden daha zararlı.
+
+## Yapılan iki değişiklik
+
+**1. Uyuşmazlık ayrı bir risk terimi.** d = |RF − LSTM| olmak üzere:
+
+```
+birleşik = (1 − d) × harman + d × max(RF, LSTM)
+```
+
+d ≈ 0'da eski harmanın aynısı, yani uyuşan oturumlar değişmiyor. d ≈ 1'de
+telaşlı bileşen. Bilerek asimetrik: yalnızca yükseltir, indirmez.
+
+**2. Yumuşatma keskin uyuşmazlıkta devre dışı.** Yumuşatma *tek* anormal
+okumaya karşıdır; devir teslim tek okuma değil, seviye kaymasıdır. Artık
+yumuşatma bir sıçramayı azaltabilir ama alarmı veren okumanın altına indiremez.
+
+**Üçüncüsünü kurmadık.** Ayrı bir `max(RF, LSTM)` tavanı istenmişti; uyuşmazlık
+formülü d → 1 iken zaten ona yakınsıyor (6. akışta 99.0'a karşı 99.4). İkisini
+birden koymak aynı kanıtı iki kez saymak olurdu.
+
+## Sonuç
+
+| | 6. akışta karar |
+|---|---|
+| Önce | 15.4 → allow |
+| + yumuşatma baypası | 61.2 → verify |
+| + uyuşmazlık yükseltmesi | **99.0 → block** |
+
+Devir teslim artık **ilk otomasyon penceresinde** yakalanıyor.
+
+**Maliyeti ölçtük, çünkü bu kural bir model insan hakkında yanılınca da
+tetiklenir.** 40 oturum, kural açık ve kapalı:
+
+| Sınıf | Ortalama (kapalı → açık) | En yüksek | %0 eşik aşımı |
+|---|---|---|---|
+| insan | 19.5 → 19.7 | 32.3 → 36.7 | **%0 yanlış pozitif** |
+| bot_linear | 85.3 → 85.3 | — | %100 blok |
+
+Canlı API üzerinden de aynı sonuç: insan sınıfında **%0 yanlış pozitif**.
+
+**Bunun çözmediği şey:** taklit. Insanlaştırılmış bot %0'dan %8 durdurmaya
+çıktı — 12 oturumda 1, yani gürültü. Bu bir hijack düzeltmesidir, taklit
+düzeltmesi değildir ve öyle sunmuyoruz.
+
+---
+
 *İlgili ölçümler: [`docs/evaluation.md`](evaluation.md).*

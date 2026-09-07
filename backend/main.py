@@ -1097,6 +1097,20 @@ async def analyze(
         if row.risk_score is not None and math.isfinite(row.risk_score)
     ]
     smoothed_score = round(statistics.median(recent_scores + [result["risk_score"]]), 1)
+
+    # Smoothing exists so one odd reading cannot flip a verdict. A mid-session
+    # handover is not one odd reading -- it is a level shift, and the median
+    # hides it for as long as it takes three of five windows to turn.
+    #
+    # Measured on a handover: the blended score reached 61.2 on the first
+    # automated flush while the smoothed score stayed at 15.4 and the decision
+    # stayed "allow". It took roughly ten more seconds to reach step-up.
+    #
+    # So when the components disagree sharply -- which is precisely what a
+    # handover looks like -- smoothing may still lower a spike, but it may not
+    # lower it below the reading that raised the alarm.
+    if result.get("disagreement", 0.0) >= scorer.DISAGREEMENT_THRESHOLD:
+        smoothed_score = max(smoothed_score, result["risk_score"])
     smoothed_label = scorer.get_label(smoothed_score)
 
     session.risk_score = smoothed_score
