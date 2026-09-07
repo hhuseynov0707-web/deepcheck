@@ -1,5 +1,10 @@
 # Evaluation
 
+> Jüri için Türkçe teknik cevaplar: [`juri-cevaplari.md`](juri-cevaplari.md) —
+> özellikle "gerçek tarayıcıda kaydedilmiş insan izleri enjekte edilirse ne
+> olur?" sorusu.
+
+
 Measured 2026-09-06 against the running stack. Every number here comes from
 telemetry that travelled the real path: browser input events → `sdk/deepcheck.js`
 → `POST /api/analyze` → the same scoring code that serves the demo.
