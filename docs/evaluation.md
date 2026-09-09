@@ -142,6 +142,43 @@ That is a negative result and it is worth stating: behavioural quantisation
 identifies a *kind of motion*, not a *particular script*. What the industry
 actually clusters on is identity, which is far more stable across runs.
 
+## Per-interaction-style false positives, and one that is bad
+
+`backend/benchmark.py` reports the rate that decides whether this is
+deployable: not global accuracy, but how often each *kind* of legitimate user
+is refused. Every figure carries a 95% Wilson interval and its sample size,
+because "under 1%" from thirty sessions is not a measurement. 60 sessions per
+slice:
+
+| Legitimate style | Blocked (95% CI) | Median risk |
+|---|---|---|
+| keyboard_only | 0.0% [0.0, 6.0] | 8.3 |
+| slow_typist | 0.0% [0.0, 6.0] | 17.7 |
+| low_pointer | 0.0% [0.0, 6.0] | 9.4 |
+| rapid_legitimate | 0.0% [0.0, 6.0] | 27.3 |
+| typical_human | 0.0% [0.0, 6.0] | 17.4 |
+| **sparse_first_flush** | **35.0% [24.2, 47.6]** | 35.8 |
+
+Five of six slices are clean, including the keyboard-only users who are most
+at risk. The sixth is not: a window carrying only two or three pointer samples
+and a handful of keystrokes -- which is what the opening seconds of any real
+session look like -- scores above the block threshold a third of the time.
+
+The cause is the thin end of the neutral-fallback design. Below the
+small-sample gates the structural features cannot be measured at all, so the
+fallbacks apply, and at two or three samples the remaining measured features
+are dominated by their own sampling error.
+
+**In production this is mitigated but not fixed.** A decision needs three
+analysed flushes and a sequential test that supports a verdict, so no single
+opening window can block anyone. What it can do is show a red badge to a real
+customer in their first seconds, which is its own kind of damage.
+
+It is recorded rather than tuned away. Adjusting the generator until the
+number looks better would be fitting the measurement to the answer, and the
+honest fix -- knowing what a real opening window looks like -- needs the
+recorded human sessions this page keeps asking for.
+
 ## What this means for deployment
 
 The capture loop is the product, more than any single trained model. A
