@@ -169,15 +169,46 @@ small-sample gates the structural features cannot be measured at all, so the
 fallbacks apply, and at two or three samples the remaining measured features
 are dominated by their own sampling error.
 
-**In production this is mitigated but not fixed.** A decision needs three
-analysed flushes and a sequential test that supports a verdict, so no single
-opening window can block anyone. What it can do is show a red badge to a real
-customer in their first seconds, which is its own kind of damage.
+### Fixed, by saying "not yet" instead of guessing
 
-It is recorded rather than tuned away. Adjusting the generator until the
-number looks better would be fitting the measurement to the answer, and the
-honest fix -- knowing what a real opening window looks like -- needs the
-recorded human sessions this page keeps asking for.
+The first attempt was wrong and is worth recording. Raising the entropy
+feature's small-sample gate to match the other timing statistics looked like
+the obvious fix -- entropy over two gaps returns 0.0, which is the *most*
+bot-like value the feature can take. It made things worse: 35% became 51.7%,
+because the neutral fallback for entropy is itself closer to the bot end than
+the measured values were. It was reverted.
+
+What the measurement actually showed is that these windows have nothing to
+score. Counting how many of the twelve features were genuinely measured
+separates cleanly:
+
+| Slice | Features measured (of 12) |
+|---|---|
+| sparse_first_flush | 4.1 avg, never above 5 |
+| keyboard_only | 6.0 |
+| low_pointer | 7.7 |
+| rapid_legitimate | 9.8 |
+| slow_typist | 10.5 |
+| typical_human | 12.0 |
+
+So a flush measuring fewer than six features is now returned as
+**provisional**. The score is still computed and stored, because the history
+chart and later analysis should see what the model said; what changes is that
+the interface shows "still measuring" rather than a risk colour.
+
+| Slice | Blocked before | Blocked after | Held back |
+|---|---|---|---|
+| sparse_first_flush | 35.0% | **0.0%** | 100% |
+| every other slice | 0.0% | 0.0% | 0% |
+
+Attack detection is unchanged at 100% for both families, because the flag is
+display-only: the decision layer never reads it, so a bot with a thin window is
+still scored and still refused. 27% of naive-bot windows are provisional, which
+means their badge stays neutral while the charge is declined anyway.
+
+This is a presentation fix, not a detection one, and it is the honest scope: a
+window with three pointer samples genuinely does not say whether a person is
+present, and the system should say so rather than guess.
 
 ## What this means for deployment
 

@@ -1196,6 +1196,46 @@ def test_analyze_withholds_shap_from_the_scored_client():
         _clear_overrides()
 
 
+def test_opening_window_is_marked_provisional_not_suspicious():
+    """The first seconds of a real session carry almost no signal.
+
+    A window with a couple of pointer samples and a handful of keystrokes
+    leaves most of the vector on its neutral fallbacks, and the rest estimated
+    from too few samples. benchmark.py measured the consequence: 35% of
+    legitimate opening windows scored above the block threshold. The score is
+    still computed and stored -- what changes is that it is flagged as
+    unsupported, so the badge says "still measuring" instead of accusing a
+    customer who has only just arrived.
+    """
+    base = BASE_T
+    sparse = {
+        "mouse_trajectory": [{"x": 300 + i * 4, "y": 200 + i * 3, "t": base + i * 30} for i in range(3)],
+        "click_timing": [{"x": 312, "y": 209, "t": base + 400}],
+        "scroll_events": [],
+        "key_events": [{"t": base + 900 + i * 190} for i in range(3)],
+        "focus_changes": [],
+        "hesitation_intervals": [500.0],
+    }
+    out = scorer.compute_risk(sparse)
+    assert out["provisional"] is True, (
+        f"acilis penceresi {out['measured_features']}/12 olcumle kesin sayildi"
+    )
+    assert out["measured_features"] < scorer.MIN_MEASURED_FOR_CONFIDENT_SCORE
+
+    # An ordinary session is not held back: the flag must not become a blanket
+    # excuse that hides every verdict.
+    rich = _natural_human_session()
+    full = scorer.compute_risk(rich)
+    assert full["provisional"] is False, (
+        f"tam oturum {full['measured_features']}/12 olcumle geri tutuldu"
+    )
+
+    # And it is display only -- a bot whose window is thin is still scored and
+    # still stopped by the decision layer, which never reads this flag.
+    bot = scorer.compute_risk(_headless_bot_session())
+    assert bot["risk_score"] > 40, "provisional bayragi skoru degistirmemeli"
+
+
 def test_lstm_reacts_to_trajectory():
     """The sequence model must respond to a session's HISTORY, not only to
     its latest flush.
@@ -1234,6 +1274,7 @@ def _run_all():
         test_bot_with_incidental_pause_still_scores_high,
         test_human_with_fast_burst_still_scores_low,
         test_fast_keyboard_only_no_mouse_scores_high,
+        test_opening_window_is_marked_provisional_not_suspicious,
         test_lstm_reacts_to_trajectory,
         test_api_rejects_bad_token,
         test_decision_blocks_bot_session,

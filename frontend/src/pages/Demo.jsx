@@ -67,8 +67,14 @@ export default function Demo() {
   // simply delete, and that defaulted to "allow" whenever the score was
   // missing -- which is exactly the state a client that never runs the SDK
   // is in.
+  // A provisional score is one the server measured too little to stand behind.
+  // Showing a colour for it would tell a customer who has been on the page for
+  // two seconds that they look like a bot, which the data does not support.
   const hasScore =
-    !scoreUnavailable && typeof risk?.risk_score === "number" && Number.isFinite(risk.risk_score);
+    !scoreUnavailable &&
+    typeof risk?.risk_score === "number" &&
+    Number.isFinite(risk.risk_score) &&
+    risk.provisional !== true;
   const riskScore = hasScore ? risk.risk_score : null;
 
   function sessionHeaders() {

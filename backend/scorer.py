@@ -161,6 +161,28 @@ NEUTRAL_DEFAULTS = {
     "kanal_gecis_gecikmesi": 0.39,
 }
 
+# How many of the twelve features must be genuinely MEASURED, rather than
+# filled in with a neutral fallback, before the resulting score is worth
+# showing to anyone.
+#
+# A flush carrying three pointer samples and three keystrokes -- which is what
+# the opening seconds of any real session look like -- produces a number, and
+# that number is not wrong so much as unsupported: most of the vector is
+# fallbacks and the rest is estimated from a handful of samples. Measured in
+# benchmark.py's opening-seconds slice, 35% of legitimate sessions scored above
+# the block threshold on a window like that.
+#
+# Six is where the measurement separates cleanly. Every other legitimate
+# interaction style, including keyboard-only users who touch the pointer barely
+# at all, measures at least six; the opening-seconds slice never exceeds five.
+#
+# This does NOT change the score or the model. It marks the score provisional,
+# so the interface can say "still working it out" instead of showing a red
+# badge to a customer who has done nothing wrong. The stored score is
+# unaffected, because the history chart and any later analysis should still see
+# what the model actually said.
+MIN_MEASURED_FOR_CONFIDENT_SCORE = 6
+
 # Features that never need a neutral fallback: they are simple counts (clicks
 # in window, focus-loss count) that are always well-defined, including as a
 # legitimate 0.
@@ -856,6 +878,7 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
 
     raw_values = extract_raw(raw)
     features = extract_features(raw, raw_values)
+    measured = sum(1 for name in FEATURE_NAMES if raw_values.get(name) is not None)
 
     # Defence in depth against non-finite values. The API layer rejects NaN /
     # Infinity at the boundary (see main.py's typed payload models), which is
@@ -934,6 +957,11 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
     return {
         "risk_score": risk_score,
         "label": label,
+        "measured_features": measured,
+        # True when too little was measured for the score to mean much. The
+        # score is still returned and stored; this says how much weight it can
+        # carry.
+        "provisional": measured < MIN_MEASURED_FOR_CONFIDENT_SCORE,
         "disagreement": round(float(disagreement), 3),
         "blended_score": round(100.0 * blended, 1),
         "behavior_bucket": behavior_bucket(raw_values),

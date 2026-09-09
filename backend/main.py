@@ -867,6 +867,14 @@ class AnalyzeResponse(BaseModel):
     risk_score: float
     label: str
     confidence: float
+    # How many of the twelve features this flush actually measured, and whether
+    # that was too few for the score to be worth displaying. A host page should
+    # show "still measuring" rather than a risk colour while this is true --
+    # the opening seconds of a real session carry almost no signal, and telling
+    # a customer they look like a bot because they have only just arrived is a
+    # false accusation the data does not support.
+    measured_features: int
+    provisional: bool
     shap_explanation: list[dict]
     response_time_ms: float
 
@@ -1161,6 +1169,8 @@ async def analyze(
         risk_score=smoothed_score,
         label=smoothed_label,
         confidence=result["confidence"],
+        measured_features=result["measured_features"],
+        provisional=result["provisional"],
         # Empty unless SHAP_IN_ANALYZE is set: see the note there. The row
         # keeps the full explanation, and the dashboard reads it from
         # /api/score/{id} behind the dashboard key.

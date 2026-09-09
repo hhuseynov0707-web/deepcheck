@@ -198,7 +198,7 @@ def evaluate(n: int) -> dict:
     results = {"human_slices": {}, "attacks": {}, "latency_ms": []}
 
     for name, generate in HUMAN_SLICES.items():
-        blocked = stepped_up = 0
+        blocked = stepped_up = provisional = 0
         scores = []
         for i in range(n):
             raw = generate(10_000 + i)
@@ -206,12 +206,18 @@ def evaluate(n: int) -> dict:
             out = scorer.compute_risk(raw)
             results["latency_ms"].append((time.perf_counter() - started) * 1000)
             scores.append(out["risk_score"])
+            if out["provisional"]:
+                # Too little measured for the score to be shown at all, so it
+                # cannot block anyone: the badge stays neutral.
+                provisional += 1
+                continue
             if out["risk_score"] >= BLOCK_THRESHOLD:
                 blocked += 1
             elif out["risk_score"] >= STEP_UP_THRESHOLD:
                 stepped_up += 1
         results["human_slices"][name] = {
             "n": n, "blocked": blocked, "stepped_up": stepped_up,
+            "provisional": provisional,
             "median_risk": round(statistics.median(scores), 1),
         }
 
@@ -261,10 +267,11 @@ def evaluate_real_holdout() -> dict:
 
 def report(results: dict) -> None:
     print("\nLEGITIMATE INTERACTION STYLES  (blocked = a lost customer)\n")
-    print(f"  {'style':<20}{'blocked (95% CI)':>28}{'stepped up':>13}{'median':>9}")
+    print(f"  {'style':<20}{'blocked (95% CI)':>28}{'step-up':>9}{'held back':>11}{'median':>9}")
     for name, r in results["human_slices"].items():
         print(f"  {name:<20}{fmt_rate(r['blocked'], r['n']):>28}"
-              f"{100 * r['stepped_up'] / r['n']:>12.0f}%{r['median_risk']:>9}")
+              f"{100 * r['stepped_up'] / r['n']:>8.0f}%"
+              f"{100 * r.get('provisional', 0) / r['n']:>10.0f}%{r['median_risk']:>9}")
 
     print("\nATTACK FAMILIES  (detected = reached step-up or block)\n")
     print(f"  {'family':<20}{'detected (95% CI)':>28}{'median':>9}")
