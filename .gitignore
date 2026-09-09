@@ -69,6 +69,13 @@ AGENTS.md
 # home and temp directories. The non-.local settings.json is the shareable one.
 .claude/settings.local.json
 
+# --- Generated documents ---
+# Built from the repository's own docs by a Chromium print pass, so it is a
+# derived artifact rather than a source: 380 KB of binary that would be
+# rewritten wholesale on every regeneration and bloat history permanently.
+# Same reasoning as the model pickles above. Regenerate when the docs change.
+*.pdf
+
 # --- Editors & OS ---
 .vscode/
 .idea/
