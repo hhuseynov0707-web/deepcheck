@@ -180,7 +180,11 @@ export default function Demo() {
       </div>
 
       {warnMessage && (
-        <div className="max-w-4xl mx-auto mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
+        <div
+          role="status"
+          aria-live="polite"
+          className="max-w-4xl mx-auto mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400"
+        >
           {warnMessage}
         </div>
       )}
@@ -220,11 +224,13 @@ export default function Demo() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Numarası</label>
+              <label htmlFor="card-number" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Numarası</label>
               <div className="relative">
                 <input
+                  id="card-number"
                   type="text"
                   inputMode="numeric"
+                  autoComplete="cc-number"
                   placeholder="1234 5678 9012 3456"
                   value={cardNumber}
                   onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
@@ -238,9 +244,11 @@ export default function Demo() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Üzerindeki İsim</label>
+              <label htmlFor="card-name" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Üzerindeki İsim</label>
               <input
+                id="card-name"
                 type="text"
+                autoComplete="cc-name"
                 placeholder="AD SOYAD"
                 value={cardName}
                 onChange={(e) => setCardName(e.target.value.toUpperCase())}
@@ -251,10 +259,12 @@ export default function Demo() {
 
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Son Kullanma Tarihi</label>
+                <label htmlFor="card-expiry" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Son Kullanma Tarihi</label>
                 <input
+                  id="card-expiry"
                   type="text"
                   inputMode="numeric"
+                  autoComplete="cc-exp"
                   placeholder="AA/YY"
                   value={expiry}
                   onChange={(e) => setExpiry(formatExpiry(e.target.value))}
@@ -263,10 +273,12 @@ export default function Demo() {
                 />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-zinc-400 uppercase tracking-wider">CVV</label>
+                <label htmlFor="card-cvv" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">CVV</label>
                 <input
+                  id="card-cvv"
                   type="text"
                   inputMode="numeric"
+                  autoComplete="cc-csc"
                   placeholder="123"
                   value={cvv}
                   onChange={(e) => setCvv(formatCvv(e.target.value))}
@@ -294,11 +306,14 @@ export default function Demo() {
               {status === "loading" ? "İşleniyor..." : `₺${formatCurrency(total)} Onayla`}
             </button>
 
-            {blockMessage && (
-              <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
-                {blockMessage}
-              </p>
-            )}
+            {/* Tek bir canlı bölge: ödeme sonucu ekran okuyucuya duyurulmazsa,
+                görme engelli bir kullanıcı işlemin reddedildiğini fark etmez. */}
+            <div role="status" aria-live="polite">
+              {blockMessage && (
+                <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+                  {blockMessage}
+                </p>
+              )}
 
             {hintMessage && (
               <p className="text-center rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm text-zinc-300">
@@ -306,11 +321,12 @@ export default function Demo() {
               </p>
             )}
 
-            {status === "success" && (
-              <p className="text-center rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
-                Ödeme başarıyla alındı (demo).
-              </p>
-            )}
+              {status === "success" && (
+                <p className="text-center rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
+                  Ödeme başarıyla alındı (demo).
+                </p>
+              )}
+            </div>
           </form>
 
           {hasScore && (

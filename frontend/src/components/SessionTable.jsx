@@ -19,6 +19,7 @@ function formatTime(iso) {
 function SessionCard({ session, accent, isSelected, onSelect }) {
   return (
     <button
+      aria-pressed={isSelected}
       onClick={() => onSelect?.(session.session_id)}
       className={`text-left overflow-hidden bg-[#18181b] border rounded-lg transition-colors duration-200 ease-out ${
         isSelected ? "border-zinc-600" : "border-zinc-800 hover:border-zinc-700"
@@ -67,6 +68,7 @@ function CategorySection({ category, items, selectedId, onSelect, expanded, onTo
       {items.length > DEFAULT_VISIBLE && (
         <button
           onClick={onToggle}
+          aria-expanded={isExpanded}
           className="mt-3 w-full text-center bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-zinc-100 text-xs font-medium uppercase tracking-wider rounded-md py-2 transition-colors duration-200 ease-out"
         >
           {isExpanded ? "Daralt" : `Tümünü Göster (${items.length})`}

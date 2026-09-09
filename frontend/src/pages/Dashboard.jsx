@@ -170,10 +170,14 @@ export default function Dashboard() {
           </div>
 
           <form onSubmit={submitKey} className="space-y-3">
-            <label className="block text-xs font-medium text-zinc-400 uppercase tracking-wider">
+            <label
+              htmlFor="dashboard-key"
+              className="block text-xs font-medium text-zinc-400 uppercase tracking-wider"
+            >
               Pano Erişim Anahtarı
             </label>
             <input
+              id="dashboard-key"
               type="password"
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}

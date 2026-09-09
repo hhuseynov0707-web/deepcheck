@@ -32,9 +32,14 @@ export default function VerificationModal({ onVerified, onClose, verify, demoCod
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
-      <div className="w-full max-w-sm bg-[#18181b] border border-zinc-800 rounded-lg p-6 shadow-2xl shadow-black/50">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="verify-heading"
+        className="w-full max-w-sm bg-[#18181b] border border-zinc-800 rounded-lg p-6 shadow-2xl shadow-black/50"
+      >
         <div className="flex items-center justify-between mb-1">
-          <h3 className="text-lg font-semibold tracking-tight text-zinc-50">Ek Doğrulama Gerekli</h3>
+          <h3 id="verify-heading" className="text-lg font-semibold tracking-tight text-zinc-50">Ek Doğrulama Gerekli</h3>
           {status === "idle" && (
             <button
               type="button"
@@ -59,7 +64,13 @@ export default function VerificationModal({ onVerified, onClose, verify, demoCod
         )}
 
         <form onSubmit={handleVerify} className="space-y-4">
+          {/* Görsel olarak gizli ama ekran okuyucu için gerekli: kutunun
+              yanında görünen bir etiketi yok, yalnızca placeholder var. */}
+          <label htmlFor="verify-code" className="sr-only">
+            6 haneli doğrulama kodu
+          </label>
           <input
+            id="verify-code"
             type="text"
             inputMode="numeric"
             maxLength={6}
@@ -72,7 +83,10 @@ export default function VerificationModal({ onVerified, onClose, verify, demoCod
           />
 
           {error && (
-            <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
+            <p
+              role="alert"
+              className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400"
+            >
               {error}
             </p>
           )}
