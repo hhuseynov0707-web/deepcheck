@@ -190,16 +190,18 @@ NEUTRAL_FEATURES = tuple(NEUTRAL_DEFAULTS)
 
 # --- Component disagreement ------------------------------------------------
 #
-# The three models look at different time scales. RandomForest reads the flush
+# The two models look at different time scales. RandomForest reads the flush
 # in front of it; the LSTM reads the session's trajectory. When they disagree
 # sharply, that is not noise to be averaged away -- it is the signal that this
 # session's past and present do not belong to the same actor.
 #
 # Measured on a mid-session handover (five human windows, then five automated
 # ones): at the first automated flush RandomForest said 0.99 and the LSTM said
-# 0.01, the widest gap in the whole session, and the fixed 0.5/0.2/0.3 blend
-# turned that into 0.61. The alarm was averaged down by the component that had
-# not caught up yet.
+# 0.01, the widest gap in the whole session, and the flat blend turned that
+# into 0.60. The alarm was averaged down by the component that had not caught
+# up yet. Re-measured after Isolation Forest was dropped: same story, same
+# verdict -- this rule reads rf and lstm only, so the weight change does not
+# touch it.
 #
 # So the blend is interpolated toward whichever component is more alarmed, in
 # proportion to how much they disagree. With d = |rf - lstm|:
@@ -219,6 +221,12 @@ DISAGREEMENT_ESCALATION = os.getenv("DISAGREEMENT_ESCALATION", "1").strip() == "
 # Below this the components are treated as agreeing and nothing changes, so
 # ordinary sampling jitter cannot nudge scores upward.
 DISAGREEMENT_THRESHOLD = 0.35
+
+# Ensemble weights. Two components, not three: see the note in compute_risk for
+# why Isolation Forest was dropped from the score. The ratio keeps the previous
+# balance between the two survivors (0.5 : 0.3) renormalised to sum to one.
+ENSEMBLE_RF_WEIGHT = 0.6
+ENSEMBLE_LSTM_WEIGHT = 0.4
 
 LABELS = [
     (40, "Gerçek Kullanıcı"),
@@ -278,6 +286,9 @@ class ModelBundle:
 
         self.scaler = bundle["scaler"]
         self.rf = bundle["rf"]
+        # Loaded but no longer scored against -- see the note in compute_risk.
+        # Kept on the object so the decision can be re-measured against real
+        # recordings without retraining, and so an older bundle still loads.
         self.iso_forest = bundle["iso_forest"]
         self.feature_names = bundle["feature_names"]
         # The feature set is part of the contract between a bundle and the code
@@ -896,9 +907,26 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
 
     rf_proba = float(bundle.rf.predict_proba(scaled)[0][1])
 
-    iso_raw = bundle.iso_forest.decision_function(scaled)[0]
-    # decision_function: higher = more normal. Flip + squash to a 0-1 anomaly score.
-    iso_anomaly = float(np.clip(0.5 - iso_raw, 0.0, 1.0))
+    # Isolation Forest is NOT read here any more, and the reason is measured.
+    #
+    # It is fitted on human rows only, so it learns "normal" as the human
+    # distribution -- and in this product the attack IS looking human. On the
+    # held-out real browser rows its standalone discrimination came out at
+    # ROC-AUC 0.340: not weak, INVERTED. It was systematically voting for the
+    # attacker, and its 20% share cost real accuracy:
+    #
+    #     component alone      RF 0.990   LSTM 0.898   IsolationForest 0.340
+    #     0.5 / 0.2 / 0.3      0.977
+    #     0.6 / 0.4 (no IsoF)  0.990
+    #
+    # It was also 44% of the scoring budget: compute_risk measured 31.7 ms with
+    # the decision_function call and 17.7 ms without it.
+    #
+    # The model is still trained and still stored in the bundle, so the choice
+    # can be re-measured once there are real human recordings to measure
+    # against -- but nothing calls it per request, because computing a number
+    # only to give it zero weight is latency spent on nothing. test_scorer.py
+    # booby-traps decision_function to keep it that way.
 
     current_row = [features[name] for name in FEATURE_NAMES]
     defaults = get_neutral_defaults()
@@ -911,7 +939,7 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
         seq = build_sequence(past_rows + [current_row])
         lstm_proba = float(bundle.lstm(seq).item())
 
-    blended = float(np.clip(0.5 * rf_proba + 0.2 * iso_anomaly + 0.3 * lstm_proba, 0.0, 1.0))
+    blended = float(np.clip(ENSEMBLE_RF_WEIGHT * rf_proba + ENSEMBLE_LSTM_WEIGHT * lstm_proba, 0.0, 1.0))
 
     # How far apart the two time scales are. Reported on every flush whether or
     # not it is acted on, so the effect can be measured from stored rows.

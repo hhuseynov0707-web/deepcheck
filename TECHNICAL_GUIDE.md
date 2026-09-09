@@ -395,21 +395,60 @@ Three models are trained by `train_model.py` and loaded once per worker by
 
 | Model | Library | Config | Role | Weight |
 |---|---|---|---|---|
-| Random Forest | scikit-learn | 200 trees, depth 12, min leaf 5 | Supervised classifier, main signal | 0.5 |
-| Isolation Forest | scikit-learn | 200 trees, contamination 0.05 | Unsupervised anomaly score, catches behaviour unlike *anything* seen | 0.2 |
-| LSTM | PyTorch | 2 layers, hidden 32, dropout 0.2, Adam 1e-3, 8 epochs | Sequence model over 10 timesteps x 6 features | 0.3 |
+| Random Forest | scikit-learn | 200 trees, depth 12, min leaf 5 | Supervised classifier, main signal | 0.6 |
+| LSTM | PyTorch | 2 layers, hidden 32, dropout 0.2, Adam 1e-3, 8 epochs | Sequence model over 10 timesteps x 6 features | 0.4 |
+| Isolation Forest | scikit-learn | 200 trees, contamination 0.05 | Trained and stored, **weight 0** — see “Why the Isolation Forest was dropped” below | 0.0 |
 
 Inference:
 
 ```
 scaled     = StandardScaler(features)
 rf_p       = RF.predict_proba(scaled)[fraud]
-iso_a      = clip(0.5 - IsoForest.decision_function(scaled), 0, 1)   # higher = more anomalous
 lstm_p     = LSTM(sequence)
-P(fraud)   = clip(0.5*rf_p + 0.2*iso_a + 0.3*lstm_p, 0, 1)
+P(fraud)   = clip(0.6*rf_p + 0.4*lstm_p, 0, 1)
 score      = round(100 * P(fraud), 1)
 confidence = max(P, 1 - P)
 ```
+
+**Why the Isolation Forest was dropped.** It held 0.2 of the blend until it
+was measured against held-out real browser rows, where its standalone
+ROC-AUC came out at **0.340**. That is not a weak model; that is an
+inverted one — it was systematically ranking the attacker as the more
+normal party. The reason is structural rather than a training accident:
+it is fitted on human rows only, so “normal” to it *means* the human
+distribution, and the whole threat this product addresses is automation
+built to sit inside that distribution. It was answering the wrong
+question well.
+
+Replaying identical telemetry through both weightings (`scratchpad`
+A/B, 25 sessions per persona, everything downstream of the blend held
+fixed):
+
+| persona | mean score, with IsoF | without | AUC with | AUC without |
+|---|---|---|---|---|
+| human | 19.0 | **9.3** | — | — |
+| bot_naive | 32.2 | 27.7 | 0.44 | 0.51 |
+| bot_linear | 86.0 | **92.4** | 1.00 | 1.00 |
+| bot_mimic | 25.0 | 16.7 | 0.83 | 0.84 |
+| bot_adaptive | 13.2 | 3.0 | 0.00 | 0.02 |
+
+Read the first column against the second: it was adding much the same
+offset to humans and to bots, which inflates every score without
+separating anything — and an inflated human score is the expensive kind
+of error at a payment gate. Separation improves slightly or holds
+everywhere; the gap between a human and obvious automation widens from
+67 points to 83. It does **not** fix `bot_adaptive`, and nothing about
+this change claims it does.
+
+It also cost latency. End-to-end `compute_risk` measured 31.7 ms with the
+call and 17.7 ms without it — the Isolation Forest was 44 % of the scoring
+budget for a term that hurt accuracy.
+
+The model is still trained and still saved in the bundle. That is
+deliberate: the decision above rests on 82 held-out real rows, and it
+should be re-measured once there are more real human recordings. Nothing
+reads it per request, because computing a number only to multiply it by
+zero is latency spent on nothing.
 
 **Explanation.** `shap.TreeExplainer(rf)` gives a per-feature contribution
 for the fraud class. The three largest absolute contributions are returned
@@ -758,12 +797,20 @@ entropy are timing signals, click density is intent, focus change is
 attention. They are cheap to compute and each is explainable to a fraud
 analyst.
 
-**Why three models instead of one?**
-The Random Forest is the accurate, explainable core. The Isolation Forest
-flags behaviour unlike anything in training, which matters for attacks
-the simulator never imagined. The LSTM reads the session as a trajectory
-rather than a snapshot, which is what catches behavior that changes
-mid-session. The weights 0.5 / 0.2 / 0.3 reflect current trust in each.
+**Why two models instead of one?**
+The Random Forest is the accurate, explainable core: it reads one window
+as a snapshot. The LSTM reads the session as a trajectory rather than a
+snapshot, which is what catches behaviour that changes mid-session — a
+handover from a real person to a script scores the same on any single
+window and differently across ten. They fail in different ways, which is
+the only reason to carry two.
+
+There was a third, an Isolation Forest, until it was measured; see §10.
+The weights 0.6 / 0.4 keep the previous balance between the two
+survivors, renormalised. They are **not** learned, and the honest reason
+is that a meta-learner is only as good as the data it learns from: with
+82 real held-out rows, stacking would fit the noise in this sample. That
+is the next thing to do once real human recordings exist, not before.
 
 **Is the LSTM actually doing anything today?**
 It reads the session's real flush history now, and a regression test
@@ -870,7 +917,8 @@ provider to collect labelled traffic.
 - **SHAP** — SHapley Additive exPlanations; per-feature contribution to a
   prediction.
 - **Isolation Forest** — unsupervised model that scores how easily a point
-  is isolated; easy isolation means anomalous.
+  is isolated; easy isolation means anomalous. Trained and stored here but
+  no longer part of the score (§10).
 - **Median smoothing** — the session's official score is the median of the
   last five raw flush scores.
 - **Neutral default** — the midpoint between human and bot training means,

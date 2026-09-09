@@ -1265,6 +1265,46 @@ def test_lstm_reacts_to_trajectory():
     )
 
 
+def test_isolation_forest_is_not_consulted_when_scoring():
+    """The Isolation Forest is stored in the bundle but must never be read on
+    the request path.
+
+    It is fitted on human rows only, so "normal" to it means the human
+    distribution -- and the automation worth catching here is automation built
+    to sit inside that distribution. Measured against held-out real browser
+    rows its standalone ROC-AUC was 0.340: not weak, inverted. It was ranking
+    the attacker as the more normal party, and its 0.2 share pulled real
+    scores toward the wrong answer while costing 14 ms of a 32 ms scoring
+    budget.
+
+    Weight zero and a call that still happens is the worst of both: the
+    latency without the signal. So this booby-traps decision_function and
+    asserts a flush still scores. If someone reintroduces the term, this fails
+    with the reason attached rather than quietly making every request slower.
+    """
+    bundle = scorer.get_bundle()
+    original = bundle.iso_forest.decision_function
+
+    def explode(*_args, **_kwargs):
+        raise AssertionError(
+            "IsolationForest skorlama yolunda cagrildi. Gerekcesi scorer.py'de: "
+            "gercek satirlar uzerinde tek basina ROC-AUC 0.340 -- tesadufden de "
+            "kotu. Yeniden eklenecekse once olculmeli."
+        )
+
+    bundle.iso_forest.decision_function = explode
+    try:
+        result = scorer.compute_risk(_natural_human_session())
+    finally:
+        bundle.iso_forest.decision_function = original
+
+    assert 0.0 <= result["risk_score"] <= 100.0
+
+    # And the blend really is the two-model one, to the rounding of the score.
+    assert scorer.ENSEMBLE_RF_WEIGHT + scorer.ENSEMBLE_LSTM_WEIGHT == 1.0, (
+        "ansambl cekileri 1.0 toplamiyor; skor artik olasilik olarak okunamaz"
+    )
+
 def _run_all():
     tests = [
         test_natural_human_scores_low,
@@ -1276,6 +1316,7 @@ def _run_all():
         test_fast_keyboard_only_no_mouse_scores_high,
         test_opening_window_is_marked_provisional_not_suspicious,
         test_lstm_reacts_to_trajectory,
+        test_isolation_forest_is_not_consulted_when_scoring,
         test_api_rejects_bad_token,
         test_decision_blocks_bot_session,
         test_decision_fails_closed_without_telemetry,

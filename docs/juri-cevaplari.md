@@ -19,7 +19,7 @@ edemediği, *edemediği* gerçeğinden daha önemli.
 
 ---
 
-## 1. Isolation Forest bu saldırıda işe yaramaz — zarar verir
+## 1. Isolation Forest bu saldırıda işe yaramaz — zarar verir (ve topluluktan çıkarıldı)
 
 Isolation Forest yalnızca **insan** satırları üzerinde eğitiliyor
 (`iso_forest.fit(human_only)`), yani "normal"i insan dağılımı olarak öğreniyor.
@@ -34,13 +34,48 @@ Sonuç:
 |---|---|
 | Isolation Forest kararı | "en normal" |
 | Anomali terimi | ≈ 0 |
-| Topluluktaki ağırlığı | %20 |
-| Net etkisi | Risk skorunu **aşağı** çeker |
+| Eski toplulukta ağırlığı | %20 |
+| Net etkisi | Risk skorunu **aşağı** çekiyordu |
 
 Yani yüksek kaliteli taklide karşı Isolation Forest tarafsız biçimde
-başarısız olmuyor; saldırganın lehine oy kullanıyor. Bu, ayarla düzelecek bir
-şey değil, bileşenin tasarım amacının sonucudur: seyrek bölgeleri arar, taklit
-ise yoğun bölgeye yerleşir.
+başarısız olmuyordu; saldırganın lehine oy kullanıyordu. Bu, ayarla düzelecek
+bir şey değil, bileşenin tasarım amacının sonucudur: seyrek bölgeleri arar,
+taklit ise yoğun bölgeye yerleşir.
+
+### Bu cevabı yazdıktan sonra ölçtük ve bileşeni çıkardık
+
+Yukarıdaki muhakeme doğruysa veride görünmesi gerekirdi; göründü. Eğitimde
+hiç kullanılmamış **gerçek tarayıcı satırları** (n=82) üzerinde her bileşenin
+tek başına ayrıştırma gücü:
+
+| bileşen | ROC-AUC |
+|---|---|
+| Random Forest | 0.990 |
+| LSTM | 0.898 |
+| **Isolation Forest** | **0.340** |
+
+0.340 zayıf değildir; **ters**tir. Rastgele tahmin 0.5 verir — bu bileşen
+sistematik olarak saldırganı daha "normal" sıralıyordu. Aynı telemetri iki
+ağırlıklandırmadan geçirildiğinde:
+
+| persona | IsoF ile ortalama | IsoF'siz | AUC ile | AUC'siz |
+|---|---|---|---|---|
+| insan | 19.0 | **9.3** | — | — |
+| bot_linear | 86.0 | **92.4** | 1.00 | 1.00 |
+| bot_mimic | 25.0 | 16.7 | 0.83 | 0.84 |
+| bot_adaptive | 13.2 | 3.0 | 0.00 | 0.02 |
+
+Bileşen herkese — insana da bota da — aşağı yukarı aynı payı ekliyordu:
+skorları şişiriyor, ayırmıyordu. Ödeme kapısında şişirilmiş bir **insan**
+skoru pahalı olan hata türüdür.
+
+Bu yüzden topluluk artık **0.6 RF + 0.4 LSTM**. Model hâlâ eğitiliyor ve
+pakette duruyor — karar 82 satıra dayanıyor ve daha fazla gerçek insan
+kaydı biriktikçe yeniden ölçülmeli — ama istek başına çağrılmıyor.
+Yan etki: bir flush'ı skorlama süresi 31.7 ms'den 17.7 ms'ye düştü.
+
+Ve açıkçası: bu değişiklik `bot_adaptive`'i **çözmüyor** (0.00 → 0.02).
+Sorunun kaynağı ağırlıklar değil, özniteliklerin kendisi — bkz. bölüm 2.
 
 ## 2. Öznitelik sayısı 6 değil, 12 — ve fazlası da yetmiyor
 
@@ -273,6 +308,26 @@ Canlı API üzerinden de aynı sonuç: insan sınıfında **%0 yanlış pozitif*
 **Bunun çözmediği şey:** taklit. Insanlaştırılmış bot %0'dan %8 durdurmaya
 çıktı — 12 oturumda 1, yani gürültü. Bu bir hijack düzeltmesidir, taklit
 düzeltmesi değildir ve öyle sunmuyoruz.
+
+## Sonradan: ansambl değişti, senaryo yeniden ölçüldü
+
+Sorudaki "sabit ağırlıklı ansambl (0.5 RF + 0.2 IF + 0.3 LSTM)" artık
+**0.6 RF + 0.4 LSTM**; Isolation Forest ölçüm sonucu skordan çıkarıldı
+(gerekçesi 1. soruda). Ağırlıklar değiştiği için aynı hijack senaryosu
+birebir tekrar çalıştırıldı:
+
+| Akış | Kaynak | RF | LSTM | Uyuşmazlık | Harman | Birleşik | Karar |
+|---|---|---|---|---|---|---|---|
+| 5 | insan | 0.09 | 0.00 | 0.09 | 5.2 | 5.2 | allow |
+| **6** | **BOT** | **0.99** | **0.01** | **0.99** | 59.9 | **99.0** | **block** |
+| 8 | BOT | 0.82 | 0.00 | 0.82 | 49.3 | 76.3 | verify |
+| 10 | BOT | 0.99 | 1.00 | 0.01 | 99.6 | 99.6 | block |
+
+Devir teslim yine **ilk otomasyon penceresinde** bloklanıyor — uyuşmazlık
+terimi RF ile LSTM'i okur, IF'i hiç okumuyordu, dolayısıyla düzeltme
+ağırlık değişikliğinden etkilenmiyor. Değişen taraf insan penceresi:
+5. akışta 15.4 yerine **5.2**. Yani blok eşiğine olan payı büyüdü,
+yakalama hızı aynı kaldı.
 
 ---
 

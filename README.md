@@ -43,7 +43,6 @@ flowchart LR
         B[POST /api/analyze]
         C[Feature extraction]
         D[Random Forest]
-        E[Isolation Forest]
         F[LSTM]
         G[Ensemble + SHAP]
     end
@@ -53,10 +52,8 @@ flowchart LR
     A -->|every 2s| B
     B --> C
     C --> D
-    C --> E
     C --> F
     D --> G
-    E --> G
     F --> G
     G --> H
     G -->|score + label + SHAP| A
@@ -112,14 +109,16 @@ Six behavioral features are extracted from each flush, every one normalized to r
 
 Interaction entropy is computed per channel and then combined, rather than by merging every timestamp into one stream first. Merging is the obvious implementation and it is wrong: interleaving several independently-regular channels produces a sequence that looks irregular even when each channel is perfectly robotic on its own — a beat-frequency artifact that measured ~0.92 entropy for three channels that individually scored 0.0.
 
-Those six features feed three models whose outputs are blended:
+Those six features feed two models whose outputs are blended:
 
 ```
-fraud_probability = 0.5 × RandomForest + 0.2 × IsolationForest + 0.3 × LSTM
+fraud_probability = 0.6 × RandomForest + 0.4 × LSTM
 risk_score        = 100 × fraud_probability
 ```
 
-The Isolation Forest is trained only on human behavior, so it flags anomalies rather than learning a bot signature — which matters for automation that doesn't resemble anything in the training set.
+There used to be a third at 0.2, an Isolation Forest, and it was **removed on measurement rather than on taste**. It is fitted on human rows only, so “normal” to it means the human distribution — and the automation this product exists to stop is automation that has been made to look human. On held-out real browser rows its standalone discrimination came out at ROC-AUC **0.340**: not weak, inverted. It was voting for the attacker. Replaying identical telemetry through both weightings, dropping it moved the mean human score from 19.0 to 9.3 and mean `bot_linear` from 86.0 to 92.4 — it had been adding much the same offset to everyone, inflating scores without separating them. It also cost 14 ms of the 32 ms a flush took to score.
+
+It is still trained and still stored in the bundle, so the decision can be re-measured once there are real human recordings to measure against. Nothing reads it per request.
 
 A session's reported score is the **median of its last 5 flushes**, not the instantaneous value. One incidental pause in an otherwise robotic session shouldn't flip the verdict; an anomaly has to persist to move it.
 

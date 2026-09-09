@@ -14,7 +14,7 @@ DeepCheck — istifadəçi davranışını real vaxtda analiz edərək bot və i
 |---|---|---|
 | Backend | FastAPI (Python 3.11) | Async, yüksək performanslı |
 | Database | PostgreSQL | Session və davranış məlumatları |
-| ML Model | Random Forest + Isolation Forest + LSTM | sklearn + PyTorch |
+| ML Model | Random Forest + LSTM | sklearn + PyTorch (Isolation Forest hələ təlim edilir, amma skorda çəkisi 0-dır — səbəbi scorer.py-də) |
 | Real-time | REST API polling (hər 2 saniyə) | Frontend fetch ilə |
 | Deploy | Docker Compose | `docker-compose up` ilə hər şey qalxır |
 | Frontend | React + Vite | Müasir, sürətli |
@@ -109,7 +109,11 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 - Sessionların 12%-i orta yerdə **dəyişir** (insan → bot və əksi) — ardıcıl
   model üçün öyrəniləcək yeganə zaman siqnalı budur
 - RF + Isolation Forest final pəncərə üzərində, LSTM isə həqiqi 10 addımlıq
-  ardıcıllıq üzərində train olunur
+  ardıcıllıq üzərində train olunur. Isolation Forest hələ təlim edilir və
+  bundle-da saxlanılır, lakin **skorda çəkisi 0-dır**: real held-out
+  brauzer sətirlərində tək başına ROC-AUC 0.340 verdi — təsadüfdən də pis,
+  çünki yalnız insan sətirləri üzrə fit edilir və bu məhsulun hədəf aldığı
+  hücum məhz insana bənzəyən hücumdur. Ətraflı ölçmə: TECHNICAL_GUIDE.md §10
 - `NEUTRAL_DEFAULTS` burada hesablanır və `model.pkl` içində saxlanılır
   (`scorer.py`-də əl ilə saxlanılmır)
 
