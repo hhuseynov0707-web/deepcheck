@@ -14,6 +14,7 @@ these assertions fail loudly instead of only being noticed when a demo user
 gets blocked.
 """
 
+import json
 import os
 import time
 from datetime import timedelta
@@ -1305,6 +1306,136 @@ def test_isolation_forest_is_not_consulted_when_scoring():
         "ansambl cekileri 1.0 toplamiyor; skor artik olasilik olarak okunamaz"
     )
 
+def _recorded_flush(raw: dict, purged: bool = False, signals: dict | None = None) -> dict:
+    """One flush shaped as record_session.py freezes it out of Postgres."""
+    features = scorer.extract_features(raw)
+    return {
+        "created_at": "2026-09-09T12:00:00+00:00",
+        "risk_score": 10.0,
+        "raw": raw,
+        "features": {name: features[name] for name in FEATURE_NAMES},
+        "raw_purged": purged,
+        "client_signals": signals or {},
+    }
+
+
+def test_empty_windows_are_kept_out_of_the_training_set(tmp_path):
+    """A window in which nobody did anything must not be filed as a person.
+
+    Every feature has a neutral fallback, so an empty flush still produces a
+    full twelve-number vector -- one made almost entirely of fallbacks. Label
+    that "human" and the model learns that an empty window is a person, which
+    is exactly what a naive headless bot sends. The A1_naive rows in the same
+    file say the opposite, so the two cancel and the model learns nothing
+    where it most needs to learn something.
+    """
+    import record_session
+
+    empty = {
+        "mouse_trajectory": [],
+        "click_timing": [],
+        "scroll_events": [],
+        "key_events": [],
+        "focus_changes": [],
+        "hesitation_intervals": [],
+    }
+    rich = _natural_human_session()
+
+    record = {
+        "session_id": "s-empty-and-rich",
+        "flushes": [_recorded_flush(empty), _recorded_flush(rich)],
+    }
+    out = tmp_path / "real.json"
+
+    stats = record_session.merge_into_training_set([record], "human", str(out), "p01")
+
+    assert stats["thin"] == 1, "bos pencere egitim kumesine girdi"
+    assert stats["added"] == 1, f"dolu pencere de atlandi (added={stats['added']})"
+
+    written = json.loads(out.read_text(encoding="utf-8"))["samples"]
+    assert [s["person_id"] for s in written] == ["p01"]
+    assert written[0]["measured"] >= record_session.MIN_MEASURED_FOR_TRAINING
+
+
+def test_aged_out_flushes_are_not_guessed_at(tmp_path):
+    """Once retention blanks the raw channels, quality is unknowable.
+
+    An empty mouse trajectory is a keyboard-only person AND a row that has
+    aged out, and nothing left in the row distinguishes them. Treating the
+    second as the first is how a set fills with fallback vectors.
+    """
+    import record_session
+
+    blank = {k: [] for k in ("mouse_trajectory", "click_timing", "scroll_events",
+                             "key_events", "focus_changes", "hesitation_intervals")}
+    record = {"session_id": "s-old", "flushes": [_recorded_flush(blank, purged=True)]}
+    out = tmp_path / "real.json"
+
+    stats = record_session.merge_into_training_set([record], "human", str(out), "p01")
+
+    assert stats["purged"] == 1 and stats["added"] == 0
+    assert stats["thin"] == 0, "silinmis satir 'zayif' diye sayildi; sebep karisiyor"
+
+
+def test_a_driven_browser_is_not_filed_as_a_person():
+    """The one mislabel this dataset cannot survive.
+
+    Both signals are trivially defeated by an attacker, which is why they are
+    worthless as detection and useful here: nobody recording their own
+    colleagues is trying to defeat them, so when one fires it is a Playwright
+    window somebody left open.
+    """
+    import record_session
+
+    raw = _natural_human_session()
+    driven = {"session_id": "s", "flushes": [_recorded_flush(raw, signals={"webdriver": True})]}
+    injected = {"session_id": "s", "flushes": [_recorded_flush(raw, signals={"untrusted_events": 7})]}
+    clean = {"session_id": "s", "flushes": [_recorded_flush(raw, signals={"pointer_mouse": 40})]}
+
+    assert record_session.provenance_problems(driven)
+    assert record_session.provenance_problems(injected)
+    assert not record_session.provenance_problems(clean), (
+        "normal bir insan oturumu reddedildi -- kayit tamamen durur"
+    )
+
+
+def test_real_holdout_splits_by_person_not_by_session():
+    """Sessions from one person are not independent samples.
+
+    Split by session and somebody who sat down ten times lands on both sides
+    of the split, so the reported accuracy answers "does it recognise this
+    person again" rather than "does it work on somebody new". Only the second
+    question justifies collecting the data.
+    """
+    import train_model
+
+    payload = {
+        "feature_keys": list(FEATURE_NAMES),
+        "samples": [
+            {
+                "features": {name: 0.5 for name in FEATURE_NAMES},
+                "label": i % 2,
+                "scenario": "R1_human_live",
+                "run_id": f"session-{i}",
+                "person_id": f"p{i % 4}",
+            }
+            for i in range(40)
+        ],
+    }
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_holdout_probe.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+    try:
+        loaded = train_model.load_real_telemetry(path)
+    finally:
+        os.remove(path)
+
+    assert loaded is not None
+    _, y_train, _, y_eval, _ = loaded
+    # Four people, 30% holdout -> exactly one person held out, 10 of 40 rows.
+    assert len(y_eval) == 10, f"kisi bazli ayirma yapilmamis (eval={len(y_eval)})"
+    assert len(y_train) == 30
+
 def _run_all():
     tests = [
         test_natural_human_scores_low,
@@ -1317,6 +1448,8 @@ def _run_all():
         test_opening_window_is_marked_provisional_not_suspicious,
         test_lstm_reacts_to_trajectory,
         test_isolation_forest_is_not_consulted_when_scoring,
+        test_a_driven_browser_is_not_filed_as_a_person,
+        test_real_holdout_splits_by_person_not_by_session,
         test_api_rejects_bad_token,
         test_decision_blocks_bot_session,
         test_decision_fails_closed_without_telemetry,

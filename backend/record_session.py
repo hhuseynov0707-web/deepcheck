@@ -13,29 +13,55 @@ Usage:
     # See what is in the database, newest first, and pick an id.
     python record_session.py --list
 
-    # Freeze one session under a label.
-    python record_session.py --label human 3f2a...-...
-    python record_session.py --label bot   9c11...-...
+    # Look before writing: what WOULD be recorded, and is any of it usable.
+    python record_session.py --label human --since 2026-09-09T14:00 --preview
 
-    # Everything since a timestamp, all under one label (useful right after a
-    # scripted bot run).
-    python record_session.py --label bot --since 2026-09-05T14:00:00
+    # Freeze one session and put it in front of the model.
+    python record_session.py --label human --person p01 --to-training 3f2a...
 
 Writes data/real/{label}/{session_id}.json. Labels are exactly "human" or
 "bot": the file's directory IS the ground truth, so mislabelling here
 silently corrupts every later measurement.
+
+Three things this refuses to do quietly, each of which was a way to poison
+the set without ever seeing an error:
+
+  * File a session as a person when the browser reported `navigator.webdriver`
+    or synthesised its own events. Both signals are trivially defeated by an
+    attacker, which is why they are worthless as detection and useful here --
+    nobody recording their own colleagues is trying to defeat them, so when
+    one fires it is a Playwright window somebody left open. `--force` if you
+    are certain.
+
+  * Accept a flush that measured almost nothing. Every feature has a neutral
+    fallback, so a window in which the person did nothing still produces a
+    full twelve-number vector made of fallbacks. Labelled "human", that
+    teaches the model that an empty window is a person -- and an empty window
+    is exactly what a naive headless bot sends. See MIN_MEASURED_FOR_TRAINING.
+
+  * Merge into the training set without `--person`. The holdout is split by
+    whoever produced the data; without a person the best it can do is split
+    by session, and one person contributing ten sittings then appears on both
+    sides of that split.
+
+Timing matters: the retention sweep blanks raw telemetry after an hour
+(`RAW_RETENTION_HOURS`) and deletes rows after a day. Record while the
+session is still fresh -- an hour-old row cannot even be checked for quality,
+because a blank mouse channel could equally be a keyboard-only person.
 """
 
 import argparse
 import asyncio
 import json
 import os
+import statistics
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
-from database import get_sessionmaker
+import scorer
+from database import get_engine, get_sessionmaker
 from lstm_model import FEATURE_NAMES
 from models import BehaviorData, Session
 
@@ -71,6 +97,21 @@ TRAINING_SET_PATH = os.path.join(
 # scripted H1/H2/A1-A4 so the holdout report can tell "a person did this" apart
 # from "a script did this", which is the whole point of collecting them.
 LIVE_SCENARIOS = {"human": "R1_human_live", "bot": "R2_bot_live"}
+
+# How many of the twelve features a flush must genuinely MEASURE before it is
+# allowed into the training set.
+#
+# Every feature has a neutral fallback, so a window in which the person did
+# nothing still produces a full twelve-number vector -- one made almost
+# entirely of fallbacks. Labelling that "human" teaches the model that an
+# empty window is a person, and an empty window is precisely what a naive
+# headless bot sends. The A1_naive rows in the same file say the opposite.
+# Recording both without a gate does not average out; it teaches nothing
+# where the model most needs to learn something.
+#
+# Same threshold the scorer uses to decide whether a score is worth showing
+# anyone, and for the same reason.
+MIN_MEASURED_FOR_TRAINING = scorer.MIN_MEASURED_FOR_CONFIDENT_SCORE
 
 
 def _iso(value) -> str | None:
@@ -121,19 +162,77 @@ async def _load(db, session_id: str) -> dict | None:
                     name: (getattr(row, column) or []) for name, column in RAW_CHANNELS.items()
                 },
                 "features": {name: getattr(row, name) for name in FEATURE_COLUMNS},
+                # Needed to judge the recording, not to score it. `raw_purged`
+                # says whether the retention sweep has already blanked the
+                # channels -- without it an hour-old row is indistinguishable
+                # from a person who sat still. `client_signals` is what the
+                # browser said about itself, which is how a session recorded
+                # from a driven browser gets caught before it is filed as a
+                # person.
+                "raw_purged": bool(row.raw_purged),
+                "client_signals": row.client_signals or {},
             }
             for row in flushes
         ],
     }
 
 
-def merge_into_training_set(records: list[dict], label: str, path: str) -> dict:
+def measured_count(flush: dict) -> int | None:
+    """How many of the twelve features this flush actually measured.
+
+    None means unknowable: the retention sweep has already blanked the raw
+    channels, so an empty mouse trajectory could equally be a keyboard-only
+    person or a row that has simply aged out. Guessing here is how a training
+    set quietly fills with vectors made of neutral fallbacks.
+    """
+    if flush.get("raw_purged"):
+        return None
+    raw_values = scorer.extract_raw(flush.get("raw") or {})
+    return sum(1 for name in FEATURE_NAMES if raw_values.get(name) is not None)
+
+
+def provenance_problems(record: dict) -> list[str]:
+    """Reasons this session should not be filed as a person.
+
+    Both signals are self-reported and both are trivially defeated by anyone
+    trying -- which is exactly why they are useless as detection and useful
+    here. Nobody recording their own colleagues is trying to defeat them, so
+    when one fires it is almost always the honest explanation: a Playwright
+    window was left open, or the capture harness was still running.
+    """
+    problems = []
+    driven = sum(1 for f in record["flushes"] if (f.get("client_signals") or {}).get("webdriver"))
+    injected = sum(
+        int((f.get("client_signals") or {}).get("untrusted_events") or 0)
+        for f in record["flushes"]
+    )
+    if driven:
+        problems.append(f"navigator.webdriver {driven} akista true -- surulen tarayici")
+    if injected:
+        problems.append(f"{injected} adet isTrusted=false olay -- sentetik girdi")
+    return problems
+
+
+def merge_into_training_set(
+    records: list[dict],
+    label: str,
+    path: str,
+    person_id: str | None = None,
+    min_measured: int = MIN_MEASURED_FOR_TRAINING,
+) -> dict:
     """Turns recorded sessions into the sample rows train_model.py reads.
 
-    One sample per flush, carrying the session id as run_id so the holdout
-    split stays by session: flushes from one sitting are correlated, and
-    splitting them across train and test would report a number that will not
-    reproduce on a fresh person.
+    One sample per flush, carrying the session id as run_id AND the person as
+    person_id, because the holdout has to be split by whoever generated the
+    data. Flushes from one sitting are correlated; so are sittings from one
+    person. Splitting by session alone lets the same person appear on both
+    sides of the split, which reports an accuracy that will not reproduce on
+    somebody new -- and "does it work on somebody new" is the only question
+    this dataset exists to answer.
+
+    Flushes that measured too little are dropped rather than filed, and the
+    count is reported: a vector of neutral fallbacks labelled "human" is worse
+    than no row at all.
 
     Re-recording a session replaces its rows rather than duplicating them.
     """
@@ -150,6 +249,8 @@ def merge_into_training_set(records: list[dict], label: str, path: str) -> dict:
 
     added = 0
     skipped = 0
+    thin = 0
+    purged = 0
     for record in records:
         for flush in record["flushes"]:
             features = flush.get("features") or {}
@@ -158,14 +259,23 @@ def merge_into_training_set(records: list[dict], label: str, path: str) -> dict:
             if any(features.get(name) is None for name in FEATURE_NAMES):
                 skipped += 1
                 continue
-            kept.append(
-                {
-                    "features": {name: float(features[name]) for name in FEATURE_NAMES},
-                    "label": 0 if label == "human" else 1,
-                    "scenario": LIVE_SCENARIOS[label],
-                    "run_id": record["session_id"],
-                }
-            )
+            measured = measured_count(flush)
+            if measured is None:
+                purged += 1
+                continue
+            if measured < min_measured:
+                thin += 1
+                continue
+            sample = {
+                "features": {name: float(features[name]) for name in FEATURE_NAMES},
+                "label": 0 if label == "human" else 1,
+                "scenario": LIVE_SCENARIOS[label],
+                "run_id": record["session_id"],
+                "measured": measured,
+            }
+            if person_id:
+                sample["person_id"] = person_id
+            kept.append(sample)
             added += 1
 
     payload["samples"] = kept
@@ -173,7 +283,14 @@ def merge_into_training_set(records: list[dict], label: str, path: str) -> dict:
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=1)
 
-    return {"added": added, "skipped": skipped, "replaced": replaced, "total": len(kept)}
+    return {
+        "added": added,
+        "skipped": skipped,
+        "thin": thin,
+        "purged": purged,
+        "replaced": replaced,
+        "total": len(kept),
+    }
 
 
 def _write(record: dict, label: str, out_dir: str) -> str:
@@ -187,13 +304,92 @@ def _write(record: dict, label: str, out_dir: str) -> str:
     return path
 
 
-async def record(session_ids: list[str], label: str, out_dir: str, collected: list | None = None) -> int:
+def _summary(record: dict) -> dict:
+    """The three numbers that decide whether a recording is worth keeping."""
+    measured = [measured_count(f) for f in record["flushes"]]
+    known = [m for m in measured if m is not None]
+    return {
+        "flushes": len(record["flushes"]),
+        "usable": sum(1 for m in known if m >= MIN_MEASURED_FOR_TRAINING),
+        "purged": len(measured) - len(known),
+        "median_measured": statistics.median(known) if known else 0,
+        "problems": provenance_problems(record),
+    }
+
+
+async def preview(session_ids: list[str], label: str) -> int:
+    """Show what WOULD be recorded, and write nothing.
+
+    The failure this exists to prevent: `--since` sweeps every session in a
+    window, and a window almost never contains only the person you were
+    watching. A red-team run, a colleague's tab, the capture harness left open
+    -- each of those becomes a row labelled by hand as a human being, and the
+    directory a sample sits in IS its ground truth. One bad sweep is not a bad
+    row, it is a quietly wrong model, and nothing downstream will ever say so.
+    """
+    async with get_sessionmaker()() as db:
+        records, missing = [], []
+        for session_id in session_ids:
+            record_data = await _load(db, session_id)
+            if record_data is None:
+                # Reported rather than skipped in silence: a mistyped id that
+                # simply vanishes reads as "that session had no problems".
+                missing.append(session_id)
+            else:
+                records.append(record_data)
+
+    for session_id in missing:
+        print(f"BULUNAMADI  {session_id}: oturum yok veya hic akis kaydedilmemis")
+
+    if not records:
+        print("Onizlenecek oturum yok.")
+        return 1
+
+    print(f"\n'{label}' olarak kaydedilecek {len(records)} oturum -- HENUZ YAZILMADI\n")
+    print(f"{'session_id':38}  {'akis':>4}  {'kullanilabilir':>14}  {'skor':>6}  durum")
+    keepable = 0
+    for r in records:
+        s = _summary(r)
+        if s["problems"]:
+            status = "SUPHELI: " + "; ".join(s["problems"])
+        elif s["purged"] == s["flushes"]:
+            status = "GEC KALINDI: ham telemetri silinmis (1 saatlik pencere)"
+        elif s["usable"] == 0:
+            status = f"ZAYIF: hicbir akis {MIN_MEASURED_FOR_TRAINING} ozellik olcmemis"
+        else:
+            status = "UYGUN"
+            keepable += 1
+        score = r.get("smoothed_risk_score") or 0.0
+        print(f"{r['session_id']:38}  {s['flushes']:4}  {s['usable']:14}  {score:6.1f}  {status}")
+
+    print(f"\n{keepable}/{len(records)} oturum kaydedilmeye uygun.")
+    print("Kaydetmek icin ayni komutu --preview olmadan, tercihen oturum "
+          "kimliklerini tek tek vererek calistirin.")
+    return 0
+
+
+async def record(
+    session_ids: list[str],
+    label: str,
+    out_dir: str,
+    collected: list | None = None,
+    force: bool = False,
+) -> int:
     written = 0
     async with get_sessionmaker()() as db:
         for session_id in session_ids:
             record_data = await _load(db, session_id)
             if record_data is None:
                 print(f"ATLANDI  {session_id}: oturum yok veya hic akis kaydedilmemis")
+                continue
+            # A driven browser filed as a person is the one error this whole
+            # dataset cannot survive: it teaches the detector that automation
+            # is what people look like, and every later measurement inherits
+            # it while reporting nothing.
+            problems = provenance_problems(record_data) if label == "human" else []
+            if problems and not force:
+                print(f"REDDEDILDI  {session_id}: {'; '.join(problems)}")
+                print("            Gercekten bir insansa --force ile gecebilirsiniz.")
                 continue
             if collected is not None:
                 collected.append(record_data)
@@ -203,15 +399,62 @@ async def record(session_ids: list[str], label: str, out_dir: str, collected: li
     return written
 
 
-async def resolve_since(since: str) -> list[str]:
+def parse_since(since: str) -> datetime:
+    """"20m" / "2h" / an ISO timestamp.
+
+    The relative forms exist because the absolute one is a trap. created_at is
+    stored in UTC, and a naive ISO string is read as UTC -- so an operator in
+    UTC+4 who types their own wall clock sweeps four extra hours of sessions
+    and labels every one of them by hand as a person. "20m" cannot be wrong
+    about a timezone.
+    """
+    text = since.strip().lower()
+    if text and text[-1] in "mh" and text[:-1].replace(".", "", 1).isdigit():
+        amount = float(text[:-1])
+        delta = timedelta(minutes=amount) if text[-1] == "m" else timedelta(hours=amount)
+        return datetime.now(timezone.utc) - delta
     moment = datetime.fromisoformat(since)
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+async def resolve_since(since: str) -> list[str]:
+    moment = parse_since(since)
     async with get_sessionmaker()() as db:
         result = await db.execute(
             select(Session.id).where(Session.created_at >= moment).order_by(Session.created_at.asc())
         )
         return [row[0] for row in result.all()]
+
+
+async def _with_pool(coro):
+    """Runs one coroutine and then disposes the connection pool, in the SAME loop.
+
+    Every asyncio.run() builds a loop and closes it at the end, but the engine
+    is a module-level singleton whose pooled connections stay bound to
+    whichever loop opened them. Two asyncio.run() calls in one process --
+    resolve_since() and then record() -- therefore hand loop two a connection
+    belonging to loop one, and the teardown dies with "Event loop is closed"
+    after the work is already done. On Windows that killed the --since path
+    outright, which is the path an operator actually uses.
+    """
+    try:
+        return await coro
+    finally:
+        await get_engine().dispose()
+
+
+async def _gather(args, collected: list) -> tuple[int, bool]:
+    """Resolve ids, then preview or record -- all inside one event loop."""
+    session_ids = list(args.session_ids)
+    if args.since:
+        session_ids += await resolve_since(args.since)
+    session_ids = sorted(set(session_ids))
+    if not session_ids:
+        print("Bu araliktan hic oturum yok.")
+        return 1, True
+    if args.preview:
+        return await preview(session_ids, args.label), True
+    return await record(session_ids, args.label, args.out, collected, force=args.force), False
 
 
 def main() -> int:
@@ -226,7 +469,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Etiketli gercek oturumlari diske kaydeder.")
     parser.add_argument("session_ids", nargs="*", help="Kaydedilecek oturum kimlikleri")
     parser.add_argument("--label", choices=VALID_LABELS, help="Yer gercegi etiketi")
-    parser.add_argument("--since", help="Bu ISO zamanindan sonraki tum oturumlar (ornek: 2026-09-05T14:00)")
+    parser.add_argument(
+        "--since",
+        help="Bu andan sonraki tum oturumlar. Goreli: 20m, 2h. Mutlak: 2026-09-09T14:00 "
+             "(UTC olarak okunur -- goreli bicimi tercih edin)",
+    )
     parser.add_argument("--list", action="store_true", help="Son oturumlari listele")
     parser.add_argument("--limit", type=int, default=40, help="--list icin satir sayisi")
     parser.add_argument("--out", default=DATA_DIR, help="Cikti kok dizini")
@@ -236,34 +483,82 @@ def main() -> int:
         help="Kaydedilen oturumlari lab/real_telemetry.json icine de ekle (model bunu okur)",
     )
     parser.add_argument("--training-out", default=TRAINING_SET_PATH, help="Egitim kumesi yolu")
+    parser.add_argument(
+        "--person",
+        help="Oturumu ureten kisinin takma kimligi (ornek: p01). Egitim kumesindeki "
+             "ayirma bu alana gore yapilir; --to-training icin zorunludur.",
+    )
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Neyin kaydedilecegini goster, hicbir sey yazma",
+    )
+    parser.add_argument(
+        "--min-measured",
+        type=int,
+        default=MIN_MEASURED_FOR_TRAINING,
+        help=f"Egitime girmek icin bir akisin olcmesi gereken en az ozellik sayisi "
+             f"(varsayilan {MIN_MEASURED_FOR_TRAINING})",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Surulen tarayici uyarisina ragmen 'human' olarak kaydet",
+    )
     args = parser.parse_args()
 
     if args.list:
-        asyncio.run(list_sessions(args.limit))
+        asyncio.run(_with_pool(list_sessions(args.limit)))
         return 0
 
     if not args.label:
         parser.error("--label zorunlu (human veya bot)")
 
-    session_ids = list(args.session_ids)
-    if args.since:
-        session_ids += asyncio.run(resolve_since(args.since))
-    if not session_ids:
+    # Without this the holdout can only be split by session, and one person
+    # contributing ten sittings then appears on both sides of that split. The
+    # resulting accuracy answers "does it recognise this person again", not
+    # "does it work on someone new" -- and only the second question is worth
+    # the trouble of collecting the data.
+    if args.to_training and not args.person:
+        parser.error(
+            "--to-training icin --person zorunlu (ornek: --person p01). "
+            "Ayni kisinin oturumlari egitimde ve testte birden gorunmesin diye."
+        )
+
+    if not args.session_ids and not args.since:
         parser.error("En az bir oturum kimligi veya --since gerekli")
 
     collected: list = []
-    written = asyncio.run(record(sorted(set(session_ids)), args.label, args.out, collected))
+    written, previewed = asyncio.run(_with_pool(_gather(args, collected)))
+    if previewed:
+        return written
+
     print(f"\nToplam {written} oturum kaydedildi -> {os.path.join(args.out, args.label)}")
 
     if args.to_training and collected:
-        stats = merge_into_training_set(collected, args.label, args.training_out)
+        stats = merge_into_training_set(
+            collected, args.label, args.training_out, args.person, args.min_measured
+        )
         print(
             f"Egitim kumesine eklendi: +{stats['added']} satir "
-            f"({stats['replaced']} eski satir degistirildi, "
-            f"{stats['skipped']} eksik ozellikli satir atlandi). "
-            f"Toplam {stats['total']} satir -> {args.training_out}"
+            f"(kisi: {args.person}; {stats['replaced']} eski satir degistirildi)"
         )
-        print("Modeli yeniden egitin: cd backend && python train_model.py")
+        if stats["thin"]:
+            print(
+                f"  {stats['thin']} akis atlandi: {args.min_measured} ozellikten az olculdu. "
+                "Bunlar cogunlukla notr varsayilan olurdu ve 'bos pencere = insan' "
+                "ogretirdi."
+            )
+        if stats["purged"]:
+            print(
+                f"  {stats['purged']} akis atlandi: ham telemetri silinmis. "
+                "Kayit, oturumdan sonraki 1 saat icinde alinmali."
+            )
+        if stats["skipped"]:
+            print(f"  {stats['skipped']} akis atlandi: eksik ozellik.")
+        print(f"  Toplam {stats['total']} satir -> {args.training_out}")
+        if stats["added"]:
+            print("Modeli yeniden egitin: cd backend && python train_model.py")
     elif args.to_training:
         print("Egitim kumesine eklenecek oturum yok.")
 

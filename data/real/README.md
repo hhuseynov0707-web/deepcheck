@@ -14,15 +14,77 @@ Real recordings are the fix, and they need people rather than code.
 ```bash
 docker compose up -d                      # demo at http://localhost:3000/demo
 cd backend
-python record_session.py --list           # find the session someone just used
-python record_session.py --label human --to-training <session-id>
-python train_model.py                     # retrain with it included
+
+# 1. Look before you write: what is in the last 20 minutes, and is it usable?
+python record_session.py --label human --preview --since 20m
+
+# 2. Keep the ones that were actually that person, naming who they were.
+python record_session.py --label human --person p01 --to-training <session-id>
+
+# 3. Retrain with them included.
+python train_model.py
 ```
+
+`--preview` writes nothing. Use it every time: `--since` sweeps a window, and a
+window almost never contains only the person you were watching.
 
 `--to-training` is the part that matters. Without it a recording lands in
 `data/real/` where only `evaluate.py` can read it, and the model never sees it.
 With it, the session's flushes are merged into `lab/real_telemetry.json`, which
 is what `train_model.py` blends into training.
+
+`--person` is required alongside it, and is not bookkeeping. The holdout split
+groups by person: without one, the best it can do is split by session, and
+somebody who sat down ten times then lands on both sides of the split. The
+accuracy that comes out then answers "does it recognise this person again"
+rather than "does it work on somebody new", and only the second question
+justifies the trouble of collecting any of this. Any stable pseudonym works —
+`p01`, `p02` — and no real names are needed or wanted.
+
+## Record within the hour
+
+The retention sweep blanks raw telemetry after an hour (`RAW_RETENTION_HOURS`)
+and deletes the rows after a day. Past the first hour a recording cannot even
+be *checked*: an empty mouse channel is both a keyboard-only person and a row
+that has aged out, and nothing left in the row tells them apart. The recorder
+refuses to guess and skips those flushes, saying so.
+
+Record while the person is still in the room.
+
+## Three things the recorder refuses to do quietly
+
+Each of these was a way to poison the dataset without ever seeing an error.
+
+**A driven browser filed as a person.** If the browser reported
+`navigator.webdriver`, or synthesised its own events, the session is rejected
+unless you pass `--force`. Both signals are trivially defeated by an attacker,
+which is exactly why they are worthless as detection and useful here: nobody
+recording their own colleagues is trying to defeat them, so when one fires it
+is a Playwright window somebody left open.
+
+**A flush that measured almost nothing.** Every feature has a neutral fallback,
+so a window in which the person did nothing still produces a full twelve-number
+vector — one made almost entirely of fallbacks. Labelled "human" that teaches
+the model that an empty window is a person, and an empty window is exactly what
+a naive headless bot sends; the `A1_naive` rows in the same file say the
+opposite, so the two cancel and the model learns nothing where it most needs to
+learn something. Flushes measuring fewer than six of the twelve features are
+dropped and counted (`--min-measured` to change it).
+
+**A merge with no person attached.** See above.
+
+## You cannot script the collection
+
+Worth stating because it is the obvious shortcut. Driving the demo through
+Chrome DevTools was tried: the session scored **99.5 — "Bot Tespit Edildi"** —
+and produced 40 flushes of which **zero** were usable, because the automation
+inserts text without dispatching keystrokes and teleports the pointer instead
+of moving it. The recorder rejected the whole session on quality alone, before
+any provenance check was needed.
+
+That is the tooling working correctly, and it is also the point: the thing that
+makes real recordings valuable is precisely the thing that cannot be
+manufactured. It needs hands on a keyboard.
 
 ## Running a collection session
 
@@ -42,14 +104,21 @@ is what `train_model.py` blends into training.
 
    ```bash
    python record_session.py --list --limit 10
-   python record_session.py --label human --to-training <session-id>
+   python record_session.py --label human --person p01 --preview <session-id>
+   python record_session.py --label human --person p01 --to-training <session-id>
    ```
 
-   Or capture everything since a moment, when several people went in a row:
+   When several people went in a row, sweep the window — but preview it first
+   and record each person under their own `--person`:
 
    ```bash
-   python record_session.py --label human --to-training --since 2026-09-07T14:00
+   python record_session.py --label human --preview --since 20m
    ```
+
+   Prefer the relative form (`20m`, `2h`) over an absolute timestamp. Absolute
+   times are read as UTC, so an operator typing their own wall clock in UTC+4
+   sweeps four extra hours of sessions and hand-labels every one of them as a
+   person.
 
 5. **Retrain and look at the holdout table.**
 

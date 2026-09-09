@@ -496,7 +496,18 @@ def load_real_telemetry(path: str = REAL_TELEMETRY_PATH):
     if not samples:
         return None
 
-    runs = sorted({s.get("run_id", s["scenario"]) for s in samples})
+    # Group by PERSON where one is recorded, falling back to the session and
+    # then to the scenario. The unit of the split has to be whoever generated
+    # the data: flushes within a sitting are correlated, and sittings by the
+    # same person are correlated too. Split by session alone and one person
+    # who contributed ten sittings lands on both sides, so the reported number
+    # answers "does it recognise this person again" instead of "does it work
+    # on somebody new" -- and only the second question justifies collecting
+    # the data at all. record_session.py --person fills this in.
+    def group_of(sample):
+        return sample.get("person_id") or sample.get("run_id") or sample["scenario"]
+
+    runs = sorted({group_of(s) for s in samples})
     holdout_rng = np.random.default_rng(1234)
     holdout_rng.shuffle(runs)
     holdout = set(runs[: max(1, int(len(runs) * REAL_HOLDOUT_FRACTION))])
@@ -504,8 +515,8 @@ def load_real_telemetry(path: str = REAL_TELEMETRY_PATH):
     def vec(sample):
         return [sample["features"][name] for name in FEATURE_NAMES]
 
-    train = [s for s in samples if s.get("run_id", s["scenario"]) not in holdout]
-    evaluate = [s for s in samples if s.get("run_id", s["scenario"]) in holdout]
+    train = [s for s in samples if group_of(s) not in holdout]
+    evaluate = [s for s in samples if group_of(s) in holdout]
     if not train or not evaluate:
         return None
 
