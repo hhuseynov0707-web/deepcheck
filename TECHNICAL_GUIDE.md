@@ -699,7 +699,7 @@ are in `ESSENTIAL_CHANGES.md`.
 1. **Evaluation is still synthetic.** Accuracy is measured on data from the
    same simulator that produced the training set, so it describes fit to the
    simulator and not performance against people. The measurement pipeline
-   exists — `record_session.py`, `evaluate.py`, `tools/bot_session.py` — and
+   exists — `record_session.py`, `evaluate.py`, `lab/bot_lab.py` — and
    what is missing is the recordings. See `docs/evaluation.md`. This is the
    most important open item.
 2. **A bot that reproduces human timing distributions can evade the

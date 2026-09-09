@@ -357,9 +357,6 @@ class _StubResult:
     def all(self):
         return list(self._rows)
 
-    def __iter__(self):
-        return iter(self._rows)
-
     def first(self):
         return self._rows[0] if self._rows else None
 

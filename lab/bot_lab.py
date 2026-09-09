@@ -40,7 +40,6 @@ Usage:
 """
 
 import argparse
-import functools
 import http.server
 import json
 import math

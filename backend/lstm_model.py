@@ -117,15 +117,3 @@ def build_sequence(rows: list[list[float]]) -> torch.Tensor:
     padding = [list(window[-1])] * (SEQUENCE_LENGTH - len(window))
     seq = torch.tensor(padding + window, dtype=torch.float32)
     return seq.unsqueeze(0)  # (1, SEQUENCE_LENGTH, NUM_FEATURES)
-
-
-def build_sequence_from_features(feature_vector: list[float]) -> torch.Tensor:
-    """Tiles one feature snapshot across the sequence length.
-
-    NO LONGER THE INFERENCE PATH -- see build_sequence() above, which feeds
-    the model a session's actual flush history. This helper survives only as
-    the degenerate single-observation case (it is exactly what
-    build_sequence() produces from a one-row history) and as a convenience
-    for ad-hoc scripts that hold a single feature vector and no history.
-    """
-    return build_sequence([feature_vector])

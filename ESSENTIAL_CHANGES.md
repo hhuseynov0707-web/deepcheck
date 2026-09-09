@@ -53,7 +53,7 @@ the columns exist so the measurement can happen the moment item 1 does.
 
 **Weakness.** `docs/evaluation.md` correctly says there is no measurement
 against real people. The pipeline exists (`record_session.py`,
-`tools/bot_session.py`, `evaluate.py`) but `data/real/` is empty. "How well
+`lab/bot_lab.py`, `evaluate.py`) but `data/real/` is empty. "How well
 does it work?" is the first jury question and today the answer is
 "unmeasured".
 
