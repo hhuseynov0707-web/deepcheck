@@ -54,6 +54,19 @@ FEATURE_NAMES = [
     "kanal_gecis_gecikmesi",
 ]
 
+# Bumped BY HAND whenever FEATURE_NAMES changes OR any feature's computation or
+# scale changes (tereddut_skoru's rescale to log-percentile and ivme_degisimi's
+# redefinition from speed delta to acceleration variance are both examples).
+# Stored customer profiles are compared only within one version: a rescaled
+# feature would otherwise make every profiled customer deviate on the same
+# afternoon, with no failing test anywhere.
+#
+# test_profiles.py pins sha256("|".join(FEATURE_NAMES)) against this number,
+# so a rename or reorder cannot land without a bump. A change to how a feature
+# is COMPUTED leaves the names alone and no hash can see it: that half of the
+# rule is enforced by this comment and by review, not by a test.
+FEATURE_SCHEMA_VERSION = 1
+
 # Per-timestep features fed into the LSTM
 NUM_FEATURES = len(FEATURE_NAMES)
 

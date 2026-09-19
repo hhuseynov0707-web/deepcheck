@@ -118,6 +118,28 @@ def _iso(value) -> str | None:
     return value.isoformat() if isinstance(value, datetime) else None
 
 
+def dump_dataset(payload: dict, fh) -> None:
+    """Writes the training set with its header readable and ONE SAMPLE PER LINE.
+
+    Samples now carry raw telemetry -- a ten-second rolling window of pointer
+    and key events per flush -- and indenting every coordinate onto its own
+    line multiplies the file several times over for nothing. One compact line
+    per sample keeps it small and keeps a re-recording a readable diff. Still
+    plain JSON; json.load reads it unchanged. lab/capture.py writes the same
+    layout.
+    """
+    header = {key: value for key, value in payload.items() if key != "samples"}
+    samples = payload.get("samples", [])
+    fh.write("{\n")
+    for key, value in header.items():
+        fh.write(f" {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)},\n")
+    fh.write(' "samples": [\n')
+    for index, sample in enumerate(samples):
+        line = json.dumps(sample, ensure_ascii=False, separators=(",", ":"))
+        fh.write(f"  {line}{',' if index < len(samples) - 1 else ''}\n")
+    fh.write(" ]\n}\n")
+
+
 async def list_sessions(limit: int) -> None:
     async with get_sessionmaker()() as db:
         result = await db.execute(
@@ -234,6 +256,19 @@ def merge_into_training_set(
     count is reported: a vector of neutral fallbacks labelled "human" is worse
     than no row at all.
 
+    Every sample carries the flush's RAW telemetry, and that is what training
+    reads. The stored `features` were normalised by whichever bundle was
+    serving when the person sat down; retrain with a different scale and they
+    describe a coordinate system that no longer exists, while each one
+    outweighs 120 synthetic rows. train_model.load_real_rows() re-extracts a
+    sample from `raw` under the extraction in force, so a recording stays
+    valid across retrains. `features` is kept for inspection only.
+
+    The file-level `feature_scaling` / `neutral_defaults` are left exactly as
+    found. They describe the samples WITHOUT raw (the lab's older capture) and
+    stamping this bundle's values over them would certify rows this call never
+    produced.
+
     Re-recording a session replaces its rows rather than duplicating them.
     """
     payload = {"note": "Real telemetry", "feature_keys": list(FEATURE_NAMES), "samples": []}
@@ -252,7 +287,7 @@ def merge_into_training_set(
     thin = 0
     purged = 0
     for record in records:
-        for flush in record["flushes"]:
+        for flush_index, flush in enumerate(record["flushes"]):
             features = flush.get("features") or {}
             # A flush recorded before a feature existed cannot be blended: the
             # vector would be the wrong width, or worse, silently mis-ordered.
@@ -266,11 +301,17 @@ def merge_into_training_set(
             if measured < min_measured:
                 thin += 1
                 continue
+            raw = flush.get("raw") or {}
             sample = {
                 "features": {name: float(features[name]) for name in FEATURE_NAMES},
+                "raw": {name: list(raw.get(name) or []) for name in RAW_CHANNELS},
+                "client_signals": flush.get("client_signals") or {},
                 "label": 0 if label == "human" else 1,
                 "scenario": LIVE_SCENARIOS[label],
                 "run_id": record["session_id"],
+                # Position in the session. The conformal calibration replays
+                # held-out sessions through the smoothing in this order.
+                "flush_index": flush_index,
                 "measured": measured,
             }
             if person_id:
@@ -281,7 +322,7 @@ def merge_into_training_set(
     payload["samples"] = kept
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, ensure_ascii=False, indent=1)
+        dump_dataset(payload, fh)
 
     return {
         "added": added,

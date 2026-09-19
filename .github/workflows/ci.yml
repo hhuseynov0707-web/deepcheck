@@ -39,13 +39,17 @@ jobs:
       # No Postgres service on purpose: the API tests override get_db with a
       # stub, precisely so an authorization check never depends on
       # infrastructure being up in order to be tested.
+      #
+      # Every test file in backend/, not a named one. Naming test_scorer.py
+      # meant a new test file ran locally and never in CI, which is the same
+      # as not having it.
       - name: Run tests
         working-directory: backend
         env:
           DEEPCHECK_SECRET: ci-secret-not-for-production
           DASHBOARD_KEY: ci-dashboard-key
           DEBUG: "0"
-        run: python -m pytest test_scorer.py -q
+        run: python -m pytest -q
 
   frontend:
     name: Frontend build
@@ -53,15 +57,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache keyed on the lockfile, which is what `npm ci` installs. Keyed on
+      # package.json the cache survived dependency changes that only moved
+      # the lockfile.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: frontend/package.json
+          cache-dependency-path: frontend/package-lock.json
 
+      # `npm ci`, like the Docker image: exactly the lockfile, and a failure
+      # rather than a silent rewrite when it has drifted from package.json.
+      # `npm install` could pass CI on a dependency tree nobody committed.
       - name: Install dependencies
         working-directory: frontend
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Test
         working-directory: frontend
@@ -82,3 +92,25 @@ jobs:
             exit 1
           fi
           echo "OK: no dashboard key in dist/"
+
+  compose:
+    name: Compose and frontend image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # `docker-compose up --build` is the one command the README promises
+      # works. A typo in an interpolation or a port mapping breaks it for
+      # everyone and no unit test would notice. Validates the default and the
+      # dev override, with no .env, the way a first-time reviewer runs it.
+      - name: Validate compose files
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
+
+      # The frontend image is built from the lockfile with `npm ci` and a
+      # Dockerfile-specific ignore file; neither is exercised by `npm run
+      # build` on the runner. The backend image is left out: it installs
+      # torch, and the backend job already installs the same requirements.
+      - name: Build the frontend image
+        run: docker compose build frontend

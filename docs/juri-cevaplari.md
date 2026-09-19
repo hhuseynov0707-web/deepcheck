@@ -69,7 +69,7 @@ Bileşen herkese — insana da bota da — aşağı yukarı aynı payı ekliyord
 skorları şişiriyor, ayırmıyordu. Ödeme kapısında şişirilmiş bir **insan**
 skoru pahalı olan hata türüdür.
 
-Bu yüzden topluluk artık **0.6 RF + 0.4 LSTM**. Model hâlâ eğitiliyor ve
+Bu yüzden topluluk **0.6 RF + 0.4 LSTM** oldu (sonradan LSTM de ölçüm sonucu çıkarıldı; bkz. dördüncü soru). Model hâlâ eğitiliyor ve
 pakette duruyor — karar 82 satıra dayanıyor ve daha fazla gerçek insan
 kaydı biriktikçe yeniden ölçülmeli — ama istek başına çağrılmıyor.
 Yan etki: bir flush'ı skorlama süresi 31.7 ms'den 17.7 ms'ye düştü.
@@ -329,6 +329,278 @@ ağırlık değişikliğinden etkilenmiyor. Değişen taraf insan penceresi:
 5. akışta 15.4 yerine **5.2**. Yani blok eşiğine olan payı büyüdü,
 yakalama hızı aynı kaldı.
 
+**Sonradan (2):** LSTM de skordan çıkarıldı; gerekçesi dördüncü soruda. Devir
+teslimi yakalayan şey zaten RF'ydi. Uyuşmazlık kuralının yaptığı iş artık
+açık bir kuralla yapılıyor: son akışlar medyanının 35 puan üstüne sıçrama
+yumuşatılmıyor. 185 simüle devir tesliminin 185'i ilk otomasyon akışında
+yakalandı.
+
 ---
 
-*İlgili ölçümler: [`docs/evaluation.md`](evaluation.md).*
+# Dördüncü Soru — Model seçimi ne kadar doğru?
+
+## Soru
+
+> Random Forest + LSTM seçimi nasıl gerekçelendirildi? Gradient boosting veya
+> derin öğrenme neden değil? Rakipler ne kullanıyor?
+
+## Ölçüm
+
+`backend/model_selection.py` yedi model ailesini (RF, ExtraTrees,
+HistGradientBoosting, LightGBM, XGBoost, lojistik regresyon, MLP) ve dört
+zamansal varyantı aynı bölmelerle karşılaştırıyor. Dört protokol var:
+simülatörden simülatöre, simülatörden tarayıcıya, tarayıcı koşularında
+grup-bazlı çapraz doğrulama ve **bir senaryoyu tamamen dışarıda bırakma**.
+Sonuncusu en önemlisi, çünkü gerçek müşteri tanım gereği modelin görmediği
+davranıştır.
+
+| | ROC-AUC | Bot ≥80 (görülen senaryolar) | Görülmemiş H1 insanı ≥80 (blok) |
+|---|---|---|---|
+| **Random Forest** | 0.988 | 0.63 | **%0** |
+| LightGBM | 0.983 | 0.89 | **%74** |
+| XGBoost | 0.982 | 0.89 | %74 |
+| HistGradientBoosting | 0.973 | 0.89 | %2 |
+
+**Gradient boosting benimsenmedi.** Sıralama gücü aynı (AUC farkı −0.003,
+%95 bootstrap GA [−0.010, +0.002]). Gördüğü senaryolarda daha çok bot yakalıyor
+(+0.27, GA [+0.13, +0.40]). Ama görmediği bir insan grubunu dörtte üç oranında
+blokluyor. Gerçek veri yokken ödeme kapısında doğru model, görmediğine en az
+emin davranan modeldir.
+
+**LSTM skordan çıkarıldı.** Yalnızca simülatörle eğitildiği için tarayıcı
+trafiğinde çıktısı "insan"a çöküyordu (AUC 0.947, Brier 0.51). 0.4 ağırlıkla
+harmanlandığında ≥60'a ulaşan bot oranı 0.90'dan 0.79'a düştü; karşılığında
+tek bir ek insan yakalanmadı. Var olma sebebi olan devir teslimde RF'den
+**4 akış geç** tepki verdi. Tarayıcı verisiyle yeniden eğitilmesi (AUC 0.956)
+ve RF'ye geçmiş akışları öznitelik olarak vermek (AUC 0.984) de RF'yi
+geçmedi.
+
+**Bedeli, ölçüldüğü haliyle:** LSTM meşru skorları da bastırıyordu. Karar
+katmanından geçirilen tam form doldurmalarında:
+
+| Simüle kullanıcı | Önce | Sonra |
+|---|---|---|
+| Tipik kullanıcı, doğrudan onay | %95.0 | %89.4 (kalanı ek doğrulama) |
+| Yavaş yazan kullanıcı, **blok** | %5.2 | **%0.2** |
+
+Yani daha az müşteri reddediliyor, daha çok müşteriden ek doğrulama isteniyor.
+(Önce/sonra karşılaştırması, değişiklik anında önceki sürümle — `705a63f` —
+`benchmark.py` form doldurma üreteciyle, kişi başına 500 oturumla ölçüldü.)
+
+**Asıl sınır model ailesi değil.** Senaryo dışarıda bırakıldığında ağaç
+modellerinin hiçbiri A2/A3/A4 saldırılarının %20'sinden fazlasını yakalamadı.
+Görülmemiş bir saldırıyı yakalayan iki model (lojistik regresyon ve MLP) ise
+görülmemiş insanların %48-68'ini de işaretledi. Darboğaz sinyaller ve veri.
+
+## Rakipler ne yapıyor
+
+- **Cloudflare:** Bot Management motorlarının belgelerinde fare/klavye
+  davranışı yok. Heuristik parmak izleri, JA3/JA4 TLS parmak izi, istek
+  özellikleri üzerinde ML ve müşteri başına trafik tabanına göre anomali
+  tespiti kullanıyor.
+- **DataDome:** Sunucu tarafı (HTTP/TLS parmak izi, IP itibarı) ile istemci
+  tarafı sinyalleri (fare, dokunma, sensör) birleştiriyor. Her site için
+  ayrı model eğitiyor ve tarayıcıda WASM tabanlı bir sınama çalıştırıyor.
+- **Kasada:** Her yüklemede değişen, gizlenmiş bir JavaScript sanal
+  makinesinde iş ispatı kullanıyor. Amaç, istemci kodunun taklit edilmesini
+  pahalı kılmak.
+- **BioCatch, NuData (Mastercard), BehavioSec (LexisNexis):** Davranışsal
+  biyometriyi cihaz ve ağ zekâsıyla birleştiriyor. BehavioSec, geri dönen
+  kullanıcıyı **kendi geçmiş profiliyle** karşılaştırıyor.
+- **reCAPTCHA Enterprise:** Eylem başına eşik ve gerekçe kodları sunuyor.
+  Sitenin gerçek sonuçları geri bildirimle modele işleniyor.
+
+Ortak nokta şu: **hiçbiri yalnızca davranış skoruna dayanmıyor.** Hepsi
+kimlik/cihaz/ağ sinyali, istemci bütünlüğü ve gerçek trafikten gelen geri
+bildirim döngüsüyle çalışıyor. Akademide de benzer: BeCAPTCHA-Mouse'ta
+Random Forest, LSTM ve GRU'yu geçti. El yapımı öznitelikler ise istatistiksel
+taklide karşı zayıf kaldı. DMTG gibi difüzyon tabanlı üreteçler insan benzeri
+imleç yolları üretiyor. Bu, DeepCheck'in kendi taklit ölçümüyle aynı sonucu
+söylüyor.
+
+---
+
+# Demo Prosedürü — Müşteri profilinin ek doğrulama istemesi
+
+## Neden sahnede sıfırdan kurulamaz
+
+Profil katmanı bir müşteriyi yalnızca **kendi** geçmişiyle, aynı giriş türünde
+(fare, klavye, dokunmatik) karşılaştırır ve bunun için en az **19 referans
+oturum** ister. Bu sayı ayarlanmadı, aritmetikten geliyor: n referansla
+ulaşılabilecek en küçük p-değeri 1/(n+1), yani 0.05 düzeyinde 19'un altında
+katman hiç soru soramaz. Bir profile İstanbul günü başına en fazla **3** oturum
+öğretilir (`PROFILE_LEARN_PER_DAY`), böylece bir saldırgan müşterinin
+davranış zarfını bir öğleden sonrada yeniden kuramaz. Sonuç: bir demo
+müşterisi **en erken 7 günde** olgunlaşır. Profil jüriden önce kurulur, jüri
+önünde yalnızca son adım gösterilir.
+
+**Tohum verisi yok.** Veritabanına elle vektör yazılmaz; bot laboratuvarı,
+betik veya sentetik oturum kullanılmaz. Profildeki her referans, bir ekip
+üyesinin demo sayfasında gerçekten yaptığı bir ödemedir.
+
+## Hazırlık — yalnızca demo makinesinin `.env` dosyası
+
+Ürünün varsayılanı katmanın kapalı olmasıdır ve öyle kalır.
+
+```
+DEEPCHECK_PROFILE_KEY=<python -c "import secrets; print(secrets.token_urlsafe(32))">
+DEEPCHECK_MERCHANT_KEYS=yerel-satici:<ikinci, farklı bir token>
+PROFILE_LAYER=1
+PROFILE_ESCALATION=0
+```
+
+- Satıcı anahtarı demo ödemesinde kullanılmaz (demo sayfası ayrılmış `demo`
+  ad alanına yazar), ama katman en az bir satıcı tanımlı olmadan açılmaz.
+- Kurulum **gölge modunda** yapılır (`PROFILE_ESCALATION=0`): katman hesaplar,
+  kaydeder ve öğrenir ama kimseden kod istemez. Profil olgunlaştıktan sonra ekip
+  üyesinin kendi ödemelerinden biri sapma sayılırsa sorgulama bütçesi harcanmaz
+  ve o oturum profile öğretilmez.
+- Kurulum boyunca değişmemesi gerekenler: `DEEPCHECK_PROFILE_KEY` ve
+  `DEEPCHECK_PROFILE_KEY_VERSION` (anahtar değişirse her profil sessizce
+  sıfırlanır), veritabanı hacmi (**`docker-compose down -v` çalıştırılmaz**,
+  profilleri siler) ve `FEATURE_SCHEMA_VERSION` (artıran bir kod güncellemesi
+  mevcut profili karşılaştırma dışı bırakır).
+
+## 1. Adım — Kurulum (jüriden en az 7 gün önce başlar)
+
+Ekip üyesi A, **her gün 3 ödeme** yapar. Her seferinde:
+
+1. `http://localhost:3000/demo` sayfasını yeniden yükler. Her yükleme yeni bir
+   oturumdur ve bir oturum profile yalnızca bir kez öğretilir.
+2. "Müşteri Referansı (demo)" alanında `demo-musteri-1` yazdığını kontrol eder.
+3. Aynı dizüstü bilgisayarda, alanlara **fare veya touchpad ile tıklayarak**
+   formu gerçekten doldurur. Hiç işaretçi olayı olmayan oturum "Klavye",
+   telefon "Dokunmatik" sayılır ve ayrı bir referans kümesi biriktirir, ama
+   günlük 3 hakkı yine tüketir.
+4. Onayla'ya basar.
+
+Profile yalnızca **onaylanan** (`allow`) ödeme öğretilir: doğrudan onay ya da
+doğrulama kodu girilerek alınan onay. "Şüpheli" bandında uyarıyla geçen
+(`warn`), reddedilen ya da en az 3 ölçülmüş davranış penceresi toplanamamış
+(`PROFILE_MIN_FLUSHES`) ödeme öğretilmez. Böyle bir ödeme o gün yeni bir
+oturumla tekrarlanabilir.
+
+**İlerleme SOC panosunda izlenir.** Oturum seçildiğinde "Müşteri Profili"
+kartında `Fare: n / 19` görünür. Bu, ödeme kararı **verildiği andaki**
+referans sayısıdır. Bu yüzden bir ödemenin katkısı ancak bir sonraki ödemenin
+kartında görünür. Onayla'ya basılmadan önce kart "Profil yok" der; bu beklenen
+davranıştır. Kurulum boyunca kartta "Gölge modu — karar etkilenmedi" rozeti
+durur.
+
+Hedef 19 değil **20** referanstır. Kalibrasyon kümesi, bu oturumla
+karşılaştırılamayacak kadar az özellik ölçmüş referansları dışarıda bırakır.
+Küme 19'un altına düşerse katman yine susar; kart bu durumda "Karşılaştırılabilir
+referans yetersiz" yazar. 7 gün × 3 = 21 ödeme bunu karşılar, tampon en fazla
+20 oturum tutar.
+
+## 2. Adım — Jüri oturumundan hemen önce
+
+`.env` içinde `PROFILE_ESCALATION=1` yapılır ve `docker-compose up -d`
+çalıştırılır. Değişen konteyner yeniden oluşturulur, veritabanı hacmi korunur.
+Bu ayar **yalnızca bu demo içindir**: zorunlu mod, gerçek bir kişi farklı
+oturum ve cihazlarda ölçülmeden üründe açılmamalıdır (bkz.
+[`docs/profile-evaluation.md`](profile-evaluation.md) §12). Zorunlu mod
+açılmak istenmezse 3. adım gölge modunda da yapılabilir. O zaman pencere
+açılmaz, ama pano sapmayı yine gösterir.
+
+## 3. Adım — Jüri önünde
+
+1. SOC panosu açık tutulur.
+2. **Başka bir kişi (B)**, aynı bilgisayarda ve aynı fareyle, **yeni
+   yüklenmiş** demo sayfasında `demo-musteri-1` referansıyla formu doldurur ve
+   Onayla'ya basar. Sayfa bu oturumda daha önce doğrulama kodu almış
+   olmamalıdır. Taze bir doğrulama, sonraki profil sorgusunu da karşılar. Bu
+   bilinçli bir tercih: aksi, doğru kodu giren müşteriye tekrar tekrar kod
+   soran döngüyü geri getirirdi.
+3. Katman B'nin oturumunu, A'nın kalibrasyon kümesindeki oturumların
+   **hepsinden** daha uç bulursa ödeme sayfasında doğrulama kodu penceresi
+   açılır. Sayfa nedenini söylemez. İstemciye giden gerekçe, küme ve konformal
+   kontrollerle aynı genel `step_up`'tır. Risk skoru ve etiket değişmez.
+4. **Kod girilmeden önce** panoda B'nin oturumu seçilir: "Değerlendirildi",
+   "Ek doğrulama istendi", p-değeri (20 referansla en küçüğü 1/21 ≈ 0.0476) ve
+   en çok sapan özellikler görünür. İstemcinin görmediği gerekçe yalnızca SOC
+   tarafındadır. Kartta "Ek doğrulama istendi" yoksa pencere profil yüzünden
+   değil, skor gibi başka bir kontrol yüzünden açılmıştır.
+5. B kodu girer ve ödeme alınır. Bu, "torun büyükannesi adına ödüyor"
+   senaryosudur: katman yalnızca ek doğrulama ister, engellemez. O gün 3
+   öğrenme hakkı dolmamışsa B'nin oturumu profile **deneme (probation)**
+   olarak kaydedilir. Son karar artık `verified` olduğu için kartta "Ek
+   doğrulama istendi" rozeti kalkar.
+6. **Bilinçli olarak kabul edilen bedel.** Deneme olarak kaydedilen oturum
+   referans **değildir**: sapma hesabına ve olgunluk sayısına katılmaz.
+   Bu yüzden B aynı şekilde bir kez daha öderse yine doğrulama kodu istenir.
+   Bu bir engelleme değil, fazladan bir doğrulamadır. Oturum ancak satıcı
+   ödemeyi onayladığında (`POST /api/outcome`, `settled`) ya da üst üste 3
+   başarılı doğrulama profili yenilediğinde referans olur. Demo ad alanında
+   satıcı anahtarı olmadığı için demoda yalnızca ikinci yol vardır. Panoda
+   kart bu oturumu "Onay bekleyen oturum: 1" olarak referanslardan ayrı
+   gösterir. Nedeni ölçüldü: deneme oturumları referans sayıldığında, kodu
+   bir kez ele geçirip geçen saldırganın sonraki oturumlarını da koruyordu.
+   Sentetik kimliklerde tek bir saldırgan oturumu, saldırganın sonraki
+   oturumlarında ek doğrulama oranını %48.5'ten %25.0'a düşürdü (2026-09-16
+   ölçümü, [`docs/profile-evaluation.md`](profile-evaluation.md) başındaki
+   önce/sonra tablosu). Bugünkü kuralla, onay bekleyen oturum olarak saklanan
+   0, 1, 2, 4 ya da 6 saldırgan oturumunda oran her seferinde %47.5 kaldı
+   (§7). Bu kuralın bedeli de ölçüldü: sorgulanıp doğrulamayı geçen farklı bir
+   kişi aynı şekilde geri geldiğinde, sonraki oturumu farede %71.7, klavyede
+   %62.4 oranında yeniden sorgulandı (§7). Her biri bir engelleme değil, bir
+   doğrulamadır ve bir profil 30 günde en fazla 3 kez sorar.
+
+## Beklenti — dürüst hali
+
+**Ek doğrulama garanti değildir.** Farklı bir kişi A'nın kendi oturumlarından
+daha uç görünmüyorsa ödeme doğrudan geçer ve panoda p-değeri 0.05'in üstünde
+görünür. Bu bir arıza değil, kalibre edilmiş davranıştır; jüriye de böyle
+anlatılır. Ne sıklıkla olacağına dair elimizdeki tek sayılar sentetiktir
+([`docs/profile-evaluation.md`](profile-evaluation.md) §5 ve §9, fare, 20
+referans):
+
+| | Oran |
+|---|---|
+| Farklı kişi ek doğrulamaya düştü | %47.5 (%95 GA %44.0–50.8) |
+| Aynı kişi yanlışlıkla sorgulandı (**alt sınır**) | %4.9 (%95 GA %4.0–5.9) |
+| Farklı kişi, kişi-içi değişkenlik varsayımı 0.6 yerine 0.3 / 1.0 olsaydı | %68.0 / %27.3 |
+
+Üç satırın üçü de şu an kullanılan kodun, yani **tam konformal** sıralamanın
+2026-09-18 ölçümüdür (§5 ve §9). Onun yerine geçtiği birini-dışarıda-bırakan
+sıralama, aynı oturumlarda aynı kişiyi %6.0 oranında sorguluyordu: aday ile
+referanslar aynı fonksiyonla puanlanmadığı için 0.05 düzeyi bir oran olarak
+tutmuyordu (sayfanın başındaki önce/sonra tablosu).
+
+> **Sentetik kimlikler üzerinde ölçüldü; gerçek müşteri verisi yoktur.** Tek
+> bir gerçek kişinin çok sayıda oturumu henüz ölçülmedi ve bu demo da bir
+> ölçüm değildir: demo müşterisi `is_demo` olarak işaretlenir ve raporlanan
+> hiçbir ölçüme katılmaz.
+
+## Prova kuralları — jüri gününün hakkını harcamamak için
+
+- **Sorgulama bütçesi.** Bir profil 30 günde en fazla **3** kez ek doğrulama
+  ister (`PROFILE_MAX_ESCALATIONS`). Sonrasında katman susar ve kart
+  "Sorgulama bütçesi doldu" der. Her prova bir hak harcar. Aynı müşteride en
+  fazla bir prova yapılır. Daha fazlası gerekiyorsa A, aynı 7 gün içinde ikinci
+  bir demo müşterisini (ör. `demo-musteri-prova`) paralel kurar; günlük sınır
+  müşteri başınadır.
+- **Kendi kendini onarma.** Üst üste **3** kez sorgulanıp doğru kodu girilen
+  profil yanlış kabul edilir: bu 3 deneme oturumu referansa terfi eder ve
+  profil en yeni 10 oturuma indirilir (`PROFILE_HEAL_AFTER`,
+  `PROFILE_HEAL_KEEP`). Profil yeniden olgunlaşana kadar, yani en az 3 gün,
+  katman susar. Tek bir başarılı doğrulama hiçbir oturumu terfi ettirmez.
+  Provada B kodu **girmez**, pencereyi kapatır.
+
+## Bu demo neyi gösterir, neyi göstermez
+
+**Gösterir:** Katmanın tek çıktısı ek doğrulamadır; skor, etiket ve engelleme
+değişmez. Gerekçe istemciye söylenmez, yalnızca SOC panosunda ve denetim
+kaydında durur. Doğru kodu giren kişi ödemeyi tamamlar.
+
+**Göstermez:**
+
+- Gerçek müşterilerde yanlış sorgulama ve yakalama oranını; bunlar ölçülmedi.
+- Kodu oltalama ile ele geçirmiş saldırgana karşı korumayı. Katmanın gücü,
+  satıcının ek doğrulama kanalının gücü kadardır; demoda kod sayfada yazılıdır.
+- Kart deneme botlarına karşı bir etkiyi. Müşteri referansı olmayan misafir
+  ödemesi bu katmana hiç ulaşmaz.
+
+---
+
+*İlgili ölçümler: [`docs/evaluation.md`](evaluation.md), [`docs/profile-evaluation.md`](profile-evaluation.md), [`backend/model_selection.py`](../backend/model_selection.py).*

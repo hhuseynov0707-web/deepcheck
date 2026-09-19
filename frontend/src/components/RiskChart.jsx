@@ -106,7 +106,11 @@ export default function RiskChart({ history = [], width = 600, height = 260 }) {
   return <svg ref={svgRef} className="w-full" />;
 }
 
-export function ShapBarChart({ shapExplanation = [], width = 400, height = 160 }) {
+const formatPercent = (value) => `${value.toFixed(1)}%`;
+
+// `formatValue` exists for the SOC profile card, which plots z values rather
+// than SHAP percentages through the same bars; SHAP keeps the default.
+export function ShapBarChart({ shapExplanation = [], width = 400, height = 160, formatValue = formatPercent }) {
   const svgRef = useRef(null);
   const stateRef = useRef(null);
 
@@ -192,9 +196,9 @@ export function ShapBarChart({ shapExplanation = [], width = 400, height = 160 }
       .textTween(function (d) {
         const previous = parseFloat(this.textContent) || 0;
         const interpolator = d3.interpolateNumber(previous, d.impact);
-        return (tt) => `${interpolator(tt).toFixed(1)}%`;
+        return (tt) => formatValue(interpolator(tt));
       });
-  }, [shapExplanation]);
+  }, [shapExplanation, formatValue]);
 
   return <svg ref={svgRef} className="w-full" />;
 }

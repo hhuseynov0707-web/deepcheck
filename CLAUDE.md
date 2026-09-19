@@ -14,7 +14,7 @@ DeepCheck — istifadəçi davranışını real vaxtda analiz edərək bot və i
 |---|---|---|
 | Backend | FastAPI (Python 3.11) | Async, yüksək performanslı |
 | Database | PostgreSQL | Session və davranış məlumatları |
-| ML Model | Random Forest + LSTM | sklearn + PyTorch (Isolation Forest hələ təlim edilir, amma skorda çəkisi 0-dır — səbəbi scorer.py-də) |
+| ML Model | Random Forest | sklearn. LSTM və Isolation Forest ölçmə nəticəsində skordan çıxarılıb (səbəbi scorer.py-də, təkrarlamaq üçün `backend/model_selection.py`) |
 | Real-time | REST API polling (hər 2 saniyə) | Frontend fetch ilə |
 | Deploy | Docker Compose | `docker-compose up` ilə hər şey qalxır |
 | Frontend | React + Vite | Müasir, sürətli |
@@ -38,7 +38,8 @@ deepcheck-mvp/
 │   ├── database.py            # PostgreSQL bağlantısı (SQLAlchemy)
 │   ├── models.py              # DB modelləri
 │   ├── scorer.py              # Feature extraction + risk skoru
-│   ├── lstm_model.py          # PyTorch LSTM modeli
+│   ├── lstm_model.py          # FEATURE_NAMES + LSTM tərifi (skorda istifadə olunmur)
+│   ├── model_selection.py     # Model seçimi araşdırması (RF vs GBM vs LSTM)
 │   └── train_model.py         # Sintetik data + model training
 └── frontend/
     ├── Dockerfile
@@ -97,9 +98,13 @@ oxuyur, buradakı siyahı onun sənədləşdirilməsidir):
 Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 
 ### backend/lstm_model.py
-- PyTorch ilə LSTM — davranışı zaman seriyası kimi analiz edir
-- Input: son 10 saniyəlik davranış sequence-i
-- Output: fraud ehtimalı (0-1)
+- Kanonik `FEATURE_NAMES` siyahısı burada yaşayır
+- LSTM tərifi qalıb, amma **skorda iştirak etmir**: yalnız simulyatorla təlim
+  edildiyi üçün brauzer trafikində çıxışı "insan"a çökürdü (bot ≥60: RF tək
+  0.90, qarışıq 0.79) və devir-təslimi RF-dən 4 axış gec tuturdu. Yenidən
+  ölçmək üçün `TRAIN_LSTM=1 python train_model.py`
+- Sessiya səviyyəli zaman məntiqi `scorer.smooth_session_score()`-dadır:
+  5 axışın medianı + 35 bal sıçrayışda yumşaltma bypass
 
 ### backend/train_model.py
 - 25.000 sintetik **session** yaradır; hər biri 10 ardıcıl flush pəncərəsi
@@ -108,8 +113,8 @@ Risk Skoru formulu: `Risk Score = 100 × P(fraud | behavior)`
 - Bot davranışı: piksel-mükəmməl kliklər, sıfır hesitation, sabit sürət
 - Sessionların 12%-i orta yerdə **dəyişir** (insan → bot və əksi) — ardıcıl
   model üçün öyrəniləcək yeganə zaman siqnalı budur
-- RF + Isolation Forest final pəncərə üzərində, LSTM isə həqiqi 10 addımlıq
-  ardıcıllıq üzərində train olunur. Isolation Forest hələ təlim edilir və
+- RF + Isolation Forest final pəncərə üzərində train olunur (LSTM yalnız
+  `TRAIN_LSTM=1` ilə). Isolation Forest hələ təlim edilir və
   bundle-da saxlanılır, lakin **skorda çəkisi 0-dır**: real held-out
   brauzer sətirlərində tək başına ROC-AUC 0.340 verdi — təsadüfdən də pis,
   çünki yalnız insan sətirləri üzrə fit edilir və bu məhsulun hədəf aldığı

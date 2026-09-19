@@ -117,7 +117,10 @@ precision of 0.92 is not.
 
 ## Decision-layer additions, and what they measured
 
-Three statistical layers were added on top of the unchanged ensemble.
+Three statistical layers were added on top of the unchanged ensemble. (Since then the
+ensemble itself changed: the score is now the RandomForest alone. The held-out
+numbers above were always the forest's, so they now describe the shipped scorer.
+See `backend/model_selection.py` and the fourth question in `juri-cevaplari.md`.)
 
 **Sequential testing (SPRT)** replaced the fixed three-flush evidence rule.
 A blatant session is now decided on its first flush and an ambiguous one keeps

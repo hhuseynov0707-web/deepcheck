@@ -8,6 +8,8 @@
  *       intervalMs: 2000,
  *       onUpdate: (result) => console.log(result),
  *     });
+ *     // Before asking the server for a decision (resolves, never rejects):
+ *     DeepCheck.flush().then(askServerForDecision);
  *   </script>
  *
  * The session id is minted by the server (POST /api/session) together with a
@@ -15,6 +17,11 @@
  * id is no longer generated in the browser: a client-chosen id let anyone
  * post telemetry under another customer's session, and let a bot skip the
  * SDK entirely and still have its id look legitimate at checkout.
+ *
+ * The token may expire server-side. When /api/analyze answers 401 the SDK
+ * registers a NEW session once and carries on under it, so getSessionId() and
+ * getToken() can change during the life of a page: read them when they are
+ * needed, never cache them.
  */
 (function (window) {
   "use strict";
@@ -30,7 +37,7 @@
   // Must stay <= the server-side max_length caps in backend/main.py's
   // AnalyzeRequest. Exceeding them makes FastAPI reject the entire flush with
   // 422, which used to be indistinguishable from a clean score on the client
-  // (see the !res.ok handling in flushBuffer). Trimming here keeps a
+  // (see the !res.ok handling in postAnalyze). Trimming here keeps a
   // high-polling-rate mouse -- or a bot deliberately flooding mousemove --
   // from silently blinding the detector.
   const LIMITS = {
@@ -41,6 +48,16 @@
     focus: 200,
     key: 1000,
   };
+  // Same reason, for the ClientSignals counters (le=100_000 on the server).
+  // pointermove fires continuously while the pointer moves and every one is
+  // counted, so a long-lived tab can pass the cap -- after which, uncapped,
+  // every flush of the session would be rejected with 422.
+  const COUNTER_CAP = 100000;
+
+  // An analyze request that never settles would hold the in-flight guard in
+  // flushBuffer() forever, silencing the session without a single onError.
+  // fetch() has no deadline of its own.
+  const REQUEST_TIMEOUT_MS = 10000;
 
   function createState() {
     return {
@@ -55,6 +72,9 @@
       // so this does not catch driven browsers; navigator.webdriver is the
       // signal for those, and it is trivially patched out. Neither is proof of
       // anything alone, which is exactly why neither is wired to the score.
+      //
+      // pointerTypes counts every event carrying a pointerType. Where Pointer
+      // Events exist that includes every pointermove, not just clicks.
       untrustedEvents: 0,
       pointerTypes: { mouse: 0, pen: 0, touch: 0 },
       mouseTrajectory: [],
@@ -92,15 +112,38 @@
   // request is even sent, so the behavior of the first two seconds is not
   // lost while the round trip is in flight.
   let registration = null;
+  // The register() round trip currently in progress, if any. StrictMode's
+  // init/stop/init used to start a second registration while the first was
+  // still solving its proof of work, minting and orphaning an extra session.
+  let registering = null;
+  // The analyze request in progress (including a re-registration triggered by
+  // its 401), as a promise that never rejects. At most one exists at a time:
+  // two overlapping requests can land out of order, and the server rejects
+  // the older window as "time going backwards" -- an onError on a healthy
+  // session.
+  let inFlight = null;
+  // Set when a 401 has triggered a re-registration, cleared by the next
+  // successful flush. A second 401 before then is reported rather than
+  // answered with another registration, so a server that rejects every token
+  // costs one /api/session call, not one per tick.
+  let reauthAttempted = false;
+  // The behaviour lists of the last flush the server accepted. The server's
+  // replay check rejects a window whose events it has already stored, in ANY
+  // session, so re-sending an unchanged window is a guaranteed 422.
+  let lastSentKey = null;
+  // Which event carries the trajectory; decided when listeners are attached
+  // so detachListeners() removes exactly what was added.
+  let moveEventName = "mousemove";
 
   // Smallest non-zero gap between consecutive performance.now() readings.
   //
   // Every engine deliberately clamps this -- roughly 100 microseconds in
   // Chrome, 1 millisecond in Firefox and Safari -- as a defence against timing
   // side channels. The value is a property of the browser and the machine, not
-  // of this page, which is what makes it worth reporting: a client that
-  // fabricates telemetry has to fabricate this too, and has to know what a
-  // plausible clamp looks like.
+  // of this page, which is what makes it worth reporting. It is not a secret,
+  // though: the clamps are documented, and a client fabricating telemetry can
+  // simply report 100 microseconds. It rejects a script that reports nothing
+  // plausible, not one that read the documentation.
   function measureClockResolution(samples) {
     var smallest = Infinity;
     var previous = performance.now();
@@ -137,8 +180,104 @@
     });
   }
 
+  // SHA-256 constants: the first 32 bits of the fractional parts of the cube
+  // roots of the first 64 primes (FIPS 180-4, section 4.2.2).
+  var SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ];
+
+  function rotr(value, bits) {
+    return (value >>> bits) | (value << (32 - bits));
+  }
+
+  // Pure-JavaScript SHA-256 of a byte array, as lowercase hex.
+  //
+  // Used ONLY when crypto.subtle is missing. Browsers expose crypto.subtle in
+  // secure contexts alone, so a phone opening the demo over plain http on the
+  // LAN (http://192.168.x.x:3000) could not solve the proof of work at all:
+  // registration failed and every such visitor was sent to verification.
+  // Which implementation produced the digest is irrelevant to the check --
+  // the server recomputes it with hashlib.sha256.
+  function sha256HexFallback(bytes) {
+    var hash = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+
+    // Padding: 0x80, zeros, then the message length in bits as a 64-bit
+    // big-endian integer, filling out a whole number of 64-byte blocks.
+    var length = bytes.length;
+    var paddedLength = Math.ceil((length + 9) / 64) * 64;
+    var data = new Uint8Array(paddedLength);
+    data.set(bytes);
+    data[length] = 0x80;
+    var bitsHigh = Math.floor(length / 0x20000000);
+    var bitsLow = (length * 8) >>> 0;
+    for (var p = 0; p < 4; p++) {
+      data[paddedLength - 8 + p] = (bitsHigh >>> (24 - 8 * p)) & 0xff;
+      data[paddedLength - 4 + p] = (bitsLow >>> (24 - 8 * p)) & 0xff;
+    }
+
+    var w = new Int32Array(64);
+    for (var offset = 0; offset < paddedLength; offset += 64) {
+      var i;
+      for (i = 0; i < 16; i++) {
+        var j = offset + i * 4;
+        w[i] = (data[j] << 24) | (data[j + 1] << 16) | (data[j + 2] << 8) | data[j + 3];
+      }
+      for (i = 16; i < 64; i++) {
+        // The trailing terms are plain shifts (>>> 3, >>> 10), not rotations.
+        var s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+        var s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+      }
+
+      var a = hash[0], b = hash[1], c = hash[2], d = hash[3];
+      var e = hash[4], f = hash[5], g = hash[6], h = hash[7];
+      for (i = 0; i < 64; i++) {
+        var t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA256_K[i] + w[i]) | 0;
+        var t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+        h = g;
+        g = f;
+        f = e;
+        e = (d + t1) | 0;
+        d = c;
+        c = b;
+        b = a;
+        a = (t1 + t2) | 0;
+      }
+      hash[0] = (hash[0] + a) | 0;
+      hash[1] = (hash[1] + b) | 0;
+      hash[2] = (hash[2] + c) | 0;
+      hash[3] = (hash[3] + d) | 0;
+      hash[4] = (hash[4] + e) | 0;
+      hash[5] = (hash[5] + f) | 0;
+      hash[6] = (hash[6] + g) | 0;
+      hash[7] = (hash[7] + h) | 0;
+    }
+
+    var out = "";
+    for (var k = 0; k < 8; k++) {
+      out += (hash[k] >>> 0).toString(16).padStart(8, "0");
+    }
+    return out;
+  }
+
+  function hasSubtleDigest() {
+    return !!(window.crypto && window.crypto.subtle && typeof window.crypto.subtle.digest === "function");
+  }
+
   function sha256Hex(text) {
     var bytes = new TextEncoder().encode(text);
+    if (!hasSubtleDigest()) {
+      return new Promise(function (resolve) {
+        resolve(sha256HexFallback(bytes));
+      });
+    }
     return window.crypto.subtle.digest("SHA-256", bytes).then(function (buffer) {
       var out = "";
       var view = new Uint8Array(buffer);
@@ -166,11 +305,14 @@
 
   // Find a nonce whose SHA-256 starts with `difficulty` zero bits.
   //
-  // Not a cost tax: it is evidence that this client executed the code it was
-  // served, which is the same reason Kasada, hCaptcha and Turnstile carry a
-  // proof of work. Expected work is 2^difficulty hashes -- at the default 12
-  // bits that is a few thousand, a few hundred milliseconds in a browser, and
-  // linear in cost for anyone minting sessions in bulk.
+  // A solved proof of work shows that SOME client executed the challenge. It
+  // does not show that the client is a browser or that it ran this file: a
+  // plain Python loop over hashlib solves the default 12 bits in about 4 ms
+  // (median of 50 runs), and the runtime measurements sent next to the nonce
+  // are self-reported numbers such a script can hardcode inside the server's
+  // bounds. What the work does impose is a per-session cost, linear for
+  // anyone minting sessions in bulk. Expected work is 2^difficulty hashes, a
+  // few thousand at 12 bits.
   //
   // Yielding every YIELD_EVERY attempts keeps the page responsive; a solver
   // that blocks the main thread for half a second is a worse experience than
@@ -205,34 +347,51 @@
     });
   }
 
+  // fetch() with a deadline. Resolves to the Response and, for a 2xx only, its
+  // parsed JSON body: an error body is never handed on as if it were data.
+  function requestJson(url, options) {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller ? window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS) : null;
+    return fetch(url, controller ? { ...options, signal: controller.signal } : options)
+      .then((res) => (res.ok ? res.json().then((body) => ({ res, body })) : { res, body: null }))
+      .catch((err) => {
+        if (err && err.name === "AbortError") throw new Error("DeepCheck API zaman aşımına uğradı");
+        throw err;
+      })
+      .finally(() => {
+        if (timer) window.clearTimeout(timer);
+      });
+  }
+
   function register() {
     // React StrictMode mounts, unmounts and remounts in development, so
     // init() runs twice per page load. Minting a second session there would
     // orphan the first one and double the id count for every real visit.
     if (sessionId && sessionToken) return Promise.resolve({ session_id: sessionId, token: sessionToken });
+    if (registering) return registering;
 
-    // Two steps now. /api/session hands out a signed challenge and nothing
-    // else; the token that /api/analyze requires is only issued in exchange for
-    // a solved proof of work and runtime measurements consistent with a
-    // browser. Telemetry therefore cannot be posted by something that never
-    // executed this file.
+    // Two steps. /api/session hands out a signed challenge and nothing else;
+    // the token that /api/analyze requires is only issued in exchange for a
+    // solved proof of work and runtime measurements inside browser-plausible
+    // bounds. That closes posting telemetry with no client work at all. It
+    // does NOT prove the poster is a browser or ran this file (see
+    // solveProofOfWork), and a bot driving a real browser passes it honestly.
     //
-    // crypto.subtle is only available in a secure context, so this needs HTTPS
-    // or localhost. Without it registration fails and the host page's onError
-    // fires, which fails closed.
-    if (!window.crypto || !window.crypto.subtle) {
-      return Promise.reject(
-        new Error("DeepCheck güvenli bağlam gerektirir (HTTPS veya localhost)")
-      );
-    }
-
-    return fetch(`${config.apiUrl}/api/session`, { method: "POST" })
-      .then((res) => {
+    // Without crypto.subtle (any non-secure context, e.g. plain http on a LAN
+    // address) the digest comes from sha256HexFallback instead of registration
+    // failing.
+    registering = requestJson(`${config.apiUrl}/api/session`, { method: "POST" })
+      .then(({ res, body: data }) => {
         if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (!data || typeof data.session_id !== "string" || typeof data.challenge !== "string") {
+        // difficulty_bits is checked too: a missing value compared as
+        // `bits >= undefined`, which is never true, so the solver never ended.
+        if (
+          !data ||
+          typeof data.session_id !== "string" ||
+          typeof data.challenge !== "string" ||
+          !Number.isInteger(data.difficulty_bits) ||
+          data.difficulty_bits < 0
+        ) {
           throw new Error("DeepCheck oturum yanıtı geçersiz");
         }
         const clockResolutionUs = measureClockResolution(2000);
@@ -244,7 +403,7 @@
         ]);
       })
       .then(([data, nonce, timerLagMs, clockResolutionUs]) =>
-        fetch(`${config.apiUrl}/api/session/attest`, {
+        requestJson(`${config.apiUrl}/api/session/attest`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -258,18 +417,19 @@
           }),
         })
       )
-      .then((res) => {
+      .then(({ res, body: data }) => {
         if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
         if (!data || typeof data.session_id !== "string" || typeof data.token !== "string") {
           throw new Error("DeepCheck doğrulama yanıtı geçersiz");
         }
         sessionId = data.session_id;
         sessionToken = data.token;
         return data;
+      })
+      .finally(() => {
+        registering = null;
       });
+    return registering;
   }
 
   function now() {
@@ -295,6 +455,31 @@
     if (kind && Object.prototype.hasOwnProperty.call(state.pointerTypes, kind)) {
       state.pointerTypes[kind] += 1;
     }
+  }
+
+  // The trajectory comes from ONE event type, chosen in attachListeners():
+  // pointermove where Pointer Events exist, mousemove otherwise. Listening
+  // only to mousemove left touch devices with no trajectory at all: a finger
+  // moving on the page fires pointermove (until the browser takes the gesture
+  // over for scrolling) but never mousemove.
+  //
+  // For a mouse, the browser fires pointermove and then mousemove for the same
+  // input, so mouse-derived features keep the sampling they had. (The one
+  // extra pointermove, for a second button pressed without moving, is rare.)
+  // getCoalescedEvents() is deliberately NOT used: it would change that
+  // sampling rate, and speed and acceleration variance both depend on it.
+  //
+  // The model has never been trained on touch or pen trajectories. A score
+  // for a touch session is therefore unmeasured -- nothing in the evaluation
+  // says what it means -- and pointer_touch in client_signals is what lets
+  // such sessions be told apart.
+  function onPointerMove(e) {
+    noteProvenance(e);
+    // A second finger (pinch) interleaved with the first would read as a
+    // cursor teleporting between two points on every event.
+    if (e.isPrimary === false) return;
+    recordHesitation();
+    state.mouseTrajectory.push({ x: e.clientX, y: e.clientY, t: now() });
   }
 
   function onMouseMove(e) {
@@ -345,13 +530,24 @@
     return list.length > max ? list.slice(list.length - max) : list;
   }
 
-  function flushBuffer() {
-    // No token yet means the session has not been minted (the request is
-    // still in flight, or it failed). Dropping the flush is correct: the
-    // buffers are rolling, so the next tick re-sends this window's behavior
-    // rather than losing it.
-    if (!sessionId || !sessionToken) return;
+  function reportError(context, err) {
+    console.error(`[DeepCheck] ${context}:`, err);
+    // Surfaced so the host page can fail CLOSED. Silence here is what let
+    // a dead backend read as a clean session.
+    try {
+      if (typeof config.onError === "function") config.onError(err);
+      window.dispatchEvent(
+        new CustomEvent("deepcheck:error", { detail: { message: String(err && err.message) } })
+      );
+    } catch (hostErr) {
+      console.error("[DeepCheck] onError işleyicisi hata verdi:", hostErr);
+    }
+  }
 
+  // Builds the flush for the current rolling window, or returns null when the
+  // window holds no behaviour. Advances the idle checkpoint and prunes the
+  // buffers as a side effect, exactly once per call.
+  function collectPayload() {
     const t = now();
 
     // If the user has gone quiet since their last tracked event, that
@@ -393,27 +589,57 @@
       focus_changes: capTail(state.focusChanges, LIMITS.focus),
       key_events: capTail(state.keyEvents, LIMITS.key),
       client_signals: {
-        untrusted_events: state.untrustedEvents,
+        untrusted_events: Math.min(state.untrustedEvents, COUNTER_CAP),
         webdriver: navigator.webdriver === true,
-        pointer_mouse: state.pointerTypes.mouse,
-        pointer_pen: state.pointerTypes.pen,
-        pointer_touch: state.pointerTypes.touch,
+        pointer_mouse: Math.min(state.pointerTypes.mouse, COUNTER_CAP),
+        pointer_pen: Math.min(state.pointerTypes.pen, COUNTER_CAP),
+        pointer_touch: Math.min(state.pointerTypes.touch, COUNTER_CAP),
       },
     };
 
-    // Nothing collected yet at all — skip the request
-    // client_signals deliberately does not count as data: a flush carrying
-    // only provenance counters and no behavior has nothing to score.
-    const hasData =
+    // Only timestamped events count as behaviour. hesitation_intervals does
+    // NOT: after ten idle seconds it is the only list left, holding nothing
+    // but the SDK's own flush-time silence checkpoints. Posting it every tick
+    // refreshed the session's freshness with no behaviour behind it, and idle
+    // windows from different visitors hash identically, so the server's
+    // replay check rejected the second one as a duplicate. client_signals does
+    // not count either: provenance counters alone have nothing to score.
+    const hasBehaviour =
       payload.mouse_trajectory.length ||
       payload.click_timing.length ||
       payload.scroll_events.length ||
-      payload.hesitation_intervals.length ||
       payload.focus_changes.length ||
       payload.key_events.length;
-    if (!hasData) return;
+    return hasBehaviour ? payload : null;
+  }
 
-    fetch(`${config.apiUrl}/api/analyze`, {
+  // Exactly the lists the server fingerprints for its replay check.
+  function behaviourKey(payload) {
+    return JSON.stringify([
+      payload.mouse_trajectory,
+      payload.click_timing,
+      payload.scroll_events,
+      payload.hesitation_intervals,
+      payload.focus_changes,
+      payload.key_events,
+    ]);
+  }
+
+  // Posts one flush. Rejects on any failure; a 401 is answered once with a
+  // fresh registration and a resend of the same window under the new session.
+  function postAnalyze(payload) {
+    const key = behaviourKey(payload);
+    // Unchanged since the last window the server accepted (e.g. flush()
+    // called right after a tick with no event in between). The server has
+    // these events already and would reject the resend as a replay.
+    if (key === lastSentKey) return Promise.resolve();
+
+    // This device's clock at the moment of sending. Every event timestamp
+    // comes from the same clock, so the server can measure the device's
+    // offset instead of treating a phone whose clock is wrong as a replay.
+    payload.client_sent_at = now();
+
+    return requestJson(`${config.apiUrl}/api/analyze`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -429,30 +655,96 @@
       // The consumer then read `risk_score` off it, got undefined, and fell
       // back to a clean value -- a 422/500/503 rendered as "Gerçek Kullanıcı".
       // Any non-2xx is now an explicit failure and never reaches onUpdate.
-      .then((res) => {
+      .then(({ res, body: result }) => {
+        if (res.status === 401 && !reauthAttempted) return reregisterAndResend(payload);
         if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
-        return res.json();
-      })
-      .then((result) => {
-        if (typeof result.risk_score !== "number" || !isFinite(result.risk_score)) {
+        if (!result || typeof result.risk_score !== "number" || !isFinite(result.risk_score)) {
           throw new Error("DeepCheck API geçersiz yanıt döndürdü");
         }
+        lastSentKey = key;
+        reauthAttempted = false;
         if (typeof config.onUpdate === "function") config.onUpdate(result);
         window.dispatchEvent(new CustomEvent("deepcheck:update", { detail: result }));
-      })
-      .catch((err) => {
-        console.error("[DeepCheck] analyze isteği başarısız:", err);
-        // Surfaced so the host page can fail CLOSED. Silence here is what let
-        // a dead backend read as a clean session.
-        if (typeof config.onError === "function") config.onError(err);
-        window.dispatchEvent(
-          new CustomEvent("deepcheck:error", { detail: { message: String(err && err.message) } })
-        );
       });
   }
 
+  // The token was refused -- expired, or signed with a secret the server no
+  // longer holds. The old session cannot be recovered, so discard it and
+  // register a new one. Once: if the new token is refused too, that 401 is
+  // reported like any other failure.
+  function reregisterAndResend(payload) {
+    reauthAttempted = true;
+    sessionId = null;
+    sessionToken = null;
+    const pending = register();
+    // ready() waits for the replacement session, not the discarded one.
+    registration = pending.catch(() => null);
+    return pending.then(() => {
+      // The same window, under the new id. Re-collecting instead would add a
+      // silence checkpoint that exists only because registration took time.
+      payload.session_id = sessionId;
+      return postAnalyze(payload);
+    });
+  }
+
+  // Starts a flush unless one is already in flight. Returns the in-flight
+  // promise (never rejects), or null when there was nothing to send.
+  function startFlush() {
+    if (inFlight) return inFlight;
+    // No token yet means the session has not been minted (the request is
+    // still in flight, or it failed). Dropping the flush is correct: the
+    // buffers are rolling, so the next flush re-sends this window's behavior
+    // rather than losing it.
+    if (!sessionId || !sessionToken) return null;
+    const payload = collectPayload();
+    if (!payload) return null;
+    const release = () => {
+      if (inFlight === request) inFlight = null;
+    };
+    const request = postAnalyze(payload)
+      .catch((err) => reportError("analyze isteği başarısız", err))
+      .then(release, release);
+    inFlight = request;
+    return request;
+  }
+
+  function flushBuffer() {
+    // Skipped while a request is in flight rather than queued behind it: the
+    // window is rolling, so the next tick carries this tick's events anyway.
+    if (inFlight) return;
+    startFlush();
+  }
+
+  function nextTask() {
+    return new Promise((resolve) => window.setTimeout(resolve, 0));
+  }
+
+  // Sends the current window now and resolves once it has been answered, so a
+  // host page can ask /api/decision about behaviour the server has actually
+  // stored. Never rejects: failures still go to onError, and the decision
+  // endpoint is the one that must treat missing evidence as missing.
+  function flush() {
+    if (!inFlight && (!sessionId || !sessionToken)) return Promise.resolve();
+    return (inFlight || Promise.resolve())
+      // One task later, so the event that triggered the call is included: a
+      // host's click handler runs while that click is still being dispatched,
+      // before it reaches the SDK's listener on window.
+      .then(nextTask)
+      // A tick may have started a request during that task. It carries the
+      // same window, so waiting for it is the fresh flush.
+      .then(() => inFlight || startFlush())
+      .then(
+        () => undefined,
+        () => undefined
+      );
+  }
+
   function attachListeners() {
-    window.addEventListener("mousemove", onMouseMove, { passive: true });
+    // Never both: for a mouse they report the same motion twice.
+    moveEventName = typeof window.PointerEvent !== "undefined" ? "pointermove" : "mousemove";
+    window.addEventListener(moveEventName, moveEventName === "pointermove" ? onPointerMove : onMouseMove, {
+      passive: true,
+    });
     window.addEventListener("click", onClick, { passive: true });
     window.addEventListener("scroll", onScroll, { passive: true });
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -460,7 +752,7 @@
   }
 
   function detachListeners() {
-    window.removeEventListener("mousemove", onMouseMove);
+    window.removeEventListener(moveEventName, moveEventName === "pointermove" ? onPointerMove : onMouseMove);
     window.removeEventListener("click", onClick);
     window.removeEventListener("scroll", onScroll);
     document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -479,14 +771,10 @@
     timerId = window.setInterval(flushBuffer, config.intervalMs);
 
     registration = register().catch((err) => {
-      console.error("[DeepCheck] oturum kaydı başarısız:", err);
       // The host page must be able to fail CLOSED. A session that was never
       // registered can never be scored, and a missing score is not a clean
       // one.
-      if (typeof config.onError === "function") config.onError(err);
-      window.dispatchEvent(
-        new CustomEvent("deepcheck:error", { detail: { message: String(err && err.message) } })
-      );
+      reportError("oturum kaydı başarısız", err);
       return null;
     });
 
@@ -516,5 +804,5 @@
     return registration || Promise.resolve(null);
   }
 
-  window.DeepCheck = { init, stop, getSessionId, getToken, ready };
+  window.DeepCheck = { init, stop, getSessionId, getToken, ready, flush };
 })(window);

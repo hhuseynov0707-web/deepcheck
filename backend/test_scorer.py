@@ -1,6 +1,6 @@
 """Sanity tests for scorer.py's feature extraction + risk scoring.
 
-Run after training (these need model.pkl / lstm_model.pt to exist):
+Run after training (these need model.pkl to exist):
     python test_scorer.py
 or, if pytest is installed:
     pytest test_scorer.py
@@ -338,6 +338,88 @@ def test_fast_keyboard_only_no_mouse_scores_high():
     )
 
 
+def _scoring_fixtures() -> dict:
+    """Every behaviour fixture the scoring tests above use, by name."""
+    fixtures = {f"natural_human_{s}": _natural_human_session(seed=s) for s in range(5)}
+    fixtures["sparse_typing_human"] = _sparse_typing_human_session()
+    fixtures["headless_bot"] = _headless_bot_session()
+    fixtures["scripted_motion_bot"] = _scripted_motion_bot_session()
+    fixtures["bot_with_incidental_pause"] = _bot_with_incidental_pause_session()
+    for s in range(3):
+        fixtures[f"human_with_fast_burst_{s}"] = _human_with_fast_burst_session(seed=s)
+    fixtures["fast_keyboard_only_no_mouse"] = _fast_keyboard_only_no_mouse_session()
+    return fixtures
+
+
+def test_measured_mask_does_not_change_the_score():
+    """measured_mask was added to compute_risk for the per-customer profile,
+    which must never move the score (the profile layer's contract is that it
+    may ask for verification and nothing else). So the mask has to be pure
+    bookkeeping: computed from the raw values, never fed to the model.
+
+    "Before" here is the computation compute_risk performed before the mask
+    existed -- the forest's probability over extract_features() -- rebuilt
+    independently from the bundle, so the comparison survives a retrained
+    model instead of pinning numbers that belong to one pickle. When the mask
+    landed, the full compute_risk output (minus timing) was also diffed
+    before/after on these fixtures and was identical apart from the new key."""
+    bundle = scorer.get_bundle()
+    defaults = scorer.get_neutral_defaults()
+    scaling = scorer.get_feature_scaling()
+    fixtures = _scoring_fixtures()
+    seen_partial_mask = False
+
+    for name, raw in fixtures.items():
+        result = scorer.compute_risk(raw)
+
+        raw_values = scorer.extract_raw(raw)
+        features = scorer.extract_features(raw, raw_values)
+        vector = np.array([[features[n] for n in FEATURE_NAMES]])
+        probability = float(bundle.rf.predict_proba(bundle.scaler.transform(vector))[0][1])
+        before = round(100 * probability, 1)
+
+        assert result["risk_score"] == before, (
+            f"{name}: compute_risk skoru {result['risk_score']}, maske oncesi hesap {before}"
+        )
+        assert result["label"] == scorer.get_label(before)
+        assert result["features"] == features, f"{name}: model girdisi degisti"
+        # The response field keeps its old definition.
+        assert result["measured_features"] == sum(
+            1 for n in FEATURE_NAMES if raw_values.get(n) is not None
+        )
+        assert set(result) == {
+            "risk_score",
+            "label",
+            "measured_features",
+            "measured_mask",
+            "provisional",
+            "behavior_bucket",
+            "confidence",
+            "shap_explanation",
+            "response_time_ms",
+            "features",
+        }, f"{name}: compute_risk sozlesmesi maskeden baska bir sey de kazandi/kaybetti"
+
+        # What a bit means: set -> the model saw the measured value; clear ->
+        # the model saw the neutral default.
+        mask = result["measured_mask"]
+        assert isinstance(mask, int) and 0 <= mask < (1 << len(FEATURE_NAMES))
+        assert bin(mask).count("1") == result["measured_features"]
+        for i, feature in enumerate(FEATURE_NAMES):
+            if mask >> i & 1:
+                assert features[feature] == scorer.normalize_feature(
+                    feature, raw_values[feature], scaling
+                )
+            else:
+                assert raw_values[feature] is None
+                assert features[feature] == float(defaults.get(feature, 0.0))
+        if 0 < mask < (1 << len(FEATURE_NAMES)) - 1:
+            seen_partial_mask = True
+
+    # Otherwise the "clear bit" branch above was never exercised.
+    assert seen_partial_mask, "no fixture has a partially measured flush"
+
+
 # ---------------------------------------------------------------------------
 # API tests.
 #
@@ -395,9 +477,13 @@ class _StubDB:
         self.known_hashes = set(known_hashes)
         self.added = []
         self.committed = False
+        # Every statement text the handler ran, so a test can assert that a
+        # request wrote nothing (no INSERT / UPDATE reached the database).
+        self.executed = []
 
     async def execute(self, statement):
         text = str(statement)
+        self.executed.append(text)
         if "WHERE behavior_data.payload_hash =" in text:
             # The duplicate lookup: match against the literal hash the handler
             # bound into the statement.
@@ -429,7 +515,9 @@ class _StubDB:
         self.committed = True
 
 
-def _stub_session(risk_score=0.0, label="Gerçek Kullanıcı", last_seen_at="now", verified_at=None):
+def _stub_session(
+    risk_score=0.0, label="Gerçek Kullanıcı", last_seen_at="now", verified_at=None, clock_offset_ms=None
+):
     if last_seen_at == "now":
         last_seen_at = main.utcnow()
     return SimpleNamespace(
@@ -441,6 +529,7 @@ def _stub_session(risk_score=0.0, label="Gerçek Kullanıcı", last_seen_at="now
         response_time_ms=0.0,
         last_seen_at=last_seen_at,
         verified_at=verified_at,
+        clock_offset_ms=clock_offset_ms,
     )
 
 
@@ -522,6 +611,201 @@ def test_api_rejects_bad_token():
         _clear_overrides()
 
 
+def _token_rejection(session_id: str, token) -> int | None:
+    """The status main._require_session_token answers with; None if accepted."""
+    try:
+        main._require_session_token(session_id, token)
+    except main.HTTPException as exc:
+        return exc.status_code
+    return None
+
+
+def test_session_token_expires():
+    """A token used to be HMAC(session_id) and nothing else, so one leaked
+    token posted telemetry and asked for decisions under that id forever --
+    and recreated the session row after the retention sweep deleted it. It now
+    carries its issue second under the HMAC and lapses after
+    SESSION_TOKEN_TTL_S, on /api/analyze and /api/decision alike."""
+    session_id = "12121212-0000-0000-0000-000000000001"
+    now_s = int(time.time())
+    ttl = main.SESSION_TOKEN_TTL_S
+    expired = main.sign_session(session_id, issued_s=now_s - ttl - 5)
+    nearly = main.sign_session(session_id, issued_s=now_s - ttl + 30)
+
+    client = _client(_StubDB(session=_stub_session(), flush_count=5))
+    try:
+        for path, body in (
+            ("/api/analyze", _analyze_payload(session_id)),
+            ("/api/decision", {"session_id": session_id}),
+        ):
+            res = client.post(path, json=body, headers={"X-DeepCheck-Token": expired})
+            assert res.status_code == 401, f"{path}: suresi dolmus jeton {res.status_code} dondu"
+            assert res.json()["detail"] == "Oturum jetonunun suresi doldu"
+
+        # The boundary is the TTL, not "any token with a date": one still
+        # inside its lifetime works on both.
+        analyzed = client.post(
+            "/api/analyze", json=_analyze_payload(session_id), headers={"X-DeepCheck-Token": nearly}
+        )
+        assert analyzed.status_code == 200, f"omru dolmamis jeton {analyzed.status_code} dondu"
+        decided = client.post(
+            "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": nearly}
+        )
+        assert decided.status_code == 200, f"omru dolmamis jeton karar icin {decided.status_code} dondu"
+    finally:
+        _clear_overrides()
+
+    # A token from the future: small skew between replicas is tolerated, a
+    # mis-set clock is not allowed to mint tokens that outlive the TTL.
+    leeway = main.SESSION_TOKEN_CLOCK_LEEWAY_S
+    assert _token_rejection(session_id, main.sign_session(session_id, issued_s=now_s + leeway // 2)) is None
+    assert _token_rejection(session_id, main.sign_session(session_id, issued_s=now_s + leeway + 30)) == 401
+
+    # The TTL comment's arithmetic: a session can be written to for at most
+    # the challenge window plus one token lifetime, far inside the row
+    # retention, so a token cannot outlive its session's row.
+    assert main.POW_CHALLENGE_TTL_S + ttl + leeway < main.ROW_RETENTION_HOURS * 3600
+    assert ttl >= 6 * main.VERIFICATION_VALID_S
+
+
+def test_session_token_is_bound_to_its_session_and_issue_time():
+    """The holder can neither move a token to another session nor extend it,
+    and every malformed header -- including the pre-expiry token format and
+    non-ASCII bytes -- is a 401, never a 500."""
+    session_id = "13131313-0000-0000-0000-000000000001"
+    now_s = int(time.time())
+    token = main.sign_session(session_id, issued_s=now_s)
+    issued, mac = token.split(".")
+    assert issued == str(now_s) and len(mac) == 64
+
+    assert _token_rejection(session_id, token) is None
+    # Another session.
+    assert _token_rejection("13131313-0000-0000-0000-000000000002", token) == 401
+    # The same MAC under a later issue second: an attempt to extend it.
+    assert _token_rejection(session_id, f"{now_s + 1}.{mac}") == 401
+    # The format every token had before expiry existed, still HMAC(session_id)
+    # under the same secret. Must not be honoured forever by accident.
+    import hashlib as _hashlib
+    import hmac as _hmac
+
+    legacy = _hmac.new(main.SECRET.encode(), session_id.encode(), _hashlib.sha256).hexdigest()
+    assert _token_rejection(session_id, legacy) == 401
+
+    malformed = [
+        None,
+        "",
+        ".",
+        f"{now_s}.",
+        f".{mac}",
+        f"{now_s}.{mac.upper()}",
+        f"0{now_s}.{mac}",  # the MAC covers the second as written, not its value
+        f"{now_s}.{mac}.extra",
+        f" {token}",
+        f"{now_s}.{mac[:-1]}",
+        f"{'9' * 13}.{mac}",
+        f"{now_s}.{mac[:-1]}é",
+        f"١٢.{mac}",  # non-ASCII digits
+    ]
+    for bad in malformed:
+        assert _token_rejection(session_id, bad) == 401, f"bozuk jeton kabul edildi: {bad!r}"
+
+    # Over HTTP, with raw non-ASCII bytes in the header: Starlette decodes
+    # them as latin-1 and compare_digest on such a str would raise TypeError.
+    client = _client(_StubDB(session=_stub_session()))
+    try:
+        res = client.post(
+            "/api/analyze",
+            json=_analyze_payload(session_id),
+            headers={"X-DeepCheck-Token": f"{now_s}.{mac[:-1]}é".encode("latin-1")},
+        )
+        assert res.status_code == 401, f"ASCII disi jeton {res.status_code} dondu"
+        # A session id UTF-8 cannot encode (a lone surrogate escape in the
+        # JSON body) never reaches the token check: request validation refuses
+        # it first. Pinned, because _mac would raise on it.
+        lone = client.post(
+            "/api/analyze",
+            content=json.dumps(_analyze_payload("\ud800")).encode(),
+            headers={"X-DeepCheck-Token": token, "Content-Type": "application/json"},
+        )
+        assert lone.status_code == 422, f"eslenmemis vekil karakterli oturum {lone.status_code} dondu"
+    finally:
+        _clear_overrides()
+
+
+def test_challenge_signature_is_not_a_token():
+    """One secret signs two kinds of object. The challenge used to be
+    HMAC("<id>.<ms>")[:32] and the token HMAC("<id>"), so the challenge for
+    session S was the first half of the token for the session id "S.<ms>";
+    only the truncation stood between them. Both messages are now tagged with
+    what they sign, so even a FULL challenge MAC over chosen fields is not a
+    token, and a token MAC is not a challenge signature."""
+    client = _client(_StubDB(session=_stub_session()))
+    try:
+        main._rate_hits.clear()
+        opened = client.post("/api/session").json()
+    finally:
+        main._rate_hits.clear()
+        _clear_overrides()
+    session_id, challenge = opened["session_id"], opened["challenge"]
+    challenge_session, issued_ms, signature = challenge.split(".")
+    assert challenge_session == session_id and len(signature) == 32
+
+    now_s = int(time.time())
+    # Same key, same fields, different domain: different MACs.
+    for fields in ((session_id, issued_ms), (session_id, str(now_s)), (f"{session_id}.{issued_ms}", str(now_s))):
+        assert main._mac(main._CHALLENGE_DOMAIN, *fields) != main._mac(main._TOKEN_DOMAIN, *fields)
+
+    # A challenge signature presented as a token, in every shape it could take.
+    for candidate_id, candidate in (
+        (session_id, f"{now_s}.{signature}"),
+        (session_id, f"{now_s}.{signature}{signature}"),
+        (f"{session_id}.{issued_ms}", f"{now_s}.{signature}{signature}"),
+        # The strongest form: the untruncated challenge-domain MAC over exactly
+        # the fields a token signs.
+        (session_id, f"{now_s}.{main._mac(main._CHALLENGE_DOMAIN, session_id, str(now_s))}"),
+    ):
+        assert _token_rejection(candidate_id, candidate) == 401, f"dogrulama imzasi jeton olarak kabul edildi: {candidate!r}"
+
+    # The old overlap is gone: the token for "S.<ms>" no longer starts with
+    # the challenge signature for S.
+    assert not main.sign_session(f"{session_id}.{issued_ms}", now_s).split(".")[-1].startswith(signature)
+
+    # And the other way round: a token MAC is not a challenge signature.
+    token_mac = main.sign_session(session_id, int(issued_ms)).split(".")[-1]
+    for forged in (f"{session_id}.{issued_ms}.{token_mac[:32]}", f"{session_id}.{issued_ms}.{token_mac}"):
+        try:
+            main._check_challenge(session_id, forged)
+        except main.HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("jeton imzasi dogrulama sorusu imzasi olarak kabul edildi")
+    main._check_challenge(session_id, challenge)  # the genuine one still verifies
+
+    # A non-ASCII signature is a 400, not a TypeError out of compare_digest.
+    try:
+        main._check_challenge(session_id, f"{session_id}.{issued_ms}.{signature[:-1]}é")
+    except main.HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("ASCII disi imza kabul edildi")
+
+
+def test_token_expiry_relies_on_the_sdk_and_demo_handling_401():
+    """SESSION_TOKEN_TTL_S is justified by what the clients do with a 401: the
+    SDK registers a new session once and resends the window, and the demo
+    page turns a 401 on charge into a reload message rather than a charge or a
+    code prompt. If either stops doing that, the TTL's reasoning is void."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "sdk", "deepcheck.js"), encoding="utf-8") as fh:
+        sdk = fh.read()
+    assert "res.status === 401 && !reauthAttempted" in sdk and "return reregisterAndResend(payload)" in sdk
+    assert "function reregisterAndResend(payload)" in sdk and "reauthAttempted = false;" in sdk
+    with open(os.path.join(root, "frontend", "src", "pages", "Demo.jsx"), encoding="utf-8") as fh:
+        demo = fh.read()
+    assert 'if (res.status === 401) throw new NoSessionError(' in demo
+    assert "await flushBehaviour();" in demo
+
+
 def test_decision_blocks_bot_session():
     """The 40/60/80 ladder is applied server-side, at the enforcement point.
 
@@ -537,11 +821,9 @@ def test_decision_blocks_bot_session():
     # session hovering at 48 supports neither -- so it goes to step-up rather
     # than being charged with a warning banner, which is the outcome the
     # adversarial run flagged: "Şüpheli" used to mean the card was charged.
-    # Past SPRT_MAX_FLUSHES the ladder applies regardless, which is the
-    # `warn` row below.
-    # A mid-band score never resolves to a charge, however long the session
-    # runs. It used to fall through to the ladder at the flush cap, which made
-    # twenty seconds of deliberately ambiguous behaviour a way to be approved.
+    # Nor does it resolve to a charge however long the session runs. It used
+    # to fall through to the ladder at the flush cap, which made twenty
+    # seconds of deliberately ambiguous behaviour a way to be approved.
     cases = [
         (95.0, "Bot Tespit Edildi", "block", 5),
         (72.0, "Yüksek Risk", "verify", 5),
@@ -610,7 +892,11 @@ def test_dashboard_endpoints_require_key():
 def test_analyze_rejects_stale_timestamps():
     """A recording is old by definition. Telemetry whose newest event is far
     from the server clock is a replay (or a broken clock); either way it is
-    not evidence about the person at the keyboard right now."""
+    not evidence about the person at the keyboard right now.
+
+    This is the path for an SDK that does not send client_sent_at. With the
+    field, the client's clock is checked against itself instead -- see
+    test_wrong_client_clock_is_accepted_when_consistent."""
     session_id = "0a0a0a0a-0000-0000-0000-000000000001"
     token = main.sign_session(session_id)
     client = _client(_StubDB(session=_stub_session()))
@@ -682,14 +968,199 @@ def test_analyze_rejects_replayed_payload():
         _clear_overrides()
 
 
+def _idle_payload(session_id: str) -> dict:
+    """What the SDK sends once a user has been idle past its 10 s window:
+    every timestamped buffer has rolled out and only the idle gaps remain,
+    ~2000 ms each because they are measured at the 2 s flush tick."""
+    return {
+        "session_id": session_id,
+        "mouse_trajectory": [],
+        "click_timing": [],
+        "scroll_events": [],
+        "key_events": [],
+        "focus_changes": [],
+        "hesitation_intervals": [2000.0, 2001.0, 2000.0, 2000.0, 2000.0],
+    }
+
+
+def _assert_nothing_written(db: _StubDB, what: str) -> None:
+    assert db.added == [], f"{what}: veritabanina satir eklendi ({db.added})"
+    assert db.committed is False, f"{what}: commit yapildi"
+    writes = [t for t in db.executed if t.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))]
+    assert writes == [], f"{what}: yazma sorgusu calisti: {writes}"
+
+
+def test_idle_flush_is_answered_but_not_stored():
+    """An idle user is not a replay.
+
+    A flush with no timestamped events has nothing to rebase, so its
+    fingerprint is just the idle-gap list -- identical for every idle browser
+    ticking at 2 s. It used to hit the global uniqueness check and come back
+    422 for the second user to go idle, and for every idle flush of the same
+    user after the first. It carries no behaviour, so it is not stored at all:
+    no row, no fingerprint, and no last_seen_at refresh, which would otherwise
+    let a stolen token keep an old human score fresh for /api/decision.
+    """
+    session_id = "0e0e0e0e-0000-0000-0000-000000000001"
+    headers = {"X-DeepCheck-Token": main.sign_session(session_id)}
+    idle = _idle_payload(session_id)
+
+    # Another idle browser's identical window is already in the database.
+    seen_at = main.utcnow() - timedelta(seconds=20)
+    session = _stub_session(37.5, last_seen_at=seen_at)
+    db = _StubDB(session=session, known_hashes=[main._payload_fingerprint(_raw_from_payload(idle))])
+    client = _client(db)
+    try:
+        for attempt in (1, 2):
+            res = client.post("/api/analyze", json=idle, headers=headers)
+            assert res.status_code == 200, (
+                f"{attempt}. bosta akis {res.status_code} dondu, 200 bekleniyordu: {res.text}"
+            )
+            body = res.json()
+            assert body["provisional"] is True, "davranissiz akis kesin skor gibi sunuldu"
+            assert body["measured_features"] == 0
+            assert body["shap_explanation"] == []
+            assert body["risk_score"] == 37.5, f"kayitli skor yerine {body['risk_score']} dondu"
+    finally:
+        _clear_overrides()
+    _assert_nothing_written(db, "bosta akis")
+    assert session.last_seen_at == seen_at, "davranissiz akis oturumun tazeligini yeniledi"
+
+    # A session with no row yet: still 200, score 0.0, and still no row.
+    db = _StubDB(session=None)
+    client = _client(db)
+    try:
+        res = client.post("/api/analyze", json=idle, headers=headers)
+        assert res.status_code == 200, f"kaydi olmayan oturumun bosta akisi {res.status_code} dondu"
+        assert res.json()["risk_score"] == 0.0
+        assert res.json()["provisional"] is True
+    finally:
+        _clear_overrides()
+    _assert_nothing_written(db, "kaydi olmayan oturumun bosta akisi")
+
+
+def _payload_on_client_clock(session_id: str, clock_ms: int, event_age_ms: int = 300) -> dict:
+    """A flush from a client whose clock reads (server clock + clock_ms), sent
+    event_age_ms after its newest event, carrying client_sent_at."""
+    raw = _shift_to_now(_headless_bot_session(), offset_ms=clock_ms - event_age_ms)
+    return dict(raw, session_id=session_id, client_sent_at=int(time.time() * 1000) + clock_ms)
+
+
+def test_wrong_client_clock_is_accepted_when_consistent():
+    """A computer clock 20 minutes slow is a customer, not a replay.
+
+    The absolute check rejected every flush from such a machine, so no session
+    row was ever written and /api/decision answered unknown_session: the
+    customer could not pay. With client_sent_at the clock is compared with
+    itself, and a consistently wrong clock passes."""
+    session_id = "0e0e0e0e-0000-0000-0000-000000000002"
+    headers = {"X-DeepCheck-Token": main.sign_session(session_id)}
+    slow = -20 * 60 * 1000
+
+    session = _stub_session()
+    db = _StubDB(session=session)
+    client = _client(db)
+    try:
+        res = client.post("/api/analyze", json=_payload_on_client_clock(session_id, slow), headers=headers)
+        assert res.status_code == 200, f"20 dk geri saatli istemci {res.status_code} dondu: {res.text}"
+        assert db.added, "kabul edilen akis kaydedilmedi"
+        assert session.clock_offset_ms is not None and abs(session.clock_offset_ms + slow) < 5_000, (
+            f"saat farki kaydedilmedi ya da yanlis: {session.clock_offset_ms}"
+        )
+
+        # Later flushes on the same wrong clock keep passing against the
+        # offset the first one stored.
+        res = client.post(
+            "/api/analyze",
+            json=_payload_on_client_clock(session_id, slow, event_age_ms=1_200),
+            headers=headers,
+        )
+        assert res.status_code == 200, f"ayni saatle ikinci akis {res.status_code} dondu: {res.text}"
+    finally:
+        _clear_overrides()
+
+    # The same window from an SDK that does not send client_sent_at still gets
+    # the absolute check: there is nothing else to compare against.
+    old_sdk = _payload_on_client_clock(session_id, slow)
+    del old_sdk["client_sent_at"]
+    client = _client(_StubDB(session=_stub_session()))
+    try:
+        res = client.post("/api/analyze", json=old_sdk, headers=headers)
+        assert res.status_code == 422, f"client_sent_at olmadan saati kaymis akis {res.status_code} dondu"
+    finally:
+        _clear_overrides()
+
+
+def test_client_clock_jump_within_a_session_is_rejected():
+    """A clock may be wrong, but it must be wrong consistently. A flush whose
+    (server - client) offset moved past MAX_OFFSET_DRIFT_MS from the one the
+    session stored did not come from the clock the session started on."""
+    session_id = "0e0e0e0e-0000-0000-0000-000000000003"
+    headers = {"X-DeepCheck-Token": main.sign_session(session_id)}
+    stored = 0  # the session's first flush came from a correct clock
+
+    for jump_ms, expected in [
+        (main.MAX_OFFSET_DRIFT_MS + 20_000, 422),
+        (-(main.MAX_OFFSET_DRIFT_MS + 20_000), 422),
+        # Ordinary latency jitter moves the offset by far less than the drift.
+        (1_500, 200),
+    ]:
+        session = _stub_session(clock_offset_ms=stored)
+        db = _StubDB(session=session)
+        client = _client(db)
+        try:
+            # jump_ms is how far the client clock moved, so the offset moves by
+            # the opposite amount.
+            res = client.post("/api/analyze", json=_payload_on_client_clock(session_id, jump_ms), headers=headers)
+            assert res.status_code == expected, (
+                f"{jump_ms} ms saat sicramasi {res.status_code} dondu, {expected} bekleniyordu: {res.text}"
+            )
+        finally:
+            _clear_overrides()
+        if expected == 422:
+            _assert_nothing_written(db, f"{jump_ms} ms saat sicramasi")
+        # The stored offset is the session's first one; it is never rewritten.
+        assert session.clock_offset_ms == stored, "kayitli saat farki sonraki akisla degisti"
+
+
+def test_events_far_older_than_their_send_are_rejected():
+    """client_sent_at and the event stamps come from the same clock, so their
+    difference needs no server clock at all. A window whose newest event is
+    far older than its own send is a stored window sent late; one stamped after
+    its send was not stamped by that clock."""
+    session_id = "0e0e0e0e-0000-0000-0000-000000000004"
+    headers = {"X-DeepCheck-Token": main.sign_session(session_id)}
+
+    for event_age_ms, expected in [
+        (main.MAX_CLOCK_SKEW_MS + 45_000, 422),
+        (-(main.MAX_FUTURE_EVENT_MS + 3_000), 422),
+        # The SDK keeps a 10 s rolling window, so an idle-ish window whose
+        # newest event is 9 s old is ordinary.
+        (9_000, 200),
+    ]:
+        db = _StubDB(session=_stub_session())
+        client = _client(db)
+        try:
+            payload = _payload_on_client_clock(session_id, 0, event_age_ms=event_age_ms)
+            res = client.post("/api/analyze", json=payload, headers=headers)
+            assert res.status_code == expected, (
+                f"{event_age_ms} ms yasli olaylar {res.status_code} dondu, {expected} bekleniyordu: {res.text}"
+            )
+        finally:
+            _clear_overrides()
+        if expected == 422:
+            _assert_nothing_written(db, f"{event_age_ms} ms yasli olaylar")
+
+
 def test_decision_waits_for_sequential_evidence():
     """Evidence, not a counter.
 
     A fixed "three flushes" was a number chosen by judgement. The sequential
-    test stops as soon as the accumulated log-likelihood ratio supports a
-    verdict, so a blatant session is decided immediately and an ambiguous one
-    keeps collecting instead of being waved through the moment a counter is
-    satisfied.
+    test stops as soon as the accumulated per-flush log-odds cross a bound, so
+    a blatant session is decided immediately and an ambiguous one keeps
+    collecting instead of being waved through the moment a counter is
+    satisfied. (A stopping rule in Wald's shape, without Wald's error
+    guarantees: see the block above main.SPRT_NOMINAL_ALPHA.)
     """
     session_id = "0a0a0a0a-0000-0000-0000-000000000003"
     token = main.sign_session(session_id)
@@ -737,6 +1208,25 @@ def test_decision_waits_for_sequential_evidence():
     )
 
 
+def _internal_reason(db, session_id: str = "stub") -> str:
+    """The reason the decision layer actually reached, before PUBLIC_REASONS
+    collapses it for the client. Read straight off _decide_on_evidence: the
+    HTTP response deliberately no longer carries it (see main.PUBLIC_REASONS),
+    and with the profile layer off there is no audit row to read it from."""
+    import asyncio
+
+    return asyncio.run(main._decide_on_evidence(db, db.session, session_id)).reason
+
+
+def _assert_collapsed(body: dict, internal: str, db) -> None:
+    """A verify for `internal` reaches the client as the generic step_up, and
+    the internal reason is still what the evidence path produced."""
+    assert body["action"] == "verify", f"'{body['action']}' dondu"
+    assert body["reason"] == "step_up", f"istemciye ic gerekce sizdi: '{body['reason']}'"
+    assert body["message"] == main.REASON_MESSAGES["step_up"]
+    assert _internal_reason(db) == internal, f"ic gerekce '{_internal_reason(db)}', '{internal}' bekleniyordu"
+
+
 def test_ambiguity_is_never_charged():
     """A session parked in the middle band must not be approved by outlasting
     the flush cap. Ambiguity at a payment gate is a reason to ask for more
@@ -744,13 +1234,15 @@ def test_ambiguity_is_never_charged():
     session_id = "0e0e0e0e-0000-0000-0000-000000000001"
     token = main.sign_session(session_id)
     for flushes in (main.SPRT_MAX_FLUSHES, main.SPRT_MAX_FLUSHES * 5):
-        client = _client(_StubDB(session=_stub_session(50.0, "Şüpheli"), flush_count=flushes))
+        db = _StubDB(session=_stub_session(50.0, "Şüpheli"), flush_count=flushes)
+        client = _client(db)
         try:
             body = client.post(
                 "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}
             ).json()
             assert body["action"] == "verify", f"{flushes} akistan sonra '{body['action']}' dondu"
-            assert body["reason"] == "ambiguous", f"gerekce '{body['reason']}'"
+            # The client is told "step_up"; the audit trail keeps "ambiguous".
+            _assert_collapsed(body, "ambiguous", db)
         finally:
             _clear_overrides()
 
@@ -763,8 +1255,159 @@ def test_ambiguity_is_never_charged():
             headers={"X-DeepCheck-Token": token},
         ).json()
         assert out["status"] == "declined", f"belirsiz oturum tahsil edildi: {out['status']}"
+        assert out["decision"]["reason"] == "step_up", "odeme ucu ic gerekceyi sizdirdi"
     finally:
         _clear_overrides()
+
+
+def _session_from_flushes(scores: list[float], verified_at=None) -> tuple:
+    """(stub session, newest-first per-flush list) for a session that produced
+    `scores`, oldest first. The session score is what /api/analyze would have
+    stored after the last flush -- smooth_session_score, applied flush by
+    flush -- so the ladder reads exactly what it would read in production."""
+    smoothed, previous = None, []
+    for score in scores:
+        smoothed = scorer.smooth_session_score(previous, score)
+        previous.append(score)
+    session = _stub_session(smoothed, scorer.get_label(smoothed), verified_at=verified_at)
+    return session, list(reversed(scores))
+
+
+def test_crossing_the_bot_bound_is_never_charged():
+    """Seven flushes at 95 followed by three at 10. The smoothed score the
+    ladder reads is the newest-five median, 10, and the ladder alone charged
+    it: crossing the upper bound used to fall through to the ladder. The
+    automated flushes are still in the window, so the answer is now at least
+    step-up. A short burst of plausible behaviour after automation is not
+    enough."""
+    session_id = "0e0e0e0e-0000-0000-0003-000000000001"
+    token = main.sign_session(session_id)
+    session, newest_first = _session_from_flushes([95.0] * 7 + [10.0] * 3)
+    assert session.risk_score == 10.0 and main.get_action(session.risk_score) == "allow", (
+        "kurulum hatali: merdiven tek basina bu oturumu onaylamaliydi"
+    )
+    assert main._sprt_statistic(newest_first) >= main.SPRT_UPPER
+
+    db = _StubDB(session=session, per_flush=newest_first, flush_count=len(newest_first))
+    body = _decide_over_http(db, session_id)
+    # The client is told "step_up"; the audit trail keeps "sequential", which
+    # would tell a script that its early flushes still count against it.
+    _assert_collapsed(body, "sequential", db)
+    # The action changes, never what the evidence says.
+    assert (body["risk_score"], body["label"]) == (10.0, "Gerçek Kullanıcı"), (
+        f"skor/etiket degisti: {body['risk_score']}/{body['label']}"
+    )
+
+    client = _client(_StubDB(session=session, per_flush=newest_first, flush_count=len(newest_first)))
+    try:
+        out = client.post(
+            "/api/demo/charge", json={"session_id": session_id, "amount": 10}, headers={"X-DeepCheck-Token": token}
+        ).json()
+        assert out["status"] == "declined", f"bot siniri asilmis oturum tahsil edildi: {out['status']}"
+        assert out["decision"]["reason"] == "step_up", "odeme ucu ic gerekceyi sizdirdi"
+    finally:
+        _clear_overrides()
+
+    # It is a verify, so a fresh step-up unlocks it like every other verify:
+    # the evidence conflicts (automated then, human-looking now), which is
+    # uncertainty, not a confident bot verdict.
+    verified_session, _ = _session_from_flushes([95.0] * 7 + [10.0] * 3, verified_at=main.utcnow())
+    verified = _decide_over_http(
+        _StubDB(session=verified_session, per_flush=newest_first, flush_count=len(newest_first)), session_id
+    )
+    assert (verified["action"], verified["reason"]) == ("allow", "verified"), (
+        f"taze dogrulamaya ragmen '{verified['action']}/{verified['reason']}' dondu"
+    )
+
+
+def test_automated_evidence_ages_out_only_with_the_window():
+    """Where the rule stops, pinned so the comment above SPRT_MAX_FLUSHES
+    stays true: seven flushes at 95, then k at 10.
+
+    k <= 6 is never charged without step-up -- the bot bound is crossed
+    (k = 3, 4) or the evidence is inconclusive (k = 5, 6). At k = 7 only
+    three automated flushes remain in the ten-flush window, the lower bound
+    is crossed and the ladder approves on the smoothed score. That is the
+    stated limit of a windowed statistic, not a property worth wanting: what
+    is paying has looked human for the last 14 s. If this starts failing
+    because the rule got stricter, update the comment and this row together.
+    """
+    import asyncio
+
+    for k in range(0, 8):
+        session, newest_first = _session_from_flushes([95.0] * 7 + [10.0] * k)
+        db = _StubDB(session=session, per_flush=newest_first, flush_count=len(newest_first))
+        verdict = asyncio.run(main._decide_on_evidence(db, db.session, "stub"))
+        where = f"7 x 95 + {k} x 10 (oturum skoru {session.risk_score})"
+        if k <= 2:
+            # The smoothed score is still 95: the ladder blocks, or the
+            # conformal guard softens that to verify. Never a charge.
+            assert verdict.action in ("verify", "block"), f"{where}: '{verdict.action}' dondu"
+        elif k <= 4:
+            assert (verdict.action, verdict.reason) == ("verify", "sequential"), (
+                f"{where}: '{verdict.action}/{verdict.reason}' dondu, 'verify/sequential' bekleniyordu"
+            )
+        elif k <= 6:
+            assert (verdict.action, verdict.reason) == ("verify", "ambiguous"), (
+                f"{where}: '{verdict.action}/{verdict.reason}' dondu, 'verify/ambiguous' bekleniyordu"
+            )
+        else:
+            assert verdict.action == "allow", f"{where}: '{verdict.action}' dondu (belgelenen sinir degisti)"
+
+    # The other direction: crossing the LOWER bound grants nothing. A
+    # human-to-bot handover sums to "person" over the window, and the
+    # level-shifted smoothed score still escalates it on the first automated
+    # flush.
+    session, newest_first = _session_from_flushes([10.0] * 7 + [95.0])
+    db = _StubDB(session=session, per_flush=newest_first, flush_count=len(newest_first))
+    assert main._sprt_statistic(newest_first) <= main.SPRT_LOWER
+    verdict = asyncio.run(main._decide_on_evidence(db, db.session, "stub"))
+    assert verdict.action in ("verify", "block"), f"insandan bota devir '{verdict.action}' dondu"
+
+
+def test_sdk_window_constants_are_mirrored():
+    """The evidence factor is derived from how the SDK sends: a rolling
+    window of ROLLING_WINDOW_MS every DEFAULT_INTERVAL_MS. main.py mirrors
+    both numbers; a change to the SDK must show up here, not silently leave
+    the overlap argument describing a different SDK."""
+    import re
+
+    sdk = open(os.path.join(os.path.dirname(__file__), "..", "sdk", "deepcheck.js"), encoding="utf-8").read()
+
+    def sdk_constant(name):
+        found = re.findall(rf"const {name} = ([0-9_]+);", sdk)
+        assert len(found) == 1, f"SDK'da {name} bulunamadi ya da birden fazla: {found}"
+        return int(found[0].replace("_", ""))
+
+    assert main.SDK_FLUSH_INTERVAL_MS == sdk_constant("DEFAULT_INTERVAL_MS")
+    assert main.SDK_ROLLING_WINDOW_MS == sdk_constant("ROLLING_WINDOW_MS")
+    assert main.SDK_NEW_EVIDENCE_PER_FLUSH == main.SDK_FLUSH_INTERVAL_MS / main.SDK_ROLLING_WINDOW_MS == 0.2
+
+
+def test_sequential_statistic_weights_each_flush_by_the_evidence_factor():
+    """The factor is one knob, read at call time by the decision path.
+
+    It is 1.0 on measurement (see SPRT_EVIDENCE_FACTOR), so this checks the
+    wiring rather than the value: every flush's log-odds is scaled, and the
+    decision path moves with the constant. At 0.2 ten flushes at 62 no longer
+    cross the bot bound and stay inconclusive instead."""
+    scores = [95.0, 10.0, 62.0, 0.0, 100.0]
+    unit = main._sprt_statistic(scores, factor=1.0)
+    assert abs(main._sprt_statistic(scores, factor=0.2) - 0.2 * unit) < 1e-9
+
+    db = lambda: _StubDB(  # noqa: E731
+        session=_stub_session(80.0, "Bot Tespit Edildi"), per_flush=[62.0] * 10, flush_count=10
+    )
+    saved = main.SPRT_EVIDENCE_FACTOR
+    try:
+        main.SPRT_EVIDENCE_FACTOR = 1.0
+        assert main._sprt_statistic(scores) == unit
+        assert _internal_reason(db()) == "score"
+        main.SPRT_EVIDENCE_FACTOR = main.SDK_NEW_EVIDENCE_PER_FLUSH
+        assert abs(main._sprt_statistic(scores) - 0.2 * unit) < 1e-9
+        assert _internal_reason(db()) == "ambiguous", "karar yolu kanit katsayisini okumuyor"
+    finally:
+        main.SPRT_EVIDENCE_FACTOR = saved
 
 
 def test_cluster_of_identical_sessions_is_escalated():
@@ -778,8 +1421,11 @@ def test_cluster_of_identical_sessions_is_escalated():
     saved_flag = main.CLUSTER_ESCALATION_ENABLED
     main.CLUSTER_ESCALATION_ENABLED = True  # off by default; see the note there
 
+    def db_for(peers):
+        return _StubDB(session=_stub_session(9.0), flush_count=4, cluster_peers=peers)
+
     def decide(peers):
-        client = _client(_StubDB(session=_stub_session(9.0), flush_count=4, cluster_peers=peers))
+        client = _client(db_for(peers))
         try:
             return client.post(
                 "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}
@@ -792,7 +1438,7 @@ def test_cluster_of_identical_sessions_is_escalated():
 
     crowd = decide(main.CLUSTER_MIN_SESSIONS)
     assert crowd["action"] == "verify", f"kume icindeki oturum '{crowd['action']}' dondu"
-    assert crowd["reason"] == "cluster"
+    _assert_collapsed(crowd, "cluster", db_for(main.CLUSTER_MIN_SESSIONS))
 
     # And it stays silent when disabled, which is the shipped default.
     main.CLUSTER_ESCALATION_ENABLED = False
@@ -809,8 +1455,11 @@ def test_conformal_guard_only_softens_never_hardens():
     token = main.sign_session(session_id)
     saved = scorer._bundle
 
+    def db_for(score, label):
+        return _StubDB(session=_stub_session(score, label), flush_count=5)
+
     def decide(score, label):
-        client = _client(_StubDB(session=_stub_session(score, label), flush_count=5))
+        client = _client(db_for(score, label))
         try:
             return client.post(
                 "/api/decision", json={"session_id": session_id}, headers={"X-DeepCheck-Token": token}
@@ -826,7 +1475,7 @@ def test_conformal_guard_only_softens_never_hardens():
         scorer._bundle = SimpleNamespace(human_calibration=[92.0 + i * 0.2 for i in range(30)])
         softened = decide(95.0, "Bot Tespit Edildi")
         assert softened["action"] == "verify", f"korumaya ragmen '{softened['action']}' dondu"
-        assert softened["reason"] == "conformal"
+        _assert_collapsed(softened, "conformal", db_for(95.0, "Bot Tespit Edildi"))
 
         # The same guard must not touch an approval.
         allowed = decide(9.0, "Gerçek Kullanıcı")
@@ -839,6 +1488,78 @@ def test_conformal_guard_only_softens_never_hardens():
     finally:
         scorer._bundle = saved
         _clear_overrides()
+
+
+def test_bundle_load_says_whether_the_conformal_guard_can_soften_a_block():
+    """The guard was described as a safety net while the served calibration
+    (scripted lab humans, maximum far below 80) made it inert. The bundle now
+    says which of the four states it is in, once, at load -- and the log must
+    agree with the guard's own arithmetic, not restate a hard-coded number."""
+    import logging
+    from unittest import mock
+
+    import joblib
+
+    # The threshold the log reasons about is where main starts to block.
+    block_at = scorer.LABELS[-2][0]
+    assert main.get_action(block_at) == "block" and main.get_action(block_at - 0.1) != "block"
+
+    served = joblib.load(scorer.MODEL_PATH)
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture(level=logging.DEBUG)
+    log = logging.getLogger("deepcheck.scorer")
+    saved_level = log.level
+    log.addHandler(handler)
+    log.setLevel(logging.DEBUG)
+
+    def load_with(calibration):
+        records.clear()
+        bundle = dict(served, human_calibration=calibration)
+        with mock.patch.object(scorer.joblib, "load", return_value=bundle):
+            scorer.ModelBundle()
+        lines = [r for r in records if r.getMessage().startswith("Konformal koruma:")]
+        assert len(lines) == 1, f"konformal durum {len(lines)} kez loglandi, 1 bekleniyordu"
+        return lines[0]
+
+    try:
+        # The served bundle, whatever it currently holds: the log must match
+        # the guard's own p-value at the block threshold.
+        calibration = list(served.get("human_calibration") or [])
+        line = load_with(calibration)
+        p_block = scorer.conformal_p_value(block_at, calibration)
+        if calibration:
+            assert f"n={len(calibration)}," in line.getMessage()
+            assert f"en yuksek skor {max(calibration):.1f}" in line.getMessage()
+            assert f"{block_at} skorunda p={p_block:.3f}" in line.getMessage()
+        if p_block is None or p_block <= scorer.CONFORMAL_ALPHA:
+            assert line.levelno == logging.WARNING
+
+        # No calibration at all.
+        line = load_with([])
+        assert line.levelno == logging.WARNING and "devre disi" in line.getMessage()
+
+        # Scripted humans far below the block threshold -- the shape of the
+        # served calibration: inert, said as a warning.
+        line = load_with([2.0 + i * 0.7 for i in range(36)])
+        assert line.levelno == logging.WARNING and "ETKISIZ" in line.getMessage()
+        assert f"{block_at} skorunda p=0.027" in line.getMessage()
+
+        # Humans who reach the block band: the guard works.
+        line = load_with([92.0 + i * 0.2 for i in range(30)])
+        assert line.levelno == logging.INFO and "etkin" in line.getMessage()
+
+        # Too few to assert alpha: 1/(n+1) > 0.05 softens EVERY block, which is
+        # the dangerous state and must not read as "working".
+        line = load_with([5.0] * 10)
+        assert line.levelno == logging.WARNING and "HER blok" in line.getMessage()
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(saved_level)
 
 
 def test_decision_verifies_when_stale():
@@ -870,8 +1591,9 @@ def test_demo_charge_never_charges_blocked_session():
         (_StubDB(session=_stub_session(12.0), flush_count=1), "declined", "verify"),
         (_StubDB(session=None), "declined", "verify"),
         # 40-60 no longer charges on five flushes: the sequential test does not
-        # yet support a verdict, so it goes to step-up. Past the flush cap the
-        # ladder applies and it charges with a warning, as before.
+        # yet support a verdict, so it goes to step-up. Past the flush cap it
+        # is still step-up ("ambiguous"): it no longer falls through to a
+        # charge with a warning.
         (_StubDB(session=_stub_session(48.0, "Şüpheli")), "declined", "verify"),
         (
             _StubDB(session=_stub_session(48.0, "Şüpheli"), flush_count=main.SPRT_MAX_FLUSHES),
@@ -947,13 +1669,201 @@ def test_demo_verify_upgrades_verify_but_not_block():
         _clear_overrides()
 
 
-def test_token_requires_proof_of_work_and_browser_timers():
+def _decide_over_http(db, session_id: str) -> dict:
+    client = _client(db)
+    try:
+        res = client.post(
+            "/api/decision",
+            json={"session_id": session_id},
+            headers={"X-DeepCheck-Token": main.sign_session(session_id)},
+        )
+        assert res.status_code == 200, f"{res.status_code} dondu"
+        return res.json()
+    finally:
+        _clear_overrides()
+
+
+def test_verification_unlocks_every_verify_outcome():
+    """Step-up is the answer to every kind of uncertainty the decision layer
+    produces, so a fresh one has to be able to finish the checkout it was asked
+    for -- whichever check asked for it.
+
+    It used to be consulted only after the evidence checks had already
+    returned, so for most of those reasons /api/demo/verify succeeded and the
+    very next charge was declined with the same reason, and the demo modal
+    looped forever. An expired verification must change nothing.
+    """
+    fresh = main.utcnow()
+    expired = main.utcnow() - timedelta(seconds=main.VERIFICATION_VALID_S + 5)
+    old = main.utcnow() - timedelta(seconds=main.DECISION_MAX_AGE_S + 60)
+
+    # (description, reason without a verification, stub-db factory)
+    cases = [
+        (
+            "iki akis",
+            "insufficient_evidence",
+            lambda v: _StubDB(session=_stub_session(12.0, verified_at=v), flush_count=2),
+        ),
+        (
+            "72 x3 akis",
+            "insufficient_evidence",
+            lambda v: _StubDB(session=_stub_session(72.0, "Yüksek Risk", verified_at=v), flush_count=3),
+        ),
+        (
+            "10 akis boyunca 50",
+            # What the client is told; the internal "ambiguous" is asserted
+            # below, off the evidence path.
+            "step_up",
+            lambda v: _StubDB(
+                session=_stub_session(50.0, "Şüpheli", verified_at=v), flush_count=main.SPRT_MAX_FLUSHES
+            ),
+        ),
+        (
+            "bayat oturum",
+            "stale",
+            lambda v: _StubDB(session=_stub_session(12.0, last_seen_at=old, verified_at=v)),
+        ),
+        (
+            "60-80 merdiveni",
+            "score",
+            lambda v: _StubDB(session=_stub_session(72.0, "Yüksek Risk", verified_at=v), flush_count=5),
+        ),
+    ]
+    # A session id per case keeps each one inside its own decision rate-limit
+    # bucket (three calls apiece).
+    for index, (description, reason, make_db) in enumerate(cases):
+        session_id = f"0c0c0c0c-0000-0000-0001-{index:012d}"
+        unverified = _decide_over_http(make_db(None), session_id)
+        assert unverified["action"] == "verify" and unverified["reason"] == reason, (
+            f"{description}: dogrulamasiz '{unverified['action']}/{unverified['reason']}' dondu"
+        )
+        if reason == "step_up":
+            _assert_collapsed(unverified, "ambiguous", make_db(None))
+
+        verified = _decide_over_http(make_db(fresh), session_id)
+        assert verified["action"] == "allow" and verified["reason"] == "verified", (
+            f"{description}: taze dogrulamaya ragmen '{verified['action']}/{verified['reason']}' dondu"
+        )
+        assert verified["message"] == main.REASON_MESSAGES["verified"]
+        # The upgrade changes the action, not what the evidence says: a
+        # session with too few flushes still reports no score rather than the
+        # column default of 0.0.
+        assert verified["risk_score"] == unverified["risk_score"], f"{description}: skor degisti"
+
+        stale_proof = _decide_over_http(make_db(expired), session_id)
+        assert stale_proof["action"] == "verify" and stale_proof["reason"] == reason, (
+            f"{description}: suresi dolmus dogrulama '{stale_proof['action']}/{stale_proof['reason']}' dondu"
+        )
+
+    # The escalations and the conformal softening are verify outcomes too.
+    session_id = "0c0c0c0c-0000-0000-0002-000000000001"
+    saved_flag, saved_bundle = main.CLUSTER_ESCALATION_ENABLED, scorer._bundle
+    try:
+        main.CLUSTER_ESCALATION_ENABLED = True
+        crowd = lambda v: _StubDB(  # noqa: E731
+            session=_stub_session(9.0, verified_at=v), flush_count=4, cluster_peers=main.CLUSTER_MIN_SESSIONS
+        )
+        _assert_collapsed(_decide_over_http(crowd(None), session_id), "cluster", crowd(None))
+        body = _decide_over_http(crowd(fresh), session_id)
+        assert (body["action"], body["reason"]) == ("allow", "verified"), f"kume: {body['action']}/{body['reason']}"
+        main.CLUSTER_ESCALATION_ENABLED = False
+
+        scorer._bundle = SimpleNamespace(human_calibration=[92.0 + i * 0.2 for i in range(30)])
+        softened = lambda v: _StubDB(  # noqa: E731
+            session=_stub_session(95.0, "Bot Tespit Edildi", verified_at=v), flush_count=5
+        )
+        _assert_collapsed(_decide_over_http(softened(None), session_id), "conformal", softened(None))
+        body = _decide_over_http(softened(fresh), session_id)
+        assert (body["action"], body["reason"]) == ("allow", "verified"), f"konformal: {body['action']}/{body['reason']}"
+    finally:
+        main.CLUSTER_ESCALATION_ENABLED = saved_flag
+        scorer._bundle = saved_bundle
+        _clear_overrides()
+
+
+def test_verification_ends_the_demo_modal_loop():
+    """The demo's own sequence, end to end: declined for ambiguity, code
+    entered, charge retried. Ten flushes at 50 is the session that looped."""
+    session_id = "0c0c0c0c-0000-0000-0002-000000000002"
+    headers = {"X-DeepCheck-Token": main.sign_session(session_id)}
+    body = {"session_id": session_id, "amount": 10}
+    session = _stub_session(50.0, "Şüpheli")
+    client = _client(_StubDB(session=session, flush_count=main.SPRT_MAX_FLUSHES))
+    try:
+        first = client.post("/api/demo/charge", json=body, headers=headers).json()
+        # "ambiguous" internally; the charge endpoint tells the page step_up.
+        assert first["status"] == "declined" and first["decision"]["reason"] == "step_up", (
+            f"ilk deneme '{first['status']}/{first['decision']['reason']}' dondu"
+        )
+
+        ok = client.post(
+            "/api/demo/verify", json={"session_id": session_id, "code": main.DEMO_VERIFY_CODE}, headers=headers
+        )
+        assert ok.status_code == 200 and ok.json()["verified"] is True
+
+        second = client.post("/api/demo/charge", json=body, headers=headers).json()
+        assert second["status"] == "charged", (
+            f"dogrulamadan sonra '{second['status']}/{second['decision']['reason']}' dondu"
+        )
+        assert second["decision"]["reason"] == "verified" and second["charge_id"] is not None
+    finally:
+        _clear_overrides()
+
+
+def test_verification_never_overrides_block_or_an_unknown_session():
+    """Verification is for uncertainty. A confident bot verdict stays blocked
+    however fresh the step-up, and a session with no row -- nothing was ever
+    observed -- has nothing a step-up could attach to."""
+    session_id = "0c0c0c0c-0000-0000-0002-000000000003"
+    headers = {"X-DeepCheck-Token": main.sign_session(session_id)}
+    saved_bundle = scorer._bundle
+    try:
+        # A normal human calibration, so the conformal guard does not soften
+        # the 95 into a verify and the case under test really is a block.
+        scorer._bundle = SimpleNamespace(human_calibration=[3.0 + i * 0.3 for i in range(30)])
+        for flushes in (main.MIN_FLUSHES_FOR_DECISION, 5, main.SPRT_MAX_FLUSHES):
+            db = _StubDB(
+                session=_stub_session(95.0, "Bot Tespit Edildi", verified_at=main.utcnow()), flush_count=flushes
+            )
+            body = _decide_over_http(db, session_id)
+            assert body["action"] == "block", f"{flushes} akis: dogrulama 'block'u asti ({body['action']})"
+
+            client = _client(db)
+            try:
+                out = client.post(
+                    "/api/demo/charge", json={"session_id": session_id, "amount": 10}, headers=headers
+                ).json()
+                assert out["status"] == "declined" and out["decision"]["action"] == "block"
+            finally:
+                _clear_overrides()
+    finally:
+        scorer._bundle = saved_bundle
+
+    client = _client(_StubDB(session=None))
+    try:
+        decision = client.post("/api/decision", json={"session_id": session_id}, headers=headers).json()
+        assert decision["action"] == "verify" and decision["reason"] == "unknown_session", (
+            f"kaydi olmayan oturum '{decision['action']}/{decision['reason']}' dondu"
+        )
+        res = client.post(
+            "/api/demo/verify", json={"session_id": session_id, "code": main.DEMO_VERIFY_CODE}, headers=headers
+        )
+        assert res.status_code == 404, f"kaydi olmayan oturum dogrulandi ({res.status_code})"
+        out = client.post("/api/demo/charge", json={"session_id": session_id, "amount": 10}, headers=headers).json()
+        assert out["status"] == "declined" and out["decision"]["reason"] == "unknown_session"
+    finally:
+        _clear_overrides()
+
+
+def test_token_requires_proof_of_work_and_plausible_timers():
     """/api/session hands out a challenge and nothing else.
 
     The token /api/analyze demands is only issued in exchange for a solved
-    proof of work and runtime measurements a browser could actually produce,
-    so telemetry cannot be posted by something that never executed the SDK.
-    That is a statement about real code in a real engine, not about a human.
+    proof of work and runtime values inside browser-plausible bounds. Note who
+    passes below: plain hashlib and two hard-coded numbers, no browser and no
+    SDK. That is the point of keeping this test honest -- attestation shows
+    that some client did the work and reported plausible values, not that the
+    client is a browser (see the comment at main.POW_DIFFICULTY_BITS).
     """
     import hashlib as _hashlib
 
@@ -995,7 +1905,11 @@ def test_token_requires_proof_of_work_and_browser_timers():
         assert ok.status_code == 201, f"gecerli kanit {ok.status_code} dondu"
         body = ok.json()
         assert body["attested"] is True
-        assert body["token"] == main.sign_session(session_id)
+        # Not compared with a fresh sign_session(): the token carries its
+        # issue second, so equality would depend on the clock. It must be a
+        # token the server accepts for this session and no other.
+        assert _token_rejection(session_id, body["token"]) is None, "verilen jeton reddedildi"
+        assert _token_rejection("0f0f0f0f-0000-0000-0000-000000000001", body["token"]) == 401
 
         # A solution cannot be carried to a different session.
         other = "0f0f0f0f-0000-0000-0000-000000000001"
@@ -1053,38 +1967,35 @@ def test_rate_limiter_memory_is_bounded():
         main._rate_hits.clear()
 
 
-def test_bundle_requires_lstm_weights():
-    """model.pkl without lstm_model.pt used to load a RANDOMLY initialised
-    LSTM and let it contribute 30% of every score, with nothing logged and
-    /api/health still reporting the model as loaded."""
-    if not os.path.exists(scorer.LSTM_PATH):
-        raise AssertionError("lstm_model.pt yok; once `python train_model.py` calistirin")
-
-    hidden = scorer.LSTM_PATH + ".hidden"
+def test_bundle_serves_without_lstm_weights():
+    """The LSTM left the score on measurement (see scorer.compute_risk), so the
+    served bundle is model.pkl alone. A stray or missing lstm_model.pt must not
+    change whether the API can score -- and a missing model.pkl must still be
+    reported as a broken install rather than a healthy one."""
+    hidden_lstm = scorer.LSTM_PATH + ".hidden"
+    had_lstm = os.path.exists(scorer.LSTM_PATH)
     saved_bundle = scorer._bundle
-    os.rename(scorer.LSTM_PATH, hidden)
+    if had_lstm:
+        os.rename(scorer.LSTM_PATH, hidden_lstm)
     try:
         scorer._bundle = None
-        raised = False
-        try:
-            scorer.get_bundle()
-        except FileNotFoundError:
-            raised = True
-        assert raised, "lstm_model.pt eksikken model yuklendi; FileNotFoundError bekleniyordu"
+        result = scorer.compute_risk(_natural_human_session())
+        assert 0.0 <= result["risk_score"] <= 100.0
     finally:
-        os.rename(hidden, scorer.LSTM_PATH)
+        if had_lstm:
+            os.rename(hidden_lstm, scorer.LSTM_PATH)
         scorer._bundle = saved_bundle
 
-    # And /api/health reports the failure rather than claiming to be healthy.
+    hidden_model = scorer.MODEL_PATH + ".hidden"
     scorer._bundle = None
-    os.rename(scorer.LSTM_PATH, hidden)
+    os.rename(scorer.MODEL_PATH, hidden_model)
     try:
         client = _client(_StubDB())
         body = client.get("/api/health").json()
-        assert body["model_loaded"] is False, "eksik agirlik dosyasiyla saglikli bildirildi"
+        assert body["model_loaded"] is False, "model.pkl eksikken saglikli bildirildi"
         assert body["status"] == "model yüklenmedi"
     finally:
-        os.rename(hidden, scorer.LSTM_PATH)
+        os.rename(hidden_model, scorer.MODEL_PATH)
         scorer._bundle = saved_bundle
         _clear_overrides()
 
@@ -1132,6 +2043,39 @@ def test_client_signals_recorded_but_not_scored():
     )
     # An older SDK that sends nothing must still be accepted, with defaults.
     assert db_plain.added[-1].client_signals["untrusted_events"] == 0
+
+
+def test_analyze_persists_the_measured_mask():
+    """The stored row must say which of its feature values were measured.
+    Features are persisted AFTER the neutral-default fill, so without the mask
+    a later reader (the per-customer profile) cannot tell a measured value
+    from a default one."""
+    session_id = "0b0b0b0b-0000-0000-0000-000000000003"
+    token = main.sign_session(session_id)
+    # A keyboard-only flush: most kinematic features cannot be measured, so the
+    # stored mask is partial and a wrong one would be visible.
+    payload = _analyze_payload(session_id, _fast_keyboard_only_no_mouse_session())
+    expected = scorer.compute_risk(_raw_from_payload(payload))
+
+    db = _StubDB(session=_stub_session())
+    client = _client(db)
+    try:
+        response = client.post(
+            "/api/analyze", json=payload, headers={"X-DeepCheck-Token": token}
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    stored = [obj for obj in db.added if isinstance(obj, main.BehaviorData)]
+    assert len(stored) == 1, f"beklenen tek davranis satiri, bulunan {len(stored)}"
+    mask = stored[0].measured_mask
+    assert mask == expected["measured_mask"], f"kaydedilen maske {mask}, beklenen {expected['measured_mask']}"
+    assert 0 < mask < (1 << len(FEATURE_NAMES)) - 1, "bu senaryo kismi bir maske uretmeli"
+    assert bin(mask).count("1") == body["measured_features"]
+    # Nothing profile-related is added to what the scored client is told.
+    assert "measured_mask" not in body
 
 
 def test_training_seeds_torch():
@@ -1237,33 +2181,38 @@ def test_opening_window_is_marked_provisional_not_suspicious():
     assert bot["risk_score"] > 40, "provisional bayragi skoru degistirmemeli"
 
 
-def test_lstm_reacts_to_trajectory():
-    """The sequence model must respond to a session's HISTORY, not only to
-    its latest flush.
+def test_handover_is_not_smoothed_away():
+    """Smoothing ignores one odd reading; it must not hide a level shift.
 
-    Both calls score the identical current flush. The only difference is what
-    came before it. If the score does not move, the LSTM is not reading the
-    time series -- which was literally the case before: every timestep was a
-    copy of the current instant.
+    A session handed to automation mid-way jumps from human scores to bot
+    scores. A plain five-flush median keeps reporting the human past for three
+    more flushes, which is ten seconds of a bot being allowed. The jump rule
+    lets the alarm through on the first automated flush -- and only upward: a
+    bot producing one calm window is exactly what smoothing exists to ignore.
     """
-    raw = _sparse_typing_human_session()
-    current = scorer.extract_features(raw)
-
-    human_like = [current[name] for name in FEATURE_NAMES]
-    robotic = dict(current)
-    robotic.update({"etkilesim_entropisi": 0.02, "tereddut_skoru": 0.0, "ivme_degisimi": 0.01})
-    robotic_row = [robotic[name] for name in FEATURE_NAMES]
-
-    calm = scorer.compute_risk(raw, [human_like] * 9)["risk_score"]
-    drifting = scorer.compute_risk(raw, [robotic_row] * 9)["risk_score"]
-
-    assert drifting != calm, (
-        f"ayni akis, farkli gecmis -> ayni skor ({calm}). LSTM gecmisi okumuyor."
+    calm = [10.0, 12.0, 9.0, 11.0]
+    assert scorer.smooth_session_score(calm, 95.0) == 95.0, "devir teslim yumusatmayla gizlendi"
+    assert scorer.smooth_session_score(calm, 30.0) == 11.0, "kucuk bir sicrama yumusatmayi atladi"
+    assert scorer.smooth_session_score([95.0, 96.0, 94.0, 97.0], 5.0) == 95.0, (
+        "tek bir sakin pencere bot oturumunu temize cikardi"
     )
-    assert drifting > calm, (
-        f"robotik gecmisli oturum {drifting}, sakin gecmisli oturum {calm} aldi; "
-        "gecmisin skoru yukseltmesi bekleniyordu"
-    )
+    assert scorer.smooth_session_score([], 42.0) == 42.0
+    assert scorer.smooth_session_score([float("nan"), 10.0], 12.0) == 11.0, "NaN gecmis yumusatmayi bozdu"
+
+    # And through the API: four calm stored flushes, then a headless bot flush.
+    session_id = "0d0d0d0d-0000-0000-0000-000000000001"
+    history = [SimpleNamespace(risk_score=10.0, newest_event_at=None) for _ in range(4)]
+    db = _StubDB(session=_stub_session(10.0), history=history)
+    client = _client(db)
+    try:
+        body = client.post(
+            "/api/analyze",
+            json=_analyze_payload(session_id),
+            headers={"X-DeepCheck-Token": main.sign_session(session_id)},
+        ).json()
+    finally:
+        _clear_overrides()
+    assert body["risk_score"] >= 80, f"devir teslimin ilk bot akisi {body['risk_score']} aldi"
 
 
 def test_isolation_forest_is_not_consulted_when_scoring():
@@ -1300,11 +2249,6 @@ def test_isolation_forest_is_not_consulted_when_scoring():
         bundle.iso_forest.decision_function = original
 
     assert 0.0 <= result["risk_score"] <= 100.0
-
-    # And the blend really is the two-model one, to the rounding of the score.
-    assert scorer.ENSEMBLE_RF_WEIGHT + scorer.ENSEMBLE_LSTM_WEIGHT == 1.0, (
-        "ansambl cekileri 1.0 toplamiyor; skor artik olasilik olarak okunamaz"
-    )
 
 def _recorded_flush(raw: dict, purged: bool = False, signals: dict | None = None) -> dict:
     """One flush shaped as record_session.py freezes it out of Postgres."""
@@ -1445,30 +2389,48 @@ def _run_all():
         test_bot_with_incidental_pause_still_scores_high,
         test_human_with_fast_burst_still_scores_low,
         test_fast_keyboard_only_no_mouse_scores_high,
+        test_measured_mask_does_not_change_the_score,
         test_opening_window_is_marked_provisional_not_suspicious,
-        test_lstm_reacts_to_trajectory,
+        test_handover_is_not_smoothed_away,
         test_isolation_forest_is_not_consulted_when_scoring,
         test_a_driven_browser_is_not_filed_as_a_person,
         test_real_holdout_splits_by_person_not_by_session,
         test_api_rejects_bad_token,
+        test_session_token_expires,
+        test_session_token_is_bound_to_its_session_and_issue_time,
+        test_challenge_signature_is_not_a_token,
+        test_token_expiry_relies_on_the_sdk_and_demo_handling_401,
         test_decision_blocks_bot_session,
         test_decision_fails_closed_without_telemetry,
         test_dashboard_endpoints_require_key,
         test_analyze_rejects_stale_timestamps,
         test_analyze_rejects_backwards_time,
         test_analyze_rejects_replayed_payload,
+        test_idle_flush_is_answered_but_not_stored,
+        test_wrong_client_clock_is_accepted_when_consistent,
+        test_client_clock_jump_within_a_session_is_rejected,
+        test_events_far_older_than_their_send_are_rejected,
         test_decision_waits_for_sequential_evidence,
         test_ambiguity_is_never_charged,
+        test_crossing_the_bot_bound_is_never_charged,
+        test_automated_evidence_ages_out_only_with_the_window,
+        test_sdk_window_constants_are_mirrored,
+        test_sequential_statistic_weights_each_flush_by_the_evidence_factor,
         test_cluster_of_identical_sessions_is_escalated,
         test_conformal_guard_only_softens_never_hardens,
+        test_bundle_load_says_whether_the_conformal_guard_can_soften_a_block,
         test_decision_verifies_when_stale,
         test_demo_charge_never_charges_blocked_session,
         test_demo_verify_upgrades_verify_but_not_block,
-        test_token_requires_proof_of_work_and_browser_timers,
+        test_verification_unlocks_every_verify_outcome,
+        test_verification_ends_the_demo_modal_loop,
+        test_verification_never_overrides_block_or_an_unknown_session,
+        test_token_requires_proof_of_work_and_plausible_timers,
         test_rate_limit_rejects_a_burst,
         test_rate_limiter_memory_is_bounded,
-        test_bundle_requires_lstm_weights,
+        test_bundle_serves_without_lstm_weights,
         test_client_signals_recorded_but_not_scored,
+        test_analyze_persists_the_measured_mask,
         test_demo_endpoints_off_by_default_outside_debug,
         test_analyze_withholds_shap_from_the_scored_client,
         test_training_seeds_torch,

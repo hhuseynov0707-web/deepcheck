@@ -2,10 +2,9 @@
 set -e
 
 # Ask scorer.py whether the artifacts on disk are actually usable, rather than
-# just checking that files exist. It refuses a missing lstm_model.pt (which
-# used to mean scoring with a randomly initialised LSTM) and a model.pkl
-# written by a different scikit-learn (which sklearn only warns about, then
-# scores anyway with "possibly invalid results").
+# just checking that files exist. It refuses a model.pkl written by a
+# different scikit-learn (which sklearn only warns about, then scores anyway
+# with "possibly invalid results") or against a different feature set.
 #
 # That second case is routine here rather than exotic: backend/ is bind-mounted
 # from the host, so a model trained by the host's Python is the very file this
@@ -19,7 +18,7 @@ if ! python -c "import scorer; scorer.get_bundle()" >/dev/null 2>&1; then
   echo "======================================================================"
   echo " Kullanilabilir model yok (eksik dosya veya surum uyumsuzlugu)."
   echo " Modeller egitiliyor."
-  echo " 25.000 oturum x 10 akis penceresi uretilecek ve uc model egitilecek."
+  echo " 25.000 oturum x 10 akis penceresi uretilecek ve model egitilecek."
   echo " Beklenen sure: 4-8 dakika (makineye gore degisir). Lutfen bekleyin;"
   echo " bu asamada API henuz istek kabul etmez."
   echo "======================================================================"

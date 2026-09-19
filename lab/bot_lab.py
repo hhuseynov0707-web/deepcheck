@@ -2,8 +2,10 @@
 
 Drives a REAL Chromium browser against the REAL SDK and the REAL backend, so
 every number here comes from the same path a production session takes:
-browser input events -> sdk/deepcheck.js -> POST /api/analyze -> server-side
-POST /api/transaction. Nothing is simulated at the feature level.
+browser input events -> sdk/deepcheck.js -> POST /api/analyze -> the
+server-side decision. The harness checks out through POST /api/demo/charge,
+which runs the same decision code as POST /api/decision and charges only on
+allow or warn. Nothing is simulated at the feature level.
 
 This exists because synthetic separation is not evidence. The model is trained
 on personas written by the same person who wrote the detector, so high accuracy
@@ -29,13 +31,15 @@ monotonically and would still look strong on a run where the attacker was
 caught early and then broke through at the end -- which is precisely the
 outcome that matters.
 
-Usage:
-    # 1. start the API (a scratch DB is fine)
-    DEEPCHECK_SECRET=lab DEEPCHECK_OPERATOR_KEY=lab \\
-    DEEPCHECK_ALLOWED_ORIGINS=http://127.0.0.1:3000 \\
-    uvicorn main:app --port 8000        # from backend/
+Usage (lab/README.md has the full setup, including the docker variant):
+    # 1. from backend/, with Postgres up and a trained model on disk.
+    #    DEMO_ENDPOINTS=1 is required: /api/demo/charge answers 404 without it.
+    DATABASE_URL=postgresql+asyncpg://deepcheck:deepcheck@127.0.0.1:5432/deepcheck \\
+    DEEPCHECK_SECRET=lab DASHBOARD_KEY=lab DEBUG=0 DEMO_ENDPOINTS=1 \\
+    CORS_ORIGINS=http://127.0.0.1:3100 \\
+    uvicorn main:app --port 8000
 
-    # 2. run the lab
+    # 2. run the lab; the harness is served on 127.0.0.1:3100
     python lab/bot_lab.py --api http://127.0.0.1:8000
 """
 
@@ -295,6 +299,18 @@ SCENARIOS = {
 # ---------------------------------------------------------------------------
 
 
+def flush_now(page):
+    """Sends the current window and waits until it has been answered.
+
+    The SDK's DeepCheck.flush() resolves once the in-flight analyze request and
+    a fresh flush have completed -- the flush a checkout does before asking for
+    a decision. An SDK build without it only flushes on its 2 s timer, so the
+    fallback waits long enough for that tick to land.
+    """
+    if not page.evaluate("() => window.__flush()"):
+        page.wait_for_timeout(900)
+
+
 def run_one(browser, harness_url, scenario_fn, rng, params=None, settle_flushes=2):
     """Runs one scenario in a fresh browser context and returns the outcome."""
     context = browser.new_context(viewport={"width": 1280, "height": 800})
@@ -305,36 +321,49 @@ def run_one(browser, harness_url, scenario_fn, rng, params=None, settle_flushes=
     started = time.time()
     scenario_fn(page, rng, params)
 
-    # Let the periodic flushes land, then force the final window to be scored
-    # before submitting -- the event-triggered flush a checkout should do.
+    # Let the periodic flushes land, then score the final window before
+    # submitting.
     time.sleep(FLUSH_MS / 1000.0 * settle_flushes)
-    page.evaluate("() => window.__flush()")
-    page.wait_for_timeout(900)
+    flush_now(page)
 
     last = page.evaluate("() => window.__dc.last")
-    decision = page.evaluate(f"async () => await window.__pay({AMOUNT})")
+    updates = page.evaluate("() => window.__dc.updates")
+    charge = page.evaluate(f"async () => await window.__pay({AMOUNT})")
     elapsed = time.time() - started
-
     context.close()
+
+    body = (charge or {}).get("body") or {}
+    if (charge or {}).get("status") != 200:
+        # 404 is the demo endpoints being off, which would otherwise read as
+        # every attack "stopped" and every human "not blocked".
+        raise SystemExit(
+            f"POST /api/demo/charge {charge and charge.get('status')} dondu: {body.get('detail')}. "
+            "Backend'i DEMO_ENDPOINTS=1 (veya DEBUG=1) ile baslatin."
+        )
+    decision = body.get("decision") or {}
     return {
+        # The session score /api/analyze last returned (smoothed), and whether
+        # it was measured on too little to mean much.
         "risk_score": (last or {}).get("risk_score"),
         "label": (last or {}).get("label"),
-        "evidence_state": (decision or {}).get("evidence_state_label"),
-        "signal_sufficiency": (last or {}).get("signal_sufficiency"),
-        "decision": (decision or {}).get("decision"),
-        "reasons": (decision or {}).get("reason_codes", {}),
-        "updates": page_updates(last),
+        "provisional": (last or {}).get("provisional"),
+        "measured_features": (last or {}).get("measured_features"),
+        # What the server decided at checkout.
+        "status": body.get("status"),
+        "action": decision.get("action"),
+        "reason": decision.get("reason"),
+        "decision_score": decision.get("risk_score"),
+        "updates": updates,
         "seconds": round(elapsed, 1),
     }
 
 
-def page_updates(last):
-    return 0 if last is None else 1
-
-
 def detected(outcome):
-    """An attack is stopped if the server did not approve it outright."""
-    return outcome["decision"] != "onaylandi"
+    """An attack is stopped if the server did not charge it outright.
+
+    /api/demo/charge charges on allow or warn; verify and block are declined.
+    """
+    return outcome["status"] != "charged"
 
 
 def chromium_launch_args(headless: bool = True) -> dict:
@@ -356,7 +385,8 @@ def chromium_launch_args(headless: bool = True) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="DeepCheck adversarial bot lab")
     parser.add_argument("--api", default="http://127.0.0.1:8000")
-    parser.add_argument("--port", type=int, default=3000, help="harness origin port")
+    # 3000 is the demo frontend container's port; capture.py uses 3100 too.
+    parser.add_argument("--port", type=int, default=3100, help="harness origin port")
     parser.add_argument("--rounds", type=int, default=4, help="adaptive attack rounds")
     parser.add_argument("--repeat", type=int, default=1, help="repeats per scenario")
     parser.add_argument("--seed", type=int, default=7)
@@ -374,7 +404,7 @@ def main():
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(**launch)
-            print(f"{'senaryo':22s} {'risk':>6s} {'karar':>18s}  {'kanıt durumu'}")
+            print(f"{'senaryo':22s} {'risk':>6s} {'karar':>8s}  {'gerekçe'}")
             print("-" * 76)
 
             for key, (fn, label) in SCENARIOS.items():
@@ -384,11 +414,11 @@ def main():
                     results["scenarios"].append(out)
                     print(
                         f"{key:22s} {str(out['risk_score']):>6s} "
-                        f"{str(out['decision']):>18s}  {out['evidence_state']}"
+                        f"{str(out['action']):>8s}  {out['reason']}"
                     )
 
             # A5: adaptive. Each round the attacker sees its score and retunes.
-            print(f"\n{'A5 adaptif tur':22s} {'risk':>6s} {'karar':>18s}  {'tespit'}")
+            print(f"\n{'A5 adaptif tur':22s} {'risk':>6s} {'karar':>8s}  {'tespit'}")
             print("-" * 76)
             params = {"smooth": 0.0, "pause": 0.0}
             for rnd in range(1, args.rounds + 1):
@@ -397,7 +427,7 @@ def main():
                 results["adaptive_rounds"].append(out)
                 print(
                     f"tur {rnd:<18d} {str(out['risk_score']):>6s} "
-                    f"{str(out['decision']):>18s}  {'EVET' if detected(out) else 'HAYIR — GEÇTİ'}"
+                    f"{str(out['action']):>8s}  {'EVET' if detected(out) else 'HAYIR — GEÇTİ'}"
                 )
                 # Retune toward human ranges using the observed score.
                 if out["risk_score"] is not None and out["risk_score"] >= 40:
@@ -425,10 +455,17 @@ def summarize(results):
         stopped = sum(1 for a in attacks if detected(a))
         print(f"Saldırı senaryoları durduruldu : {stopped}/{len(attacks)}")
     if humans:
-        wrongly = [h for h in humans if h["decision"] == "reddedildi"]
+        # Blocked is a lost sale; verify is friction the customer can clear.
+        # Reported separately because they cost different things.
+        wrongly = [h for h in humans if h["action"] == "block"]
+        stepped_up = [h for h in humans if h["action"] == "verify"]
         print(f"Meşru oturum yanlışlıkla engellendi: {len(wrongly)}/{len(humans)}")
+        print(f"Meşru oturumdan ek doğrulama istendi: {len(stepped_up)}/{len(humans)}")
         for h in humans:
-            print(f"   {h['scenario']:20s} risk={h['risk_score']} karar={h['decision']}")
+            print(
+                f"   {h['scenario']:20s} risk={h['risk_score']} karar={h['action']} "
+                f"gerekçe={h['reason']}"
+            )
 
     rounds = results["adaptive_rounds"]
     if rounds:
@@ -436,7 +473,7 @@ def summarize(results):
         for r in rounds:
             print(
                 f"   tur {r['round']}: risk={r['risk_score']} "
-                f"karar={r['decision']} tespit={'evet' if detected(r) else 'HAYIR'}"
+                f"karar={r['action']} tespit={'evet' if detected(r) else 'HAYIR'}"
             )
         broke = [r["round"] for r in rounds if not detected(r)]
         print(

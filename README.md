@@ -42,9 +42,8 @@ flowchart LR
     subgraph Backend
         B[POST /api/analyze]
         C[Feature extraction]
-        D[Random Forest]
-        F[LSTM]
-        G[Ensemble + SHAP]
+        D[Random Forest + SHAP]
+        G[Session smoothing]
     end
 
     H[(PostgreSQL)]
@@ -52,9 +51,7 @@ flowchart LR
     A -->|every 2s| B
     B --> C
     C --> D
-    C --> F
     D --> G
-    F --> G
     G --> H
     G -->|score + label + SHAP| A
     A --> I
@@ -109,18 +106,20 @@ Six behavioral features are extracted from each flush, every one normalized to r
 
 Interaction entropy is computed per channel and then combined, rather than by merging every timestamp into one stream first. Merging is the obvious implementation and it is wrong: interleaving several independently-regular channels produces a sequence that looks irregular even when each channel is perfectly robotic on its own — a beat-frequency artifact that measured ~0.92 entropy for three channels that individually scored 0.0.
 
-Those six features feed two models whose outputs are blended:
+Those features feed one model:
 
 ```
-fraud_probability = 0.6 × RandomForest + 0.4 × LSTM
+fraud_probability = RandomForest
 risk_score        = 100 × fraud_probability
 ```
+
+It used to be a blend, `0.6 × RandomForest + 0.4 × LSTM`, and the LSTM was **removed on measurement** too. `backend/model_selection.py` reproduces the study. The LSTM was trained on simulated sessions only, and on browser traffic its output collapsed toward "human": bots scoring ≥60 fell from 0.90 (forest alone) to 0.79 in the blend. In the mid-session handover it existed for, it reacted four flushes *later* than the forest reading the current flush. Gradient boosting was measured too and not adopted. It caught more of the attack scenarios it had seen, but with a human scenario held out of training, LightGBM blocked 74% of those unseen humans; the forest blocked none. The honest cost is in the study: the LSTM also damped legitimate scores, so more typical users now reach step-up verification instead of an immediate approval.
 
 There used to be a third at 0.2, an Isolation Forest, and it was **removed on measurement rather than on taste**. It is fitted on human rows only, so “normal” to it means the human distribution — and the automation this product exists to stop is automation that has been made to look human. On held-out real browser rows its standalone discrimination came out at ROC-AUC **0.340**: not weak, inverted. It was voting for the attacker. Replaying identical telemetry through both weightings, dropping it moved the mean human score from 19.0 to 9.3 and mean `bot_linear` from 86.0 to 92.4 — it had been adding much the same offset to everyone, inflating scores without separating them. It also cost 14 ms of the 32 ms a flush took to score.
 
 It is still trained and still stored in the bundle, so the decision can be re-measured once there are real human recordings to measure against. Nothing reads it per request.
 
-A session's reported score is the **median of its last 5 flushes**, not the instantaneous value. One incidental pause in an otherwise robotic session shouldn't flip the verdict; an anomaly has to persist to move it.
+A session's reported score is the **median of its last 5 flushes**, not the instantaneous value. One incidental pause in an otherwise robotic session shouldn't flip the verdict; an anomaly has to persist to move it. The exception is a jump of 35 points or more above the recent median: that is a handover, not noise, and smoothing may not hide it (`scorer.smooth_session_score`).
 
 ### Risk bands
 
@@ -407,8 +406,9 @@ deepcheck/
 ├── sdk/deepcheck.js          Browser SDK — behavioral collection
 ├── backend/
 │   ├── main.py               FastAPI endpoints
-│   ├── scorer.py             Feature extraction, ensemble, SHAP
-│   ├── lstm_model.py         PyTorch sequence model
+│   ├── scorer.py             Feature extraction, scoring, smoothing, SHAP
+│   ├── lstm_model.py         FEATURE_NAMES + the (unserved) LSTM definition
+│   ├── model_selection.py    Model-family and temporal-model study
 │   ├── train_model.py        Synthetic data generation + training
 │   ├── test_scorer.py        Behavioral regression tests
 │   └── models.py             SQLAlchemy schema

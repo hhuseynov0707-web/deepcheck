@@ -15,8 +15,14 @@ FROM node:20-alpine AS build
 # result, so nginx serves the SDK from the same origin as the app.
 WORKDIR /app/frontend
 
-COPY frontend/package.json ./
-RUN npm install
+# The lockfile, and `npm ci` rather than `npm install`. With only package.json
+# in the image, every build re-resolved the caret ranges against whatever the
+# registry held that day, so two builds of the same commit could ship
+# different dependency trees -- and the one a jury runs need not be the one
+# the tests passed on. `npm ci` installs exactly package-lock.json and fails
+# if it has drifted from package.json instead of quietly rewriting it.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 COPY frontend/ .
 COPY sdk/ /app/sdk/

@@ -58,10 +58,11 @@
       },
     });
 
-    // Adapted to this repository's API surface. The branch this lab came from
-    // exposed POST /api/transaction and an authorizedFetch helper on the SDK;
-    // here the equivalents are /api/demo/charge and /api/demo/verify, and the
-    // session token is sent explicitly.
+    // Checkout goes through POST /api/demo/charge, which runs the same decision
+    // code as POST /api/decision and charges only on allow/warn; step-up goes
+    // through POST /api/demo/verify. Both answer 404 unless the backend runs
+    // with DEMO_ENDPOINTS=1 (or DEBUG=1). The session id and token are read at
+    // call time, because the SDK re-registers once when its token is refused.
     const authed = async (path, body) => {
       const res = await fetch(`${apiUrl}${path}`, {
         method: "POST",
@@ -74,13 +75,21 @@
       return res;
     };
 
-    // This SDK flushes on its own 2 s timer and exposes no manual flush, so a
-    // scenario waits for the next tick rather than forcing one.
-    window.__flush = () => undefined;
+    // Sends the current window and resolves once it has been answered, the
+    // way the demo page flushes before every checkout. Resolves false on an
+    // SDK build without DeepCheck.flush(), which only flushes on its 2 s
+    // timer, so the lab knows to wait for that tick instead.
+    window.__flush = async () => {
+      if (typeof window.DeepCheck.flush !== "function") return false;
+      await window.DeepCheck.flush();
+      return true;
+    };
 
+    // HTTP status travels with the body: a 404 (demo endpoints off) must not
+    // read as a declined charge, i.e. as an attack that was stopped.
     window.__pay = async (amount) => {
       const res = await authed("/api/demo/charge", { amount });
-      return await res.json();
+      return { status: res.status, body: await res.json() };
     };
 
     window.__verify = async (code) => {
@@ -89,10 +98,12 @@
     };
 
     document.getElementById("pay").addEventListener("click", async () => {
+      await window.__flush();
       const out = await window.__pay(2038.8);
-      const d = out.decision || {};
-      document.getElementById("risk").textContent =
-        `karar: ${d.action} · risk: ${d.risk_score} · ${out.status}`;
+      const d = out.body.decision || {};
+      document.getElementById("risk").textContent = out.body.decision
+        ? `karar: ${d.action} · risk: ${d.risk_score} · ${out.body.status}`
+        : `hata ${out.status}: ${out.body.detail}`;
     });
   </script>
 </body>

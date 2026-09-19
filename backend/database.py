@@ -71,6 +71,7 @@ async def init_db() -> None:
 # safe to run on a schema that already has it (IF NOT EXISTS).
 _ADDITIVE_MIGRATIONS = (
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS clock_offset_ms BIGINT",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS payload_hash VARCHAR(64)",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS newest_event_at BIGINT",
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS client_signals JSON",
@@ -88,6 +89,41 @@ _ADDITIVE_MIGRATIONS = (
     # tolerant of an existing non-unique index of the same name.
     "DROP INDEX IF EXISTS ix_behavior_data_payload_hash",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_behavior_data_payload_hash ON behavior_data (payload_hash)",
+    # --- Per-customer behavioural profile ------------------------------------
+    # Columns and indexes only. The four new tables are created by create_all
+    # above; what needs repeating here is everything create_all will not add to
+    # a table that already exists. Every statement is metadata-only, so boot
+    # stays fast for all four workers queued behind the advisory lock, and
+    # there is no ADD CONSTRAINT anywhere -- Postgres has no
+    # "ADD CONSTRAINT IF NOT EXISTS", and this design deliberately has no
+    # foreign keys to add.
+    "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS measured_mask INTEGER",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS profile_id VARCHAR(64)",
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS profile_learned BOOLEAN NOT NULL DEFAULT FALSE",
+    "CREATE INDEX IF NOT EXISTS ix_sessions_profile_id ON sessions (profile_id) WHERE profile_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS ix_customer_profiles_last_seen_at ON customer_profiles (last_seen_at)",
+    # The unique index IS the learn-once mechanism (see models.py): the
+    # ON CONFLICT clause that stops a double learn needs this index to exist,
+    # so on an upgraded database it must be created here and not only by
+    # create_all.
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_profile_vectors_profile_session ON customer_profile_vectors (profile_id, session_id)",
+    "CREATE INDEX IF NOT EXISTS ix_profile_vectors_profile_modality ON customer_profile_vectors (profile_id, modality, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_decision_audit_decided_at ON decision_audit (decided_at)",
+    "CREATE INDEX IF NOT EXISTS ix_decision_audit_session ON decision_audit (session_id)",
+    "CREATE INDEX IF NOT EXISTS ix_profile_access_audit_accessed_at ON profile_access_audit (accessed_at)",
+    # Probation vectors stopped being references, so the audit row reports
+    # them beside reference_n instead of inside it.
+    "ALTER TABLE decision_audit ADD COLUMN IF NOT EXISTS probation_n SMALLINT",
+    # --- Synthetic demo data (backend/demo_seed.py) ----------------------------
+    # The jury prototype runs on synthetic customers; these flags are how every
+    # screen labels them and every measurement leaves them out. DEFAULT FALSE
+    # with NOT NULL is metadata-only in Postgres 11+, so existing rows are
+    # "not synthetic" without a table rewrite -- which is true of every row
+    # written before the seed existed.
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE customer_profiles ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE customer_profile_vectors ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE decision_audit ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE",
 )
 
 

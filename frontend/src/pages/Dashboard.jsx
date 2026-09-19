@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import MetricCard from "../components/MetricCard.jsx";
+import ProfilePanel from "../components/ProfilePanel.jsx";
 import RiskBadge from "../components/RiskBadge.jsx";
 import RiskChart, { ShapBarChart } from "../components/RiskChart.jsx";
 import SessionTable from "../components/SessionTable.jsx";
@@ -258,9 +259,15 @@ export default function Dashboard() {
                   {selectedDetail.session_id}
                 </p>
                 <RiskBadge riskScore={selectedDetail.risk_score} size="lg" />
+                {/* `confidence` is max(p, 1-p) of the session's latest flush:
+                    the forest's certainty in whichever class it picked, not a
+                    calibrated probability of being right, and not about the
+                    smoothed score in the badge above. "Güven" claimed more. */}
                 <p className="text-sm text-zinc-400">
-                  Güven: {(selectedDetail.confidence * 100).toFixed(0)}% · Yanıt süresi:{" "}
-                  {selectedDetail.response_time_ms} ms
+                  <span title="Son davranış penceresinde modelin seçtiği sınıfa verdiği olasılık, max(p, 1−p). Kalibre edilmiş bir doğruluk oranı değildir; üstteki risk skoru ise oturum boyunca yumşatılmış skordur.">
+                    Son pencere model kesinliği: {(selectedDetail.confidence * 100).toFixed(0)}%
+                  </span>{" "}
+                  · Yanıt süresi: {selectedDetail.response_time_ms} ms
                 </p>
               </div>
             ) : (
@@ -276,6 +283,11 @@ export default function Dashboard() {
               <ShapBarChart shapExplanation={selectedDetail.shap_explanation} />
             </div>
           )}
+
+          {/* Present whenever the backend sends the block, which it always
+              does: its shape does not depend on whether the customer is
+              profiled, so neither does whether this card appears. */}
+          {selectedDetail?.profile && <ProfilePanel profile={selectedDetail.profile} />}
         </div>
       </div>
 

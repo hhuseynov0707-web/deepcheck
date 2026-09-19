@@ -93,3 +93,6 @@ yarn-error.log*
 
 # Recorded behavioral sessions are personal data -- keep the report, not the recordings.
 data/real/**/*.json
+
+# Output of backend/model_selection.py
+backend/model_selection_results.json

@@ -24,8 +24,8 @@ Humans and bots interact with a page differently:
 | Scroll | Bursts with varying speed | None, or constant |
 | Tab focus | Occasionally switches away | Never |
 
-DeepCheck turns those differences into six numbers, feeds them to a small
-ensemble of ML models, and returns a **risk score from 0 to 100** every two
+DeepCheck turns those differences into twelve numbers, feeds them to a
+Random Forest, and returns a **risk score from 0 to 100** every two
 seconds while the user is on the page. The score comes with a Turkish label
 and a SHAP explanation of which behaviours drove it.
 
@@ -40,7 +40,7 @@ and a SHAP explanation of which behaviours drove it.
  +----------------------+   POST every 2 s   +--------------------------+   GET every 3 s   +------------------+
  | payment page         | -----------------> | /api/analyze             | <---------------- | /api/sessions    |
  | + sdk/deepcheck.js   |  raw telemetry     |  validate -> features -> |                   | /api/score/{id}  |
- |   (mouse, click,     | <----------------- |  RF + IsoForest + LSTM ->|                   |  table, D3 chart,|
+ |   (mouse, click,     | <----------------- |  Random Forest --------->|                   |  table, D3 chart,|
  |    scroll, keydown,  |  score + label +   |  SHAP -> smooth -> store |                   |  SHAP bars       |
  |    focus timestamps) |  SHAP              +------------+-------------+                   +------------------+
  +----------------------+                                 |
@@ -61,7 +61,8 @@ no model file exists.
 | `sdk/deepcheck.js` | Browser SDK. Collects behaviour, posts it, emits results. ~270 lines, no dependencies. |
 | `backend/main.py` | FastAPI app: request validation, four endpoints, smoothing, persistence. |
 | `backend/scorer.py` | Feature extraction, model loading, inference, SHAP, labelling. |
-| `backend/lstm_model.py` | PyTorch LSTM definition and the canonical `FEATURE_NAMES` list. |
+| `backend/lstm_model.py` | The canonical `FEATURE_NAMES` list, and the LSTM definition (not served). |
+| `backend/model_selection.py` | The study behind the model choice: seven families, temporal variants, held-out scenarios. |
 | `backend/train_model.py` | Synthetic data generator (four personas) and training of all three models. |
 | `backend/models.py` | SQLAlchemy tables `sessions` and `behavior_data`. |
 | `backend/database.py` | Async engine, session factory, `init_db`. |
@@ -255,7 +256,7 @@ message and is logged.
 
 A recording that is perturbed as well as re-timed gets past the hash. That
 is where replay stops being a transport problem and becomes a model
-problem, which the LSTM history and the real-session evaluation address.
+problem, which the real-session evaluation addresses.
 
 ### `POST /api/decision`
 
@@ -390,25 +391,54 @@ Design decisions worth knowing:
 
 ## 7. The models
 
-Three models are trained by `train_model.py` and loaded once per worker by
-`scorer.ModelBundle`.
+One model is served. `scorer.ModelBundle` loads `model.pkl` once per worker.
 
 | Model | Library | Config | Role | Weight |
 |---|---|---|---|---|
-| Random Forest | scikit-learn | 200 trees, depth 12, min leaf 5 | Supervised classifier, main signal | 0.6 |
-| LSTM | PyTorch | 2 layers, hidden 32, dropout 0.2, Adam 1e-3, 8 epochs | Sequence model over 10 timesteps x 6 features | 0.4 |
+| Random Forest | scikit-learn | 200 trees, depth 12, min leaf 5 | Supervised classifier — the score | 1.0 |
+| LSTM | PyTorch | 2 layers, hidden 32, dropout 0.2, Adam 1e-3, 8 epochs | Trained only with `TRAIN_LSTM=1`, **not served** — see “Why the LSTM was dropped” | 0.0 |
 | Isolation Forest | scikit-learn | 200 trees, contamination 0.05 | Trained and stored, **weight 0** — see “Why the Isolation Forest was dropped” below | 0.0 |
 
 Inference:
 
 ```
 scaled     = StandardScaler(features)
-rf_p       = RF.predict_proba(scaled)[fraud]
-lstm_p     = LSTM(sequence)
-P(fraud)   = clip(0.6*rf_p + 0.4*lstm_p, 0, 1)
+P(fraud)   = RF.predict_proba(scaled)[fraud]
 score      = round(100 * P(fraud), 1)
-confidence = max(P, 1 - P)
+session    = smooth_session_score(previous per-flush scores, score)
 ```
+
+**Why the LSTM was dropped.** `backend/model_selection.py` compares seven
+model families and four temporal variants on the same splits. The LSTM had
+only ever seen simulated sessions, and on the 234 browser-lab flushes its
+output collapsed toward "human". Its ROC-AUC was 0.947, but its Brier score
+was 0.51. Blended at 0.4, it lowered the share of bots reaching 60 from 0.90
+to 0.79 without flagging a single extra human. On simulated mid-session
+handovers it reached p ≥ 0.5 only at the tenth flush, where the forest,
+reading the current flush alone, did so on the first automated one. Its one
+job was being done by the forest plus a disagreement rule. That rule is now
+`smooth_session_score`, which lets a jump of 35 points past the recent median
+through the smoothing: 185/185 handovers caught on the first automated flush.
+
+The cost is real and stated. The LSTM damped every score, including
+legitimate ones. Simulating whole form fills through the decision layer:
+
+- typical users approved at once went from 95% to 89%, with the rest sent to
+  step-up;
+- slow typists blocked outright went from 5.2% to 0.2%, because the
+  disagreement rule had been escalating on them.
+
+Those before/after figures were measured at the time of the change against
+commit `705a63f`, using `benchmark.py`'s form-fill generator split into
+rolling SDK windows, 500 sessions per style.
+
+**Why gradient boosting was not adopted.** LightGBM, XGBoost and
+HistGradientBoosting matched the forest's ROC-AUC. They also caught more bots
+at 80 on scenarios they had trained on: +0.27, 95% run-level bootstrap CI
+[+0.13, +0.40]. With a scenario held out of training, they extrapolated
+confidently. LightGBM blocked 74% of the unseen H1 humans at 80, and the
+forest blocked none. Real customers are unseen by construction, so without
+real data the conservative model is the right one.
 
 **Why the Isolation Forest was dropped.** It held 0.2 of the blend until it
 was measured against held-out real browser rows, where its standalone
@@ -518,12 +548,12 @@ the artifacts are absent or unusable; seed 42, reproducible).
    in the pipeline: training and serving share one code path, so a
    feature bug cannot exist in one and not the other.
 3. 80 / 20 stratified `train_test_split`, `StandardScaler` fit on train.
-4. Train RF and IsoForest on the aggregate rows; train the LSTM on
-   sequences built by repeating each row 10 times with N(0, 0.02) jitter.
+4. Train RF and IsoForest on the aggregate rows. The LSTM is trained on the
+   ten-step sequences only with `TRAIN_LSTM=1`, for re-measurement.
 5. Save `model-sklearn<version>.pkl` (scaler, rf, iso_forest,
-   feature_names, neutral_defaults and the scikit-learn version) and
-   `lstm_model-sklearn<version>.pt`. Both are git-ignored and regenerated on
-   demand.
+   feature_names, neutral_defaults and the scikit-learn version), plus
+   `lstm_model-sklearn<version>.pt` when the LSTM was trained. Both are
+   git-ignored and regenerated on demand.
 
 **Reproducibility.** Seed 42 covers the whole pipeline: `np.random.default_rng`
 for the data, `random_state=42` for both forests, and `torch.manual_seed` for
@@ -639,8 +669,8 @@ is the raw per-flush signal kept for analysis and charting.
   a six-digit secret cannot be guessed at unlimited speed.
 - Raw telemetry is blanked after an hour and rows deleted after a day, so
   behavioural recordings of real people do not accumulate.
-- Both model artefacts are required; a half-trained directory fails loudly
-  rather than scoring with a randomly initialised LSTM.
+- The served bundle is `model.pkl` alone; a missing or mismatched one fails
+  loudly and `/api/health` reports it, rather than scoring anyway.
 
 ---
 
@@ -678,7 +708,8 @@ And four cover the newer defences:
 
 - a burst past the rate limit gets 429 with `Retry-After`, and a different bucket is unaffected
 - the limiter's own key table stays bounded under rotating keys
-- a bundle missing its LSTM weights refuses to load instead of scoring with random weights
+- the bundle serves without LSTM weights, and a missing `model.pkl` is reported by `/api/health`
+- a handover (a jump of 35+ points over the recent median) is not smoothed away, while a single calm window in a bot session still is
 - training seeds torch, so the LSTM is reproducible rather than different on every run
 - client provenance signals are stored but do not move the risk score
 
@@ -797,28 +828,23 @@ entropy are timing signals, click density is intent, focus change is
 attention. They are cheap to compute and each is explainable to a fraud
 analyst.
 
-**Why two models instead of one?**
-The Random Forest is the accurate, explainable core: it reads one window
-as a snapshot. The LSTM reads the session as a trajectory rather than a
-snapshot, which is what catches behaviour that changes mid-session — a
-handover from a real person to a script scores the same on any single
-window and differently across ten. They fail in different ways, which is
-the only reason to carry two.
+**Why one model instead of an ensemble?**
+Because the ensemble members were measured and each one made the served
+decision worse. The Isolation Forest was inverted (§10). The LSTM lowered
+bot detection on browser traffic and caught handovers later than the forest
+did (§7). What a temporal model was meant to add, noticing that a session's
+past and present do not match, is done explicitly in `smooth_session_score`,
+where it can be read, tested and explained to an analyst.
 
-There was a third, an Isolation Forest, until it was measured; see §10.
-The weights 0.6 / 0.4 keep the previous balance between the two
-survivors, renormalised. They are **not** learned, and the honest reason
-is that a meta-learner is only as good as the data it learns from: with
-82 real held-out rows, stacking would fit the noise in this sample. That
-is the next thing to do once real human recordings exist, not before.
-
-**Is the LSTM actually doing anything today?**
-It reads the session's real flush history now, and a regression test
-asserts it: the same current flush scores differently depending on what
-preceded it. It separates naive automation strongly (p ≈ 0.94 against
-p ≈ 0.18 for humans). It is weak where the features themselves are weak —
-the human-mimicking persona scores only p ≈ 0.25 — which is a limit of the
-six signals rather than of the architecture.
+**Why not gradient boosting or a deep model?**
+They were measured (`backend/model_selection.py`). With an attack scenario
+held out of training, every tree model caught 0-20% of A2, A3 and A4. The
+linear model and the MLP each caught one unseen family well (A3 and A2, both
+78% at 60), but they challenged 48-68% of an unseen human scenario to do it.
+No family generalises to new attacks without also turning on new humans, so
+the model family is not the bottleneck; the signals and the data are. Among
+models that rank equally well, the one that extrapolates least confidently to
+unseen humans is the right one for a payment gate.
 
 **How do you know it works on real people?**
 We do not, yet, and `docs/evaluation.md` says so rather than quoting a

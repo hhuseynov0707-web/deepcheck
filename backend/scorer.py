@@ -12,9 +12,8 @@ import joblib
 import numpy as np
 import shap
 import sklearn
-import torch
 
-from lstm_model import FEATURE_NAMES, SEQUENCE_LENGTH, BehaviorLSTM, build_sequence
+from lstm_model import FEATURE_NAMES
 
 logger = logging.getLogger("deepcheck.scorer")
 
@@ -31,6 +30,8 @@ MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
 # let both sides keep a correct model of their own, and cost nothing: the files
 # are reproducible from a fixed seed and are not in git.
 MODEL_PATH = os.path.join(MODEL_DIR, f"model-sklearn{sklearn.__version__}.pkl")
+# Written only by `TRAIN_LSTM=1 python train_model.py`, for re-measurement.
+# Nothing on the request path reads it -- see the note above compute_risk.
 LSTM_PATH = os.path.join(MODEL_DIR, f"lstm_model-sklearn{sklearn.__version__}.pt")
 
 CLICK_DENSITY_WINDOW_MS = 5000
@@ -188,45 +189,48 @@ MIN_MEASURED_FOR_CONFIDENT_SCORE = 6
 # legitimate 0.
 NEUTRAL_FEATURES = tuple(NEUTRAL_DEFAULTS)
 
-# --- Component disagreement ------------------------------------------------
+# --- Session smoothing and level shifts -------------------------------------
 #
-# The two models look at different time scales. RandomForest reads the flush
-# in front of it; the LSTM reads the session's trajectory. When they disagree
-# sharply, that is not noise to be averaged away -- it is the signal that this
-# session's past and present do not belong to the same actor.
+# A session's official score is the median of its last SMOOTHING_WINDOW
+# flushes, so one odd reading -- an incidental pause in otherwise robotic
+# activity -- cannot flip a verdict on its own.
 #
-# Measured on a mid-session handover (five human windows, then five automated
-# ones): at the first automated flush RandomForest said 0.99 and the LSTM said
-# 0.01, the widest gap in the whole session, and the flat blend turned that
-# into 0.60. The alarm was averaged down by the component that had not caught
-# up yet. Re-measured after Isolation Forest was dropped: same story, same
-# verdict -- this rule reads rf and lstm only, so the weight change does not
-# touch it.
+# A mid-session handover is not one odd reading, it is a level shift, and a
+# median hides a level shift for as long as it takes three of five windows to
+# turn. So when the current flush jumps LEVEL_SHIFT_POINTS or more above the
+# median of the flushes before it, smoothing may not pull the session below
+# that reading. Upward only: a bot that produces one calm window is exactly the
+# single odd reading smoothing exists to ignore.
 #
-# So the blend is interpolated toward whichever component is more alarmed, in
-# proportion to how much they disagree. With d = |rf - lstm|:
+# This replaces the RandomForest/LSTM disagreement term, which was the same idea
+# with the LSTM standing in for "the past". Measured on 185 simulated handovers
+# with the RandomForest alone: plain median smoothing caught 0 on the first
+# automated flush, this rule caught 185. It moved at most 6 of 14,790 legitimate
+# flushes across 60, and none of the 94 browser-lab human flushes. The result
+# was identical at 25, 35 and 50 points; 35 keeps the old threshold's meaning.
 #
-#     combined = (1 - d) * blend + d * max(rf, lstm)
-#
-# At d ~ 0 this is exactly the old blend, so agreeing sessions are unchanged.
-# At d ~ 1 it is the alarmed component. Deliberately asymmetric -- it escalates
-# and never de-escalates -- because a hijack is the case worth catching and a
-# challenge is cheaper than a charge.
-#
-# The cost is real and is measured rather than assumed: this also fires when a
-# model is simply WRONG about a human, so the false-positive rate is the number
-# that decides whether it stays.
-DISAGREEMENT_ESCALATION = os.getenv("DISAGREEMENT_ESCALATION", "1").strip() == "1"
+# The downward direction has no such rule here, and the median alone would let
+# a bot that turns human-looking reach a low score within three flushes. That
+# case is caught in main.py's decision path rather than here: while the
+# sequential statistic over the newest ten per-flush scores still crosses the
+# bot bound, the session is held at verify whatever this smoothed score says
+# (internal reason "sequential"; test_crossing_the_bot_bound_is_never_charged).
+SMOOTHING_WINDOW = 5
+LEVEL_SHIFT_POINTS = 35.0
 
-# Below this the components are treated as agreeing and nothing changes, so
-# ordinary sampling jitter cannot nudge scores upward.
-DISAGREEMENT_THRESHOLD = 0.35
 
-# Ensemble weights. Two components, not three: see the note in compute_risk for
-# why Isolation Forest was dropped from the score. The ratio keeps the previous
-# balance between the two survivors (0.5 : 0.3) renormalised to sum to one.
-ENSEMBLE_RF_WEIGHT = 0.6
-ENSEMBLE_LSTM_WEIGHT = 0.4
+def smooth_session_score(previous_scores: list[float], current: float) -> float:
+    """The session score /api/analyze stores and /api/decision reads.
+
+    `previous_scores` are this session's earlier per-flush scores, oldest
+    first. Non-finite values are skipped: statistics.median over a list
+    containing NaN returns a meaningless value rather than raising.
+    """
+    previous = [s for s in previous_scores if s is not None and math.isfinite(s)][-(SMOOTHING_WINDOW - 1):]
+    smoothed = float(np.median(previous + [current]))
+    if previous and current - float(np.median(previous)) >= LEVEL_SHIFT_POINTS:
+        smoothed = max(smoothed, current)
+    return round(smoothed, 1)
 
 LABELS = [
     (40, "Gerçek Kullanıcı"),
@@ -250,17 +254,6 @@ class ModelBundle:
         if not os.path.exists(MODEL_PATH):
             raise ModelUnavailableError(
                 "model.pkl bulunamadı. Önce `python train_model.py` çalıştırın."
-            )
-        # Both artifacts or neither. The LSTM used to be loaded only "if the
-        # file happens to exist", which meant a deployment with model.pkl but
-        # no lstm_model.pt ran the sequence model with RANDOM initial weights
-        # -- contributing 30% of every risk score as noise, with nothing
-        # logged and /api/health still reporting the model as loaded. A
-        # missing weight file is a broken install, not a degraded mode.
-        if not os.path.exists(LSTM_PATH):
-            raise ModelUnavailableError(
-                "lstm_model.pt bulunamadı. Model dosyaları eksik; "
-                "`python train_model.py` çalıştırın."
             )
         bundle = joblib.load(MODEL_PATH)
 
@@ -323,10 +316,45 @@ class ModelBundle:
                 "veriyle skorlar. `python train_model.py` ile yeniden egitin."
             )
 
-        # Scores the trained model gave to held-out REAL human sessions, used
-        # by the conformal guard above. Absent on a synthetic-only run, in
-        # which case the guard is simply inactive.
+        # Scores the trained model gave to held-out human sessions from the
+        # real-BROWSER lab file -- scripted Playwright personas, not customers
+        # (see the conformal section below) -- used by main.py's conformal
+        # guard. Absent on a synthetic-only run, in which case the guard is
+        # simply inactive.
         self.human_calibration = list(bundle.get("human_calibration") or [])
+
+        # Said once, at load, because this guard was described as a safety net
+        # while the served calibration made it inert. Whether it can soften any
+        # block is one number: the p-value of the lowest blocked score, the
+        # lower edge of "Bot Tespit Edildi", where main.ACTION_LADDER starts to
+        # block. The p-value never rises with the score, so if it is <= alpha
+        # there, no block at any score is softened; if even 1/(n+1) exceeds
+        # alpha, every block is. Observability only: the guard is unchanged.
+        block_at, n = LABELS[-2][0], len(self.human_calibration)
+        p_block = conformal_p_value(block_at, self.human_calibration)
+        working = False
+        if p_block is None:
+            state = f"kalibrasyon yok, koruma devre disi: {block_at} ve ustu dogrudan bloklanir"
+        elif p_block <= CONFORMAL_ALPHA:
+            state = "ETKISIZ: su an hicbir blok ek dogrulamaya indirilemez"
+        elif 1.0 / (n + 1.0) > CONFORMAL_ALPHA:
+            state = "kalibrasyon cok kucuk: HER blok ek dogrulamaya iner, hicbir oturum bloklanmaz"
+        else:
+            working = True
+            state = f"etkin: {block_at} ve ustundeki bazi bloklar ek dogrulamaya indirilebilir"
+        measured = (
+            f", en yuksek skor {max(self.human_calibration):.1f}, "
+            f"{block_at} skorunda p={p_block:.3f} (alfa {CONFORMAL_ALPHA})"
+            if n
+            else ""
+        )
+        logger.log(
+            logging.INFO if working else logging.WARNING,
+            "Konformal koruma: insan kalibrasyonu n=%d%s; %s",
+            n,
+            measured,
+            state,
+        )
 
         self.neutral_defaults = bundle.get("neutral_defaults") or {}
         if not self.neutral_defaults:
@@ -350,18 +378,6 @@ class ModelBundle:
         self.iso_forest.n_jobs = 1
 
         self.explainer = shap.TreeExplainer(self.rf)
-
-        self.lstm = BehaviorLSTM()
-        self.lstm.load_state_dict(torch.load(LSTM_PATH, map_location="cpu"))
-        self.lstm.eval()
-
-
-# Same rationale as rf.n_jobs above, for torch: the LSTM forward pass on a
-# single 10-step sequence is ~1.4ms of work, far too little to be worth
-# splitting across threads. Left at the default, each uvicorn worker would
-# spawn a thread per core, and with multiple workers those pools oversubscribe
-# the machine and slow every request down.
-torch.set_num_threads(1)
 
 
 _bundle: ModelBundle | None = None
@@ -491,22 +507,35 @@ def behavior_bucket(raw_values: dict) -> str | None:
 
 # --- Conformal human-plausibility guard -------------------------------------
 #
-# A one-directional safety net. Given the scores the trained model assigns to
-# held-out REAL human sessions, the conformal p-value of a new score is the
-# fraction of those humans who scored at least as high. A large p-value means
-# "this score is unremarkable for a legitimate user", and the system then
-# refuses to BLOCK on it, downgrading to step-up verification instead.
+# Designed as a one-directional safety net. Given the scores the trained model
+# assigns to held-out human sessions, the conformal p-value of a new score is
+# the fraction of those humans who scored at least as high. A large p-value
+# means "this score is unremarkable for the calibration humans", and main.py
+# then refuses to BLOCK on it, downgrading to step-up verification instead. It
+# can only ever soften a decision, never harden one.
 #
-# It can only ever soften a decision, never harden one, which is what makes it
-# safe to add: a mistake here costs a challenge, not a lost sale. The guarantee
-# is distribution-free and independent of the model -- it is a statement about
-# the calibration sample, not about the forest.
+# AS SERVED IT SOFTENS NOTHING, and calling it a safety net without saying so
+# was wrong. Both served bundles (model-sklearn1.5.0.pkl and
+# model-sklearn1.8.0.pkl, read 2026-09-19) carry n=36 calibration values with
+# a maximum of 27.71. Every blocked score is >= 80, so no calibration human
+# reaches it, p = 1/(n+1) = 0.027 < CONFORMAL_ALPHA for every block, and the
+# guard never fires. Those 36 values are not customers either: data/real/ holds
+# no recorded sessions, so they come from lab/real_telemetry.json, whose only
+# human scenarios are the lab's SCRIPTED Playwright personas (H1_human,
+# H2_keyboard_only) -- one author's idea of a human, driven on one machine.
+# The guard therefore protects no real user today, and the existing test that
+# shows it softening a block does so with a hand-made calibration in the 90s.
+# ModelBundle logs this state once at load, so it is visible without reading
+# this comment.
 #
-# Its strength is exactly the diversity of that sample. Calibrated on 30-odd
-# scripted human runs from one machine it is a weak net; calibrated on
-# recordings of real customers on their own hardware it becomes the primary
-# defence against blocking them. That is an argument for collecting the data,
-# not for skipping the mechanism.
+# The mechanism is kept because the data it needs is the data the project is
+# collecting: calibrated on recordings of real customers on their own
+# hardware, any customers the forest scores at 80 or above raise the p-value
+# of those scores, and the guard would then soften blocks at the scores real
+# people reach -- for whoever scores there, bots included, which is the price
+# of the guarantee. That guarantee is distribution-free and independent of the
+# model -- a statement about the calibration sample, only as good as how well
+# that sample represents the people being scored.
 CONFORMAL_ALPHA = 0.05
 
 
@@ -856,33 +885,12 @@ def extract_features(raw: dict, raw_values: dict | None = None) -> dict:
     return features
 
 
-def _sanitize_row(row, defaults: dict) -> list[float]:
-    """One historical feature row -> a clean float vector in FEATURE_NAMES
-    order. History comes out of Postgres, where a column can be NULL and a
-    pre-validation row can hold a non-finite value; either would poison the
-    whole sequence with NaN."""
-    clean = []
-    for name, value in zip(FEATURE_NAMES, row):
-        try:
-            value = float(value)
-        except (TypeError, ValueError):
-            value = float("nan")
-        if not math.isfinite(value):
-            value = defaults.get(name, 0.0)
-        clean.append(float(np.clip(value, 0.0, 1.0)))
-    return clean
-
-
-def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
+def compute_risk(raw: dict) -> dict:
     """Scores one flush.
 
-    `history` is this session's earlier flushes, oldest first, each a feature
-    vector in FEATURE_NAMES order (main.py reads them back from Postgres).
-    They are the LSTM's time-series context: without them the sequence model
-    sees SEQUENCE_LENGTH copies of one instant and cannot react to a session
-    whose behavior *changes*, which is the only thing a sequence model is
-    there to catch. Passing nothing is still valid and reproduces the old
-    single-observation behavior.
+    What happens across flushes -- smoothing, level shifts, the sequential
+    test -- is session logic and lives in smooth_session_score() and main.py's
+    decision path, not in the model.
     """
     start = time.perf_counter()
     bundle = get_bundle()
@@ -890,6 +898,22 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
     raw_values = extract_raw(raw)
     features = extract_features(raw, raw_values)
     measured = sum(1 for name in FEATURE_NAMES if raw_values.get(name) is not None)
+    # Bit i set when FEATURE_NAMES[i] was genuinely measured in this flush,
+    # rather than filled in with NEUTRAL_DEFAULTS by extract_features. Stored
+    # on behavior_data.measured_mask. Nothing below reads it: it is computed
+    # from raw_values alone and never touches `features`, so the score cannot
+    # move (test_measured_mask_does_not_change_the_score). It exists for the
+    # per-customer profile, which must not mistake a default 0.3 for a
+    # measured 0.3 -- a profile built over defaults measures "how much
+    # telemetry did this session produce", not "is this the same person".
+    #
+    # The finiteness check matches extract_features' own fallback rule, so a
+    # set bit means exactly "the model saw a measured value here".
+    measured_mask = sum(
+        1 << i
+        for i, name in enumerate(FEATURE_NAMES)
+        if raw_values.get(name) is not None and math.isfinite(raw_values[name])
+    )
 
     # Defence in depth against non-finite values. The API layer rejects NaN /
     # Infinity at the boundary (see main.py's typed payload models), which is
@@ -905,9 +929,38 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
     feature_vector = np.array([[features[name] for name in FEATURE_NAMES]])
     scaled = bundle.scaler.transform(feature_vector)
 
-    rf_proba = float(bundle.rf.predict_proba(scaled)[0][1])
+    fraud_probability = float(bundle.rf.predict_proba(scaled)[0][1])
 
-    # Isolation Forest is NOT read here any more, and the reason is measured.
+    # The score is the RandomForest alone. Two former ensemble members were
+    # removed from it, each on measurement. Both are still trainable, so either
+    # decision can be re-measured once real recordings exist. model_selection.py
+    # reproduces the numbers below.
+    #
+    # THE LSTM. It was trained on simulated sessions only, and on browser
+    # traffic its output collapsed to "human". Its ranking was fine (ROC-AUC
+    # 0.947) but its calibration was not (Brier 0.51). Scored out-of-fold on
+    # the 234 browser-lab flushes:
+    #
+    #                                bots >=60   bots >=80   Brier
+    #     RF 0.6 + LSTM 0.4          0.79        0.54        0.070
+    #     RandomForest alone         0.90        0.63        0.056
+    #
+    # Retraining it with the lab rows blended in (ROC-AUC 0.956) still scored
+    # below the forest it was diluting. The one case it existed for, a
+    # mid-session handover, it caught four flushes LATER than the forest
+    # reading the current flush alone. The old disagreement term was a patch
+    # over that lag, and smooth_session_score() now does its job directly.
+    # Handing the forest the previous flushes as extra features added nothing
+    # either (ROC-AUC 0.984 against 0.988).
+    #
+    # Gradient boosting was measured as well and NOT adopted. LightGBM, XGBoost
+    # and HistGradientBoosting matched the forest's ROC-AUC and caught more bots
+    # at 80 (0.89 against 0.63). But with the H1 human scenario held out of
+    # training, LightGBM blocked 74% of those unseen humans at 80; the forest
+    # blocked none. Real customers will be unseen by construction, so the
+    # conservative model is the right one until there is real data.
+    #
+    # Isolation Forest is NOT read here either, and the reason is measured.
     #
     # It is fitted on human rows only, so it learns "normal" as the human
     # distribution -- and in this product the attack IS looking human. On the
@@ -928,30 +981,22 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
     # only to give it zero weight is latency spent on nothing. test_scorer.py
     # booby-traps decision_function to keep it that way.
 
-    current_row = [features[name] for name in FEATURE_NAMES]
-    defaults = get_neutral_defaults()
-    # Only the most recent SEQUENCE_LENGTH - 1 earlier flushes matter; slicing
-    # here keeps a caller that hands over a whole session from paying for rows
-    # build_sequence would discard anyway.
-    past_rows = [_sanitize_row(row, defaults) for row in (history or [])[-(SEQUENCE_LENGTH - 1):]]
-
-    with torch.no_grad():
-        seq = build_sequence(past_rows + [current_row])
-        lstm_proba = float(bundle.lstm(seq).item())
-
-    blended = float(np.clip(ENSEMBLE_RF_WEIGHT * rf_proba + ENSEMBLE_LSTM_WEIGHT * lstm_proba, 0.0, 1.0))
-
-    # How far apart the two time scales are. Reported on every flush whether or
-    # not it is acted on, so the effect can be measured from stored rows.
-    disagreement = abs(rf_proba - lstm_proba)
-    fraud_probability = blended
-    if DISAGREEMENT_ESCALATION and disagreement >= DISAGREEMENT_THRESHOLD:
-        alarmed = max(rf_proba, lstm_proba)
-        fraud_probability = float(
-            np.clip((1.0 - disagreement) * blended + disagreement * alarmed, 0.0, 1.0)
-        )
-    # np.clip propagates NaN rather than clamping it, so an upstream NaN would
-    # survive the clip above. Degrade to "unknown" (0.5) instead of persisting
+    # What this number is. A RandomForest's predict_proba is the mean over
+    # trees of the bot fraction in the leaf each tree lands in: a ranking
+    # score, not a calibrated P(fraud | behaviour). Nothing here recalibrates
+    # it (no Platt or isotonic step), the class balance it learned is the
+    # training set's (simulated sessions and scripted lab runs), not any real
+    # traffic's fraud rate, and the Brier score of 0.056 above was measured on
+    # scripted browser-lab flushes. So
+    # "Risk Score = 100 x P(fraud | behavior)" states the intent, not a
+    # measured property. Two consequences, stated where they bite: the
+    # 40/60/80 ladder and the conformal guard are thresholds on a ranking, and
+    # main.py's sequential test treats each flush's logit as an evidence
+    # weight rather than a log-likelihood ratio, so its bounds are an operating
+    # point chosen by measurement, not Wald's error rates. "confidence" below
+    # is the same vote share folded at 0.5, not a probability of being right.
+    #
+    # Degrade a non-finite probability to "unknown" (0.5) instead of persisting
     # a value that cannot be serialized or compared.
     if not math.isfinite(fraud_probability):
         fraud_probability = 0.5
@@ -986,12 +1031,11 @@ def compute_risk(raw: dict, history: list[list[float]] | None = None) -> dict:
         "risk_score": risk_score,
         "label": label,
         "measured_features": measured,
+        "measured_mask": measured_mask,
         # True when too little was measured for the score to mean much. The
         # score is still returned and stored; this says how much weight it can
         # carry.
         "provisional": measured < MIN_MEASURED_FOR_CONFIDENT_SCORE,
-        "disagreement": round(float(disagreement), 3),
-        "blended_score": round(100.0 * blended, 1),
         "behavior_bucket": behavior_bucket(raw_values),
         "confidence": round(max(fraud_probability, 1 - fraud_probability), 2),
         "shap_explanation": top_3,

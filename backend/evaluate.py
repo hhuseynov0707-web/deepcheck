@@ -4,9 +4,9 @@
 hand-built payloads. Both are synthetic, and a number produced by either one
 measures how well the models fit the simulator -- not how well they tell a
 person from a script. This replays sessions captured by `record_session.py`
-through the real serving path (`scorer.compute_risk`, including the LSTM's
-flush history and the same median smoothing `/api/analyze` applies) and
-reports what actually happened.
+through the real serving path (`scorer.compute_risk`, then the same
+`scorer.smooth_session_score` `/api/analyze` applies) and reports what
+actually happened.
 
 Usage:
     python evaluate.py                       # reads ../data/real
@@ -21,20 +21,14 @@ import argparse
 import glob
 import json
 import os
-import statistics
 import sys
 from datetime import datetime, timezone
 
 import numpy as np
 
 import scorer
-from lstm_model import FEATURE_NAMES, SEQUENCE_LENGTH
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "real")
-
-# Mirrors main.py. A session's reported score is the median of its last few
-# flushes, so an honest evaluation has to smooth the same way the API does.
-SMOOTHING_WINDOW = 5
 
 # 60 is where the deployed ladder stops letting a session through untouched
 # (60-80 asks for step-up verification, 80+ blocks), so it is the boundary a
@@ -59,22 +53,19 @@ def load_sessions(data_dir: str) -> list[dict]:
 def replay(record: dict) -> float | None:
     """Re-scores one recorded session exactly as the API would have.
 
-    Each flush is scored with the real history that preceded it, and the
-    session's score is the median of the last SMOOTHING_WINDOW flushes --
-    the same value /api/analyze stores and /api/decision reads.
+    Each flush is scored, then folded into the session score with the same
+    smoothing function /api/analyze calls -- the value /api/decision reads.
     """
-    history: list[list[float]] = []
     per_flush: list[float] = []
+    session_score = None
 
     for flush in record.get("flushes", []):
         raw = flush.get("raw") or {}
-        result = scorer.compute_risk(raw, history[-(SEQUENCE_LENGTH - 1):])
-        per_flush.append(result["risk_score"])
-        history.append([result["features"][name] for name in FEATURE_NAMES])
+        current = scorer.compute_risk(raw)["risk_score"]
+        session_score = scorer.smooth_session_score(per_flush, current)
+        per_flush.append(current)
 
-    if not per_flush:
-        return None
-    return round(statistics.median(per_flush[-SMOOTHING_WINDOW:]), 1)
+    return session_score
 
 
 def roc_auc(y_true: list[int], scores: list[float]) -> float | None:
