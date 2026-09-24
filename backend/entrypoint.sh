@@ -39,7 +39,15 @@ fi
 # took 25 SECONDS to answer while the CPU sat at 1%. Two workers fit and still
 # overlap the ~50 ms of CPU-bound scoring. Raise UVICORN_WORKERS on a host that
 # has the memory.
+#
+# --no-access-log: uvicorn's access log writes the client IP address of every
+# request to the container log, which docker keeps with no retention limit.
+# The application never stores an IP (it holds one in memory only, for the
+# per-address session-minting limit), and the privacy statement says so; the
+# access log would have made that untrue. Application logs (the "deepcheck"
+# loggers) never name an address.
 exec uvicorn main:app \
   --host 0.0.0.0 \
   --port 8000 \
-  --workers "${UVICORN_WORKERS:-2}"
+  --workers "${UVICORN_WORKERS:-2}" \
+  --no-access-log

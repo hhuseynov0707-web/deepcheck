@@ -1030,8 +1030,8 @@ def measure_latency(url: str, n: int, warmup: int, label: str) -> dict:
     learn-once do not change the path) and, for the profile configurations, its
     own mature profile of 20 reference vectors (so the daily learning cap and
     the per-profile budget do not change it either). The breaker ceiling and the
-    per-merchant profile bucket are lifted for the run so neither trips part-way
-    and turns the enforcing path into the cheaper suppressed one.
+    per-customer profile bucket are lifted for the run so neither trips part-way
+    and turns the enforcing path into a cheaper one.
     """
     _setup_imports()
     from urllib.parse import urlparse
@@ -1259,10 +1259,10 @@ def poisoning_reading(probation: dict, promoted: dict, identical: bool, probatio
         "between challenged and not. That is why a probation vector is not a reference, and why promotion asks for "
         "what one phished code does not give: the merchant's statement that the payment was legitimate, or "
         f"{heal_after} passed challenges in a row. What passing still buys lies outside the statistic and is not "
-        f"measured here: each challenge spends one of the profile's `PROFILE_MAX_ESCALATIONS = {max_escalations}` "
-        f"per 30 days, and {heal_after} passed in a row rebuild the profile below maturity, after which the layer "
-        "says nothing on it until it matures again. Against an attacker who can pass the merchant's step-up at will, "
-        "this layer's strength is that channel's."
+        f"measured here: each passed challenge spends one of the profile's `PROFILE_MAX_ESCALATIONS = {max_escalations}` "
+        f"per 30 days (a challenge nobody answers spends nothing), and {heal_after} passed in a row rebuild the "
+        "profile below maturity, after which the layer says nothing on it until it matures again. Against an "
+        "attacker who can pass the merchant's step-up at will, this layer's strength is that channel's."
     )
 
 
@@ -1277,8 +1277,8 @@ def grandchild_reading(again: dict, counted: dict, heal_after: int, max_escalati
         f"mouse and {again['keyboard']} on keyboard; under the old rule, in which the rescued session counted as a "
         f"reference, the same sessions were challenged again {counted['mouse']} and {counted['keyboard']} of the "
         "time. Each of those challenges is one more verification, never a block, until the merchant settles the "
-        f"earlier payment or {heal_after} passed challenges in a row promote the pattern; and a profile asks for at "
-        f"most {max_escalations} challenges in 30 days, whatever happens."
+        f"earlier payment or {heal_after} passed challenges in a row promote the pattern; and once {max_escalations} "
+        "challenges have been passed in 30 days, the profile asks for no more in that window."
     )
 
 
@@ -1781,8 +1781,8 @@ def write_markdown(lab: Lab, latency_runs: list[dict], path: str) -> None:
         w("Configurations interleaved round-robin in one process, the ASGI app called directly (no HTTP "
           "client), against a **throwaway Postgres 16**; each request a fresh synthetic session and, where "
           "profiled, its own synthetic mature profile of 20 vectors. `enforcing` is reported for both of its "
-          "paths: a deviating session (escalation, audit row, budget) and a matching one (audit row plus the "
-          "learning insert). Budget: 50 ms (CLAUDE.md rule 2).")
+          "paths: a deviating session (escalation, a share lock on the profile row, the audit row with the compared "
+          "vector) and a matching one (audit row plus the learning insert). Budget: 50 ms (CLAUDE.md rule 2).")
         w("")
         w("| topology | layer off p50 / p95 | shadow p50 / p95 | enforcing, escalates p50 / p95 | enforcing, learns p50 / p95 |")
         w("|---|---|---|---|---|")

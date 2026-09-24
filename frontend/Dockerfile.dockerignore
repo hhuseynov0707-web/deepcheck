@@ -9,11 +9,13 @@
 # `npm ci` had just installed, mixing host-platform packages (a Windows
 # host's, say) into a Linux image built from the lockfile.
 #
-# Allowlist: this image needs frontend/ and sdk/ and nothing else. That also
-# keeps data/ (recorded real sessions) and .env out of the context.
+# Allowlist: this image needs frontend/, sdk/ and the one document the /kvkk
+# page renders, and nothing else. That also keeps data/ (recorded real
+# sessions) and .env out of the context.
 *
 !frontend
 !sdk
+!docs/kvkk-aydinlatma.md
 
 **/node_modules
 **/dist

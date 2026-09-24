@@ -1,4 +1,5 @@
 import { ShapBarChart } from "./RiskChart.jsx";
+import SyntheticBadge from "./SyntheticBadge.jsx";
 
 // The SOC view of the per-customer profile layer for one session, read from the
 // `profile` block of GET /api/score/{id} (behind the dashboard key). That block
@@ -17,7 +18,10 @@ export const PROFILE_MIN_SESSIONS = 19;
 // One label per profiles.PROFILE_STATES entry (the same backend test checks the
 // key set). The spec lists eight labels for nine states; "suppressed" -- the
 // customer objected or profiling is switched off for them -- gets its own
-// rather than borrowing the deployment-wide "Profilleme kapalı".
+// rather than borrowing the deployment-wide "Profilleme kapalı". "rate_limited"
+// came later: too many decisions named this customer within the hour, so the
+// profile was not read (and, when enforcing, step-up was asked for instead --
+// the "Ek doğrulama istendi" badge says so).
 export const PROFILE_STATE_LABELS = {
   disabled: "Profilleme kapalı",
   no_profile: "Profil yok",
@@ -27,6 +31,7 @@ export const PROFILE_STATE_LABELS = {
   too_few_features: "Yeterli özellik ölçülmedi",
   budget_exhausted: "Sorgulama bütçesi doldu",
   breaker: "Katman geçici olarak durduruldu",
+  rate_limited: "Bu müşteri için karar sınırı aşıldı — profil okunmadı",
   evaluated: "Değerlendirildi",
 };
 
@@ -76,6 +81,12 @@ export default function ProfilePanel({ profile }) {
   const topFeatures = Array.isArray(profile.top_features)
     ? profile.top_features.filter((f) => typeof f?.feature === "string" && Number.isFinite(f?.z))
     : [];
+  // decision_audit.is_synthetic, carried as `synthetic` in the block: synthetic
+  // demo data took part in the decision this card is read from -- the profile
+  // it was compared against is a seeded synthetic customer, or the session
+  // itself was simulated. Strictly true, so a server that does not send the
+  // field yet labels nothing rather than guessing.
+  const synthetic = profile.synthetic === true;
 
   return (
     <section
@@ -87,6 +98,7 @@ export default function ProfilePanel({ profile }) {
           Müşteri Profili
         </h2>
         <div className="flex flex-wrap gap-2">
+          {synthetic && <SyntheticBadge />}
           {profile.escalated && (
             <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-400">
               Ek doğrulama istendi
@@ -99,6 +111,14 @@ export default function ProfilePanel({ profile }) {
           )}
         </div>
       </div>
+
+      {synthetic && (
+        <p className="rounded-md border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-200">
+          Bu karara sentetik demo verisi katıldı: karşılaştırılan müşteri geçmişi ya da oturumun kendisi simülatörle
+          üretildi, gerçek bir kişiye ait değil. Sonuç mekanizmayı gösterir, gerçek kişilerdeki doğruluğu değil; hiçbir
+          ölçüme katılmaz.
+        </p>
+      )}
 
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
         <div>

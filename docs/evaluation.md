@@ -123,14 +123,21 @@ numbers above were always the forest's, so they now describe the shipped scorer.
 See `backend/model_selection.py` and the fourth question in `juri-cevaplari.md`.)
 
 **Sequential testing (SPRT)** replaced the fixed three-flush evidence rule.
-A blatant session is now decided on its first flush and an ambiguous one keeps
-collecting. Side effect worth naming: a mid-band score no longer charges the
+A blatant session is decided once the three-flush floor is met, and an
+ambiguous one keeps collecting. The bounds are an operating point on
+uncalibrated scores, not Wald's error rates (see `backend/main.py` above
+`SPRT_NOMINAL_ALPHA`). Crossing the bot bound is at least step-up. Side effect worth naming: a mid-band score no longer charges the
 card on a few flushes, which closes the "Şüpheli means the payment goes
 through" gap the adversarial run found.
 
-**Conformal guard**, calibrated on 36 held-out real human scores. The smallest
-p-value that many samples can produce is 0.027, which just clears the 0.05
-the guard asks for. It is usable and thin; more captures make it stronger.
+**Conformal guard**, calibrated on 36 held-out scores from the lab's scripted
+Playwright human personas -- scripts driving a real browser, not people. The
+smallest p-value that many samples can produce is 0.027, which just clears the
+0.05 the guard asks for. As served it softens nothing: the highest calibration
+score is 27.71, so every score of 80 or more gets p = 1/37 = 0.027 < 0.05 and
+no block is ever turned into a verify. It protects no real user until it is
+calibrated on real ones (`backend/scorer.py`; the model bundle logs this state
+at load).
 
 **Cross-session behavioural clustering: measured, and shipped disabled.** The
 idea was that mimicry cannot avoid repeating itself. Against the harness it
@@ -259,6 +266,40 @@ python lab/capture.py --api http://127.0.0.1:8000 --repeats 8 --port 3100
 cd backend && python train_model.py
 ```
 
+## A defect in this page's own data: four features saturate
+
+Counted directly from `lab/real_telemetry.json`, the 234 rows every number
+above rests on:
+
+| feature | state in those 234 rows |
+|---|---|
+| `scroll_hizi_varyansi` | **never measured once** — all 234 sit at its neutral fallback 0.349, because no scenario scrolls |
+| `ivme_degisimi` | exactly 1.0 in **90** rows — *every* `H1_human` row (50/50) and *every* `A3_human_mimic` row (40/40) — and at its fallback in the other 87 |
+| `duraklama_dagilimi` | exactly 1.0 in **109** rows (H1 37/50, A3 32/40, A4 40/57) |
+| `tiklama_oncesi_hareket` | measured in 66 rows and at 1.0 in all 66; fallback in the other 168 |
+
+A feature pinned at a boundary contributes nothing to a split. So between the
+lab's model of a person and the lab's best mimic, `ivme_degisimi` carries one
+bit and it is the **same** bit — which is one reason `A3_human_mimic` is caught
+by the other features rather than by the kinematic one it was designed for.
+The cause is visible in the served bundle: the log-percentile endpoints for
+that feature are 10^−7.021 … 10^−5.532, fitted on the simulator's
+distribution, and real Chromium pointer motion sits above the top of the range.
+
+**So the table at the top of this page was produced with one of the twelve
+features never present and three more degraded.** Nothing here is invalidated
+by that — the recall and the false-positive rate are what the served model does
+on these runs — but "what these twelve features can do" is not what was
+measured.
+
+The repair is half built and has **not** been run: `lab/capture.py` now records
+the raw channels beside the features, and
+`train_model.compute_feature_scaling(real_raw=…)` blends real raw values into
+the percentile pool (widening only). The existing samples predate that change
+and carry no `raw`, so retraining today changes the scale not at all.
+Re-capturing — with at least one scenario that scrolls — then retraining and
+re-measuring this page is the next step: `TECHNICAL_GUIDE.md` §20.
+
 ## Honest scope
 
 - **The "human" class is Playwright, not people.** H1 and H2 are scripted
@@ -276,5 +317,7 @@ cd backend && python train_model.py
   and still not recordings of actual customers.
 - Scripted attacks establish a floor, not a ceiling. A determined attacker
   with unlimited attempts against a live endpoint is a different adversary,
-  and the SHAP breakdown returned by `POST /api/analyze` currently gives that
-  attacker a tuning signal.
+  and a SHAP breakdown returned to the scored client would give that attacker
+  a tuning signal -- which is why `POST /api/analyze` no longer returns it
+  (`SHAP_IN_ANALYZE` defaults to 0; the SOC panel reads it behind the
+  dashboard key).

@@ -17,6 +17,8 @@ services:
     volumes:
       - ./frontend:/app/frontend
       - ./sdk:/app/sdk
+      # The /kvkk page imports docs/kvkk-aydinlatma.md (see frontend/Dockerfile).
+      - ./docs:/app/docs:ro
       # Anonymous volume so the container keeps its own node_modules rather
       # than having them shadowed by the host mount above.
       - /app/frontend/node_modules

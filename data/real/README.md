@@ -4,8 +4,14 @@ This is the open item the whole project rests on. Every "human" the detector
 has ever seen is a script: the browser lab's H1 and H2 scenarios are Playwright
 approximations of a person, so the model has learned one author's idea of what
 people look like rather than what people actually do. That is why an
-independently written humanised bot scores 11.4 against a human 11.4 — it only
-has to match the idea.
+independently written humanised bot is still approved — it only has to match
+the idea. Before the model was trained on real browser rows it scored 11.3
+against a human's 11.3, indistinguishable; after, 22.7 against 17.3, AUC 0.92
+(`docs/evaluation.md`). The signal exists and the ladder is not placed to act
+on it, and that calibration waits on exactly the recordings described here.
+
+**This directory is empty.** It holds a README and two `.gitkeep` files.
+Nothing in this project has ever been measured on a real person.
 
 Real recordings are the fix, and they need people rather than code.
 
@@ -148,6 +154,39 @@ one the current model has the least evidence about.
 **Aim for 30+ human sessions before quoting any false-positive number.** With
 36 calibration samples the finest false-positive rate that can be asserted is
 about 3%; the arithmetic floor is 1/(n+1) and training prints it.
+
+**Scroll.** In all 234 rows the lab has captured, `scroll_hizi_varyansi` was
+never measured once — no scenario scrolls, so every one of those rows carries
+its neutral fallback for that feature. A recording in which the person scrolls
+the page is the only way one of the twelve features has ever been observed at
+all. Let people read the page.
+
+## The other collection, for the per-customer profile
+
+The bot score needs *many people once*. The per-customer profile layer needs
+the opposite: **one person many times**, because it compares a session against
+that same customer's own past sessions. Nothing in it has been validated on a
+real person, and this is the protocol that would do it
+(`docs/profile-evaluation.md` §12):
+
+- **one consenting person**, at least **20 sittings** — the layer cannot
+  compare at all below 19 reference sessions per input type, which is
+  arithmetic (`ceil(1/0.05) − 1`), not a tuned threshold;
+- **three device classes**: a phone, a laptop trackpad and a mouse. A profile
+  is compared only within one input modality, with no pooled fallback, so each
+  device class needs its own 19;
+- recorded with `record_session.py --person`, the same flag the bot-score
+  holdout uses.
+
+Until that exists, every rate published for that layer was measured on
+**synthetic identities**, and every false-challenge figure there is a **lower
+bound**: a synthetic person is a generator with fixed parameters, so their
+sessions are more self-consistent than any real person's. It is the
+precondition for turning `PROFILE_ESCALATION=1` on outside a demo.
+
+The synthetic demo customers (`backend/demo_seed.py`) are **not** a substitute
+and must never be recorded as people: `record_session.py` refuses a session
+flagged `is_synthetic`, and its `--since` sweep skips them.
 
 ## Labelling
 

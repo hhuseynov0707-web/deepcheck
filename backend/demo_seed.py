@@ -129,9 +129,10 @@ DEMO_AMOUNT = 2038.80
 # on it (main.MIN_CLOCK_RESOLUTION_US / MIN_TIMER_LAG_MS comments). The
 # simulator is not a browser and does not pretend otherwise: these are declared
 # values, exactly the fabrication main.py's attestation comment says a client
-# that reads the source can make. Attestation closes the post-JSON-directly
-# path for clients that do not; it is not what stands between a simulator and
-# the API, and this tool is the project's own.
+# that reads the source can make. Attestation does not stop such a client
+# either: main.py's attestation comment records a plain Python client
+# obtaining a token in 50 of 50 attempts. It is not what stands between a
+# simulator and the API, and this tool is the project's own.
 SIMULATED_RUNTIME = {"clock_resolution_us": 100.0, "timer_lag_ms": 0.1}
 
 # How far behind the send time the newest event of a simulated flush sits.
@@ -716,6 +717,50 @@ async def latest_audit(db, session_id: str) -> dict | None:
     return None if row is None else {column.key: value for column, value in zip(columns, row)}
 
 
+def simulation_verdict(charge: dict, audit: dict | None) -> str:
+    """The one-line reading of a simulated session's outcome.
+
+    "Not challenged" is only evidence that the session MATCHED its history
+    when the layer actually compared it (profile_state "evaluated"). Every
+    other state is the layer abstaining -- too few comparable references
+    (immature), too few measured features, a spent budget -- and a charge
+    that went through then says nothing about the profile. Measured in the
+    e2e stack on 2026-09-19 (30 fresh same-identity sessions per customer and
+    modality, served model): mouse was compared in 90 of 90, keyboard in 30,
+    20 and 0 of 30 for Ayşe, Mehmet and Zeynep, because a keyboard session
+    measures only 6-7 of the 12 features."""
+    decision = charge.get("decision") or {}
+    state = audit["profile_state"] if audit else None
+    if audit is not None and audit["reason"] == "profile_deviation":
+        return (
+            "Sonuç: profil katmanı ek doğrulama istedi. Aynı sentetik kimliğin oturumlarında bu, "
+            f"sentetik kimlikler üzerinde ölçülen {SAME_PERSON_CHALLENGE_RATE} oranında olur "
+            "(docs/profile-evaluation.md; gerçek kişiler için bir alt sınır)."
+        )
+    if audit is not None and audit["reason"] == "profile_rate_limited":
+        # The per-customer decision limit (main.RATE_LIMITS["profile"]): the
+        # profile was not read at all, so this says nothing about a match.
+        return (
+            "Sonuç: ödeme alınmadı: bu müşteri için bir saat içindeki karar sınırı aşıldı; profil "
+            "okunmadı ve ek doğrulama istendi. Bu bir karşılaştırma sonucu değildir; bir saat sonra tekrarlayın."
+        )
+    if charge.get("status") == "charged" and state == profiles.STATE_EVALUATED:
+        return (
+            "Sonuç: ek doğrulama istenmedi — beklenen: oturum, profili oluşturan aynı sentetik "
+            "kimlikten geldi ve geçmişiyle karşılaştırıldı."
+        )
+    if charge.get("status") == "charged":
+        return (
+            f"Sonuç: ödeme alındı, fakat profil katmanı KARŞILAŞTIRMA YAPMADI (durum={state or 'kayıt yok'}). "
+            "Bu bir eşleşme sonucu değil, katmanın kanıt yetersizken susmasıdır; karşıt örnek için "
+            "--modality mouse ile tekrarlayın."
+        )
+    return (
+        "Sonuç: ödeme alınmadı, fakat gerekçe profil katmanı değil (iç gerekçe "
+        f"{audit['reason'] if audit else decision.get('reason')}): oturum kanıtı karar için yeterli değildi."
+    )
+
+
 async def simulate(
     db_factory,
     customer: SyntheticCustomer,
@@ -801,20 +846,7 @@ async def simulate(
             f"referans={audit['reference_n']}, p={'—' if p_value is None else f'{p_value:.4f}'}, "
             f"iç gerekçe={audit['reason']}, gölge modu={'evet' if audit['shadow'] else 'hayır'}"
         )
-    challenged_by_profile = audit is not None and audit["reason"] == "profile_deviation"
-    if challenged_by_profile:
-        log(
-            "Sonuç: profil katmanı ek doğrulama istedi. Aynı sentetik kimliğin oturumlarında bu, "
-            f"sentetik kimlikler üzerinde ölçülen {SAME_PERSON_CHALLENGE_RATE} oranında olur "
-            "(docs/profile-evaluation.md; gerçek kişiler için bir alt sınır)."
-        )
-    elif charge.get("status") == "charged":
-        log("Sonuç: ek doğrulama istenmedi — beklenen: oturum, profili oluşturan aynı sentetik kimlikten geldi.")
-    else:
-        log(
-            "Sonuç: ödeme alınmadı, fakat gerekçe profil katmanı değil (iç gerekçe "
-            f"{audit['reason'] if audit else decision.get('reason')}): oturum kanıtı karar için yeterli değildi."
-        )
+    log(simulation_verdict(charge, audit))
     log("Bu oturum, karar kaydı ve varsa öğrenilen vektörü veritabanında is_synthetic=true olarak işaretlendi.")
     log("=" * 72)
     return {"session_id": session_id, "charge": charge, "audit": audit, "sim_seed": sim_seed}

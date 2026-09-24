@@ -20,5 +20,6 @@ export const SYNTHETIC_DEMO_CUSTOMERS = [
 
 export function syntheticCustomerLabel(customer) {
   const n = SYNTHETIC_SESSIONS_PER_MODALITY;
-  return `${customer.name} — sentetik geçmiş, ${n} fare + ${n} klavye oturumu`;
+  // Short enough to show whole in the select at the Demo page's width.
+  return `${customer.name} — sentetik geçmiş (fare ${n}, klavye ${n})`;
 }

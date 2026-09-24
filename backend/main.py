@@ -22,7 +22,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import and_, delete, distinct, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -422,9 +422,10 @@ MAX_TIMER_LAG_MS = 250.0
 # posted telemetry and requested decisions for that session id for as long as
 # the signing secret lived. Because /api/analyze creates the session row on the
 # first flush, such a token could even recreate a row the retention sweep had
-# deleted. Now a session id can be written to for at most POW_CHALLENGE_TTL_S +
-# SESSION_TOKEN_TTL_S after it was minted (33 minutes): a new token needs the
-# session's challenge, which stops being accepted after POW_CHALLENGE_TTL_S.
+# deleted. Now a session id can be used at all -- telemetry, decisions,
+# step-up -- for at most POW_CHALLENGE_TTL_S + SESSION_TOKEN_TTL_S after it was
+# minted (33 minutes): a new token needs the session's challenge, which stops
+# being accepted after POW_CHALLENGE_TTL_S.
 #
 # 30 minutes is CHOSEN, not measured -- there are no real checkouts to measure.
 # Expiring too early has a bounded but real cost: the SDK answers a 401 from
@@ -591,9 +592,11 @@ def _require_demo_endpoints() -> None:
 # memory unless a Redis backend is configured, so they would buy a pinned
 # dependency and the same semantics. Two consequences are stated rather than
 # hidden:
-#   * Counters are PER WORKER. entrypoint.sh runs 4, so the effective limit
-#     across the service is up to 4x what is configured here. The limits below
-#     are chosen so that is still a useful ceiling.
+#   * Counters are PER WORKER. entrypoint.sh runs UVICORN_WORKERS (default 2;
+#     it was 4, and the aggregates below were worked out for 4), so the
+#     effective limit across the service is up to that many times what is
+#     configured here. The limits below are chosen so that is still a useful
+#     ceiling.
 #   * Counters are lost on restart. That is acceptable for abuse control; it
 #     would not be for billing or quota.
 # A shared Redis backend is the upgrade path when there is more than one host.
@@ -603,21 +606,35 @@ def _require_demo_endpoints() -> None:
 # would blind the detector for everyone. Minting is what is keyed by IP, so
 # the two compose -- an attacker needs a new session per 60 flushes and is
 # limited in how fast new sessions can be created.
-# Read these as PER WORKER: with the default UVICORN_WORKERS=4 the aggregate
-# ceiling is four times each number, because a request lands on whichever
-# worker accepts it. Measured on the running stack: 30 consecutive mints from
-# one address all returned 201, which is the arithmetic working as described,
-# not the limiter failing. The numbers below are therefore chosen for the
-# AGGREGATE they produce at 4 workers.
+# Read these as PER WORKER: with UVICORN_WORKERS=4 the aggregate ceiling is
+# four times each number, because a request lands on whichever worker accepts
+# it. Measured on the running stack (then at 4 workers): 30 consecutive mints
+# from one address all returned 201, which is the arithmetic working as
+# described, not the limiter failing. The numbers below were chosen for the
+# AGGREGATE they produce at 4 workers; at today's default of 2 it is half.
 RATE_LIMITS = {
     # bucket: (max requests per worker, window seconds)   -> aggregate at 4 workers
     "session": (10, 60),  # page loads per IP             -> 40/min
     "analyze": (60, 60),  # SDK sends 30/min per session  -> generous headroom
     "decision": (20, 60),  # checkout attempts per session -> 80/min
-    # Decisions carrying a customer reference, keyed by MERCHANT. Bounds probing
-    # of which references exist and are mature. Per worker, like every bucket
-    # here: at UVICORN_WORKERS=4 the aggregate is 4x.
-    "profile": (300, 3600),
+    # Profile-layer decisions naming ONE CUSTOMER, keyed by that customer's
+    # profile id (merchant-namespaced). Exhausting it never refuses the
+    # decision: the layer stops reading the profile and, when enforcing, asks
+    # for step-up (_load_profile_context). What it bounds is probing one
+    # customer's behavioural envelope -- after this many answers in an hour
+    # every further answer about that customer is "verify", which says
+    # nothing. 60 an hour per worker is judgement, not measurement: no real
+    # customer checks out that often.
+    #
+    # It used to be keyed by MERCHANT (300/h), and exhausting it answered 429
+    # for the whole decision, Random Forest verdict included: one logged-in
+    # user pressing pay 600 times -- 15 minutes inside the per-session bucket
+    # at the default 2 workers -- left every profiled checkout of that
+    # merchant without a DeepCheck decision for up to an hour, and a busy
+    # merchant hit it with no attacker at all. What it was meant to bound --
+    # probing which references exist -- needs attacker-chosen references, and
+    # those come only from a merchant server holding the merchant key.
+    "profile": (60, 3600),
     # Consent, erase and outcome, keyed by MERCHANT. Every one of these calls is
     # already authenticated, so this is not abuse control: it is a ceiling on
     # what a runaway merchant integration (a retry loop) can do to the
@@ -635,6 +652,23 @@ _rate_hits: dict[tuple[str, str], deque[float]] = {}
 
 def _rate_limit(bucket: str, key: str) -> None:
     """Sliding-window limiter. Raises 429 when the window is full."""
+    retry_after = _rate_take(bucket, key)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Cok fazla istek gonderildi, lutfen biraz bekleyin",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _rate_allows(bucket: str, key: str) -> bool:
+    """The same limiter for a caller that degrades instead of refusing."""
+    return _rate_take(bucket, key) is None
+
+
+def _rate_take(bucket: str, key: str) -> int | None:
+    """Records one hit and returns None, or returns the Retry-After seconds
+    when the window is full (and records nothing)."""
     limit, window = RATE_LIMITS[bucket]
     now = time.monotonic()
     cutoff = now - window
@@ -649,13 +683,9 @@ def _rate_limit(bucket: str, key: str) -> None:
         hits.popleft()
 
     if len(hits) >= limit:
-        retry_after = max(1, int(hits[0] + window - now) + 1)
-        raise HTTPException(
-            status_code=429,
-            detail="Cok fazla istek gonderildi, lutfen biraz bekleyin",
-            headers={"Retry-After": str(retry_after)},
-        )
+        return max(1, int(hits[0] + window - now) + 1)
     hits.append(now)
+    return None
 
 
 def _evict_rate_keys(now: float) -> None:
@@ -708,6 +738,15 @@ _RETENTION_LOCK_KEY = 728_302
 #     behind it is long gone.
 #   * an access audit row records who read special-category data; it is the
 #     accountability trail, so it outlives what it audits.
+#   * EXCEPT in the demo namespace (merchant "demo", /api/demo/charge): what
+#     a demo visitor leaves there -- a vector learned from their session, the
+#     implicit demo profile their typed reference created, the decision audit
+#     rows -- is deleted on the SESSION's clock, ROW_RETENTION_HOURS. Nobody
+#     consented to anything on the demo page and there is no erasure route
+#     into the reserved namespace (require_merchant never returns "demo"), so
+#     nothing there may outlive the session it came from. The seeded SYNTHETIC
+#     customers (demo_seed.py) are not a visitor's data and keep their
+#     history; demo_seed.py --reset manages them.
 # These are policy defaults to be confirmed in the DPIA, not measurements.
 PROFILE_IDLE_RETENTION_DAYS = float(os.getenv("PROFILE_RETENTION_DAYS", "180"))
 DECISION_AUDIT_RETENTION_DAYS = float(os.getenv("DECISION_AUDIT_RETENTION_DAYS", "90"))
@@ -720,6 +759,19 @@ _PROFILE_RETENTION_LOCK_KEY = 728_303
 _PROFILE_SWEEP_BATCH = 1000
 
 logger = logging.getLogger("deepcheck")
+# Nothing in the project configured logging, so Python's last-resort handler
+# printed WARNING and above and every INFO line of the "deepcheck*" loggers
+# was dropped -- the profile escalation lines section 11.1 requires, the
+# retention sweep's counts, the conformal guard's state when it actually
+# works. uvicorn configures only its own loggers. One handler here, only if
+# none is attached yet (a host application or a test may have its own).
+# INFO lines name a session id at most; profile ids and customer references
+# never reach any log line (section 11.1).
+if not logger.handlers:
+    _log_handler = logging.StreamHandler()
+    _log_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(_log_handler)
+    logger.setLevel(logging.INFO)
 
 # DEBUG=1 is the local `docker-compose up` / laptop-demo mode. It is the ONLY
 # mode in which the process is allowed to fall back to a hard-coded signing
@@ -1050,12 +1102,16 @@ REASON_MESSAGES = {
     "verified": "Ek dogrulama basariyla tamamlandi, islem onaylandi",
     # Internal, for the audit table and the SOC panel only: see PUBLIC_REASONS.
     "profile_deviation": "Bu oturumun davranisi musterinin kendi gecmisinden belirgin sekilde ayriliyor",
+    # Internal, likewise: too many decisions named this customer within the
+    # hour, so the profile was not read and step-up is asked for instead
+    # (RATE_LIMITS["profile"]).
+    "profile_rate_limited": "Bu musteri icin kisa surede cok sayida odeme karari istendi, ek dogrulama gerekli",
     # What the scored client is told instead of any of the reasons in
     # PUBLIC_REASONS below.
     "step_up": "Islemi tamamlamak icin ek dogrulama gerekiyor",
 }
 
-# What the SCORED CLIENT is told. Five internal reasons collapse to one, because
+# What the SCORED CLIENT is told. Six internal reasons collapse to one, because
 # each of them names the evidence that convicted the caller, and that is a
 # tuning signal: submit, read which check fired, adjust, repeat. "sequential"
 # in particular would tell a script that its early flushes still count against
@@ -1079,6 +1135,9 @@ PUBLIC_REASONS = {
     "ambiguous": "step_up",
     "sequential": "step_up",
     "profile_deviation": "step_up",
+    # Saying "too many decisions for this customer" would confirm that the
+    # probing is being counted per customer, and when its window resets.
+    "profile_rate_limited": "step_up",
 }
 
 
@@ -1195,8 +1254,23 @@ async def _sweep_once() -> tuple[int, int]:
         # Non-blocking advisory lock: with 4 workers, only the one that gets
         # it sweeps and the rest return immediately instead of queueing up
         # behind the same DELETE.
+        #
+        # TRANSACTION-scoped, as database.py's schema lock already is. The
+        # session-scoped form leaked: an AsyncSession hands its connection
+        # back to the pool on commit, so the unlock that used to sit in a
+        # finally ran on whatever connection came back next. Measured on
+        # Postgres 16 -- lock taken on backend 2480, unlock ran on 2481 and
+        # returned false, and the lock stayed on 2480 for that connection's
+        # life (pool_recycle is -1, so: the worker's life). Every later pass
+        # that drew any other connection then returned (0, 0) and deleted
+        # nothing, silently, because _retention_pass only logs non-zero
+        # counts. Reproduced end to end: with the leak, _sweep_once() -> (0, 0)
+        # and the 48h-old row survived; with this form, (2, 2) and it was gone.
+        # Postgres releases an xact lock on the COMMIT or ROLLBACK that ends
+        # this transaction, on the connection that holds it, whatever the pool
+        # does afterwards -- so there is no unlock statement to misroute.
         got_lock = await db.scalar(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": _RETENTION_LOCK_KEY}
+            text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": _RETENTION_LOCK_KEY}
         )
         if not got_lock:
             return (0, 0)
@@ -1231,11 +1305,13 @@ async def _sweep_once() -> tuple[int, int]:
             )
             await db.commit()
             return (blanked.rowcount or 0, deleted.rowcount or 0)
-        finally:
-            await db.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": _RETENTION_LOCK_KEY}
-            )
-            await db.commit()
+        except BaseException:
+            # Explicit, although closing the session would roll back anyway:
+            # this rollback is what releases the lock on the failure path, and
+            # a reader should be able to see the release without knowing what
+            # AsyncSession.close() does.
+            await db.rollback()
+            raise
 
 
 def _unlink_sessions_from_profiles(condition):
@@ -1258,6 +1334,21 @@ def _unlink_sessions_from_profiles(condition):
     )
 
 
+def _unlink_access_audit_from_profiles(condition):
+    """UPDATE profile_access_audit SET profile_id = NULL WHERE <condition>.
+
+    Every deletion of a profile -- erasure, objection, the idle sweep -- runs
+    this beside the sessions and decision_audit unlinks. The review endpoint
+    writes the profile id into this table, which is kept for
+    PROFILE_ACCESS_AUDIT_RETENTION_DAYS (365): left behind, the pseudonym
+    re-linked the deleted customer to every decision_audit row of each
+    reviewed session through the session id, for a year. The row itself --
+    operator, endpoint, session, time -- is the accountability record and
+    stays.
+    """
+    return update(ProfileAccessAudit).where(condition).values(profile_id=None)
+
+
 async def _sweep_profiles_once() -> tuple[int, int, int, int]:
     """One per-customer-profile retention pass.
 
@@ -1271,17 +1362,38 @@ async def _sweep_profiles_once() -> tuple[int, int, int, int]:
     profile_cutoff = now - timedelta(days=PROFILE_IDLE_RETENTION_DAYS)
     decision_cutoff = now - timedelta(days=DECISION_AUDIT_RETENTION_DAYS)
     access_cutoff = now - timedelta(days=PROFILE_ACCESS_AUDIT_RETENTION_DAYS)
+    # The demo namespace lives on the session's clock (see the retention
+    # constants above). One statement per step all the same, each with an OR,
+    # so the order below is still the order of section 8.
+    demo_cutoff = now - timedelta(hours=ROW_RETENTION_HOURS)
+    demo_visitor_profiles = (
+        select(CustomerProfile.profile_id)
+        .where(CustomerProfile.is_demo.is_(True))
+        .where(CustomerProfile.is_synthetic.is_(False))
+    )
 
     async with get_sessionmaker()() as db:
+        # Transaction-scoped, for the reason spelled out in _sweep_once: the
+        # session-scoped form's unlock ran on a pooled connection that was no
+        # longer the one holding the lock.
         got_lock = await db.scalar(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": _PROFILE_RETENTION_LOCK_KEY}
+            text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": _PROFILE_RETENTION_LOCK_KEY}
         )
         if not got_lock:
             return (0, 0, 0, 0)
         try:
-            # 1. Vectors past the retention age, whatever their profile.
+            # 1. Vectors past the retention age, whatever their profile -- and
+            # a demo visitor's learned vectors past the session's.
             vectors = await db.execute(
-                delete(CustomerProfileVector).where(CustomerProfileVector.created_at < profile_cutoff)
+                delete(CustomerProfileVector).where(
+                    or_(
+                        CustomerProfileVector.created_at < profile_cutoff,
+                        and_(
+                            CustomerProfileVector.created_at < demo_cutoff,
+                            CustomerProfileVector.profile_id.in_(demo_visitor_profiles),
+                        ),
+                    )
+                )
             )
 
             # 2-4. Idle profiles. An objection tombstone is never selected:
@@ -1299,7 +1411,18 @@ async def _sweep_profiles_once() -> tuple[int, int, int, int]:
                     (
                         await db.execute(
                             select(CustomerProfile.profile_id)
-                            .where(CustomerProfile.last_seen_at < profile_cutoff)
+                            .where(
+                                or_(
+                                    CustomerProfile.last_seen_at < profile_cutoff,
+                                    # A demo visitor's implicit profile, on the
+                                    # session's clock; never a seeded one.
+                                    and_(
+                                        CustomerProfile.is_demo.is_(True),
+                                        CustomerProfile.is_synthetic.is_(False),
+                                        CustomerProfile.last_seen_at < demo_cutoff,
+                                    ),
+                                )
+                            )
                             .where(CustomerProfile.consent_basis != "objected")
                             .limit(_PROFILE_SWEEP_BATCH)
                             .with_for_update(skip_locked=True)
@@ -1317,8 +1440,9 @@ async def _sweep_profiles_once() -> tuple[int, int, int, int]:
                 await db.execute(
                     update(DecisionAudit)
                     .where(DecisionAudit.profile_id.in_(idle_ids))
-                    .values(profile_id=None)
+                    .values(profile_id=None, candidate_vec=None)
                 )
+                await db.execute(_unlink_access_audit_from_profiles(ProfileAccessAudit.profile_id.in_(idle_ids)))
                 removed = await db.execute(
                     delete(CustomerProfile).where(CustomerProfile.profile_id.in_(idle_ids))
                 )
@@ -1328,7 +1452,16 @@ async def _sweep_profiles_once() -> tuple[int, int, int, int]:
 
             # 5-6. The two audit tables, each on its own clock.
             decisions = await db.execute(
-                delete(DecisionAudit).where(DecisionAudit.decided_at < decision_cutoff)
+                delete(DecisionAudit).where(
+                    or_(
+                        DecisionAudit.decided_at < decision_cutoff,
+                        # Every decision made in the demo namespace, the
+                        # synthetic customers' included: a juror paying as
+                        # Ayşe is a real person, and the row may hold the
+                        # session vector their payment was compared on.
+                        and_(DecisionAudit.merchant_id == DEMO_MERCHANT_ID, DecisionAudit.decided_at < demo_cutoff),
+                    )
+                )
             )
             accesses = await db.execute(
                 delete(ProfileAccessAudit).where(ProfileAccessAudit.accessed_at < access_cutoff)
@@ -1341,20 +1474,12 @@ async def _sweep_profiles_once() -> tuple[int, int, int, int]:
                 accesses.rowcount or 0,
             )
         except BaseException:
-            # A failed statement leaves the transaction aborted, and in that
-            # state Postgres refuses every further command -- including the
-            # unlock below. Without this rollback the advisory lock stays held
-            # on the pooled connection, and every other worker's pass skips
-            # for as long as that connection lives. Measured on Postgres 16
-            # against the telemetry sweep, which has no such rollback: after
-            # one injected failure pg_locks still held its key.
+            # Explicit, for the same reason as in _sweep_once: this is the
+            # statement that releases the xact lock on the failure path, and a
+            # failed statement also leaves the transaction aborted, so the
+            # caller must not be handed a session in that state.
             await db.rollback()
             raise
-        finally:
-            await db.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": _PROFILE_RETENTION_LOCK_KEY}
-            )
-            await db.commit()
 
 
 async def _retention_pass() -> None:
@@ -1697,6 +1822,15 @@ class OutcomeRequest(BaseModel):
 # is biometric data (GDPR Art. 4(14), KVKK Art. 6), for which it is not
 # available. "demo" is set only by the demo page and "objected" only by an
 # objection, so neither can be claimed here.
+#
+# The same argument is open against "contract_necessity" and is NOT settled
+# here: performance of a contract is a basis for ordinary personal data
+# (GDPR Art. 6(1)(b)), and neither GDPR Art. 9(2) nor KVKK Art. 6 lists it
+# among the exceptions for the special-category kind. It is left accepted
+# rather than removed because that is a legal call, not an engineering one --
+# but it is disclosed, not hidden: docs/kvkk-aydinlatma.md tells a customer
+# the value is accepted and must not be used, and docs/dpia.md makes deciding
+# it a precondition of any pilot. Use "explicit_consent".
 PROFILE_CONSENT_BASES = ("explicit_consent", "contract_necessity")
 PROFILE_ERASE_MODES = ("erase", "object")
 PROFILE_OUTCOMES = ("settled", "disputed")
@@ -2249,6 +2383,24 @@ async def _decide_on_evidence(
     # floor, staleness, an inconclusive sequential test and a crossed upper
     # bound are verify already, cluster escalates independently, and the
     # conformal guard only ever touches block.
+    #
+    # A customer whose profile bucket is exhausted is answered "verify" without
+    # reading anything when enforcing (_load_profile_context): the same
+    # escalation-only step, for probing rather than for deviation. In shadow
+    # mode it is recorded and changes nothing, like every shadow opinion.
+    if (
+        profile_ctx is not None
+        and action in ("allow", "warn")
+        and profile_ctx.verdict.state == profiles.STATE_RATE_LIMITED
+        and PROFILE_ESCALATION
+    ):
+        return DecisionResponse(
+            action="verify",
+            risk_score=risk_score,  # UNCHANGED
+            label=label,  # UNCHANGED
+            message=REASON_MESSAGES["profile_rate_limited"],
+            reason="profile_rate_limited",
+        )
     if profile_ctx is not None and action in ("allow", "warn") and profile_ctx.verdict.escalate:
         if await _profile_escalates(db, session, session_id, profile_ctx):
             return DecisionResponse(
@@ -2304,6 +2456,10 @@ class ProfileContext:
     # reported beside the verdict's reference_n, never part of it. None when the
     # vectors were not read at all.
     probation_n: int | None = None
+    # A SYNTHETIC demo customer (customer_profiles.is_synthetic, seeded by
+    # backend/demo_seed.py): compared against, never taught, and written into
+    # the decision audit row so the SOC panel and a reviewer can say so.
+    synthetic: bool = False
 
 
 _PROFILE_ROW_COLUMNS = (
@@ -2314,6 +2470,7 @@ _PROFILE_ROW_COLUMNS = (
     CustomerProfile.feature_schema_version,
     CustomerProfile.escalation_count,
     CustomerProfile.escalation_window_start,
+    CustomerProfile.is_synthetic,
 )
 
 # The SPRT read in _decide_on_evidence, widened by what a session vector needs:
@@ -2362,6 +2519,19 @@ async def _load_profile_context(
     if not PROFILE_ENABLED or merchant_id is None or customer_ref is None:
         return None
     profile_id = profiles.derive_profile_id(merchant_id, customer_ref, PROFILE_KEY)
+    if not _rate_allows("profile", profile_id):
+        # Too many decisions about this one customer this hour. Nothing is
+        # read -- no answer about this customer may depend on the profile any
+        # more -- and when enforcing, _decide_on_evidence asks for step-up
+        # instead of approving. Never a 429, which failed the whole checkout
+        # (see RATE_LIMITS["profile"]), and never an abstention: an attacker
+        # in a victim's account who could exhaust the bucket and then be
+        # judged without the profile would have turned retries into an
+        # approval, exactly the hole the challenge budget had. No profile id
+        # on the context either: consent was not checked.
+        return ProfileContext(
+            merchant_id=merchant_id, verdict=profiles.ProfileVerdict(state=profiles.STATE_RATE_LIMITED)
+        )
     try:
         return await _read_profile_context(db, session_id, merchant_id, profile_id)
     except Exception as exc:
@@ -2413,6 +2583,7 @@ async def _read_profile_context(
         profile_id=profile_id,
         escalation_count=int(row["escalation_count"] or 0),
         escalation_window_start=_as_utc(row["escalation_window_start"]),
+        synthetic=bool(row["is_synthetic"]),
     )
     if (
         row["feature_schema_version"] != profiles.FEATURE_SCHEMA_VERSION
@@ -2435,7 +2606,12 @@ async def _read_profile_context(
     flushes = [_columns_as_dict(_PROFILE_FLUSH_COLUMNS, r) for r in flush_rows]
     ctx.modality = profiles.session_modality([f["client_signals"] for f in flushes])
     ctx.vector = profiles.session_vector(flushes)
-    ctx.learnable = True
+    # A synthetic demo customer is an exhibit: compared against, never taught.
+    # Learning into it would store a real person's session -- a juror's, under
+    # the demo consent basis nobody gave -- inside a profile every screen calls
+    # synthetic, and would change the exhibit after the seed day (the per-day
+    # cap only hides this on the day demo_seed.py wrote its forty rows).
+    ctx.learnable = not ctx.synthetic
     if ctx.vector is None:
         ctx.verdict = profiles.ProfileVerdict(state=profiles.STATE_THIN_SESSION, modality=ctx.modality)
         return ctx
@@ -2459,8 +2635,9 @@ async def _read_profile_context(
             # time (24 of 24 synthetic reference sets in test_profiles; 23 of
             # 24 under the leave-one-out rank, where the Postgres check
             # measured 0.0476 -> 0.0952). The review endpoint excludes it for
-            # the same reason, so a reviewer sees the reference set the
-            # decision used.
+            # the same reason. (The review reads the buffer as it is when the
+            # reviewer asks, which later learns may have changed; it reports
+            # whether its recomputation still matches the audited numbers.)
             .where(CustomerProfileVector.session_id != session_id)
             # References first, newest first; then the probation vectors, read
             # in the same statement only to be COUNTED. However many rows
@@ -2498,9 +2675,20 @@ _profile_breaker = {"checked_at": None, "count": 0, "warned_window": None}
 
 
 async def _profile_breaker_count(db: AsyncSession) -> int:
-    """Enforced profile escalations deployment-wide in the breaker window,
-    cached per worker for PROFILE_BREAKER_CACHE_S. Shadow rows do not count:
-    they challenged nobody."""
+    """CUSTOMERS given an enforced profile challenge deployment-wide in the
+    breaker window, cached per worker for PROFILE_BREAKER_CACHE_S. Shadow rows
+    do not count: they challenged nobody.
+
+    Distinct profiles, not audit rows. Every press of pay on a challenged
+    session writes a profile_deviation row, so counting rows let one attacker
+    in one session trip the deployment-wide breaker by pressing pay 50 times --
+    switching this layer off for every customer for up to an hour, the step
+    before an account-takeover campaign. Counted per profile, one account adds
+    at most one however often it retries; tripping it takes 50 different
+    mature profiles deviating within the hour, which is the population event
+    the breaker exists to notice (thresholds that misfire on real traffic).
+    An erased profile's rows have profile_id NULL and drop out, which errs
+    towards leaving the breaker closed."""
     now = time.monotonic()
     checked_at = _profile_breaker["checked_at"]
     if checked_at is not None and now - checked_at < profiles.PROFILE_BREAKER_CACHE_S:
@@ -2508,7 +2696,7 @@ async def _profile_breaker_count(db: AsyncSession) -> int:
     cutoff = utcnow() - timedelta(seconds=profiles.PROFILE_BREAKER_WINDOW_S)
     try:
         count = await db.scalar(
-            select(func.count())
+            select(func.count(distinct(DecisionAudit.profile_id)))
             .select_from(DecisionAudit)
             .where(DecisionAudit.reason == "profile_deviation")
             .where(DecisionAudit.shadow.is_(False))
@@ -2544,8 +2732,9 @@ async def _profile_escalates(db: AsyncSession, session: Session, session_id: str
     # _apply_step_up turns this verify straight into allow/verified. The budget
     # and the breaker bound challenges actually put in front of a person, so
     # neither is consulted -- and the rescued session is then learned on
-    # probation, which is what drives self-healing. Consulting the budget here
-    # would stop the third passed challenge from ever counting as passed.
+    # probation, which is what records the pass (spending the budget) and
+    # drives self-healing. Consulting the budget here could only turn a pass
+    # into one that is never recorded.
     if not _step_up_is_fresh(session):
         if not profiles.budget_allows(ctx.escalation_count, ctx.escalation_window_start, utcnow()):
             ctx.verdict = replace(pv, state=profiles.STATE_BUDGET_EXHAUSTED, escalate=False)
@@ -2558,8 +2747,8 @@ async def _profile_escalates(db: AsyncSession, session: Session, session_id: str
                 _profile_breaker["warned_window"] = window
                 # No identifiers: the breaker is a population statement.
                 logger.warning(
-                    "UYARI: Profil devre kesici acildi: son %d saniyede en az %d zorunlu profil "
-                    "yukseltmesi; profil yukseltmeleri gecici olarak durduruldu.",
+                    "UYARI: Profil devre kesici acildi: son %d saniyede en az %d farkli musteriye "
+                    "zorunlu profil yukseltmesi; profil yukseltmeleri gecici olarak durduruldu.",
                     profiles.PROFILE_BREAKER_WINDOW_S,
                     escalations,
                 )
@@ -2587,9 +2776,9 @@ async def _learn_and_audit(
     Nothing at all while the layer is off. Otherwise an audit row whenever the
     action is not allow or the layer had any opinion (shadow and abstentions
     included) -- not on a plain allow with no customer named, so the common
-    path stays a read. The challenge budget is spent when this decision's
-    final answer is a profile challenge; the session is learned when the
-    final answer is allow (section 6.5).
+    path stays a read. The session is learned when the final answer is allow
+    (section 6.5), and the challenge budget is spent by the learn that records
+    a PASSED profile challenge -- never when a challenge is issued (see below).
 
     A write failure never changes the verdict, which is already decided: it is
     rolled back and logged as the exception class only, because a database
@@ -2606,27 +2795,81 @@ async def _learn_and_audit(
             # A deviation that step-up did NOT rescue is never learned: not in
             # shadow mode, and not when the budget or the breaker suppressed
             # the challenge. Learned as a clean vector it would bypass the
-            # PROFILE_PROBATION_MAX cap -- an attacker who exhausts a victim's
-            # three challenges would then be widening the profile with clean
-            # slots at PROFILE_LEARN_PER_DAY. (A stricter reading of spec 6.5
-            # than its literal list of conditions, for the guarantee 6.5 states.)
+            # PROFILE_PROBATION_MAX cap -- whoever pays while the budget is
+            # spent or the breaker is open would be widening the profile with
+            # clean slots at PROFILE_LEARN_PER_DAY. (A stricter reading of spec
+            # 6.5 than its literal list of conditions, for the guarantee 6.5
+            # states.)
             deviated = ctx.verdict.escalate or ctx.verdict.state in (
                 profiles.STATE_BUDGET_EXHAUSTED,
                 profiles.STATE_BREAKER,
             )
-            if verdict.reason == "profile_deviation":
-                await _spend_profile_budget(db, ctx)
-            elif (
+            if (
                 # warn never teaches: it is the approval the ladder was least
                 # sure about.
                 verdict.action == "allow"
+                # Nor does any other verify that a step-up rescued: a 60-80
+                # score, an ambiguous or stale session, a crossed bot bound
+                # (sequential), a softened block, a cluster. The customer
+                # proved who they are for THIS payment; the behaviour itself
+                # was never something the evidence was confident in, and a
+                # profile is built only from sessions the evidence alone
+                # approved ("score") -- or, on probation, from a rescued
+                # PROFILE deviation, which is the one verify whose cause is
+                # this customer's own history. A rescued sequential session
+                # used to be learned as a clean reference.
+                and (probation or verdict.reason == "score")
                 and ctx.learnable
                 and ctx.vector is not None
                 and (probation or not deviated)
                 and not getattr(session, "profile_learned", False)
             ):
-                await _learn_session(db, session_id, ctx, probation=probation)
-        db.add(_decision_audit_row(session_id, verdict, ctx, merchant_id, risk_context))
+                learned = await _learn_session(db, session_id, ctx, probation=probation)
+                # The challenge budget counts challenges the customer PASSED,
+                # and this learn is where a pass is recorded -- once per
+                # session, by the unique (profile_id, session_id) index. It
+                # used to be spent whenever a profile challenge was ISSUED, so
+                # an account-takeover attacker without the OTP -- the one
+                # person this layer exists to stop -- only had to press pay
+                # again: three unanswered challenges exhausted the budget and
+                # the fourth press was charged, for that session and for every
+                # new one for 30 days (reproduced over HTTP: verify, verify,
+                # verify, allow). A budget an unanswered challenge can spend is
+                # an off switch. Counting passes keeps what the budget is for --
+                # a customer who keeps proving it is them (the grandchild, the
+                # tremor, the new laptop) is challenged at most
+                # PROFILE_MAX_ESCALATIONS times a window -- and nothing an
+                # attacker who cannot answer does moves it.
+                #
+                # The price, stated: a pass that is not learned is not counted
+                # either (the per-day learning cap, a session that already
+                # taught the profile, a synthetic demo customer, which is never
+                # taught). And DeepCheck only hears of a pass where it records
+                # the step-up itself -- /api/demo/verify; a merchant running
+                # its own OTP has no endpoint to report one yet -- so outside
+                # the demo neither this bound nor self-healing is reached.
+                if learned and probation:
+                    await _spend_profile_budget(db, ctx)
+                row_locked = learned
+            else:
+                row_locked = False
+            if not row_locked and not await _profile_still_active(db, ctx.profile_id):
+                # Erased or objected while this decision was being made: its
+                # audit row must not carry the pseudonym the erasure just
+                # removed everywhere else (see _profile_still_active).
+                ctx.profile_id = None
+        db.add(
+            _decision_audit_row(
+                session_id,
+                verdict,
+                ctx,
+                merchant_id,
+                risk_context,
+                # getattr: sessions.is_synthetic is set only by demo_seed.py
+                # --simulate, and the test suite's stub sessions predate it.
+                session_synthetic=bool(getattr(session, "is_synthetic", False)),
+            )
+        )
         await db.commit()
     except asyncio.CancelledError:
         raise
@@ -2644,6 +2887,8 @@ def _decision_audit_row(
     ctx: ProfileContext | None,
     merchant_id: str | None,
     risk_context: RiskContext | None,
+    *,
+    session_synthetic: bool = False,
 ) -> DecisionAudit:
     pv = ctx.verdict if ctx is not None else None
     score = verdict.risk_score
@@ -2667,15 +2912,60 @@ def _decision_audit_row(
         probation_n=ctx.probation_n if ctx is not None else None,
         feature_schema_version=profiles.FEATURE_SCHEMA_VERSION if pv is not None else None,
         shadow=pv is not None and not PROFILE_ESCALATION,
+        # What was compared, only when the comparison found a deviation and
+        # the row still names an active profile (see
+        # models.DecisionAudit.candidate_vec): the evidence a human reviewer
+        # needs once the flushes are gone.
+        candidate_vec=(
+            ctx.vector["vec"]
+            if ctx is not None
+            and ctx.profile_id is not None
+            and ctx.vector is not None
+            and pv is not None
+            and (pv.escalate or pv.state in (profiles.STATE_BUDGET_EXHAUSTED, profiles.STATE_BREAKER))
+            else None
+        ),
         amount_band=risk_context.amount_band if risk_context is not None else None,
         new_beneficiary=risk_context.new_beneficiary if risk_context is not None else None,
+        # Stored, not looked up later: the session is deleted at 24 h and
+        # demo_seed.py --reset deletes the profile, but a decision made against
+        # a simulator must still say so to the SOC panel for as long as the row
+        # is kept.
+        is_synthetic=session_synthetic or (ctx is not None and ctx.synthetic),
     )
 
 
+async def _profile_still_active(db: AsyncSession, profile_id: str) -> bool:
+    """Whether the profile is still active, holding a FOR SHARE lock on its row
+    until this decision commits.
+
+    The audit row names the profile it was decided against, but the profile
+    was read at the start of the decision, and an erasure can commit in
+    between. Its `UPDATE decision_audit SET profile_id = NULL` cannot see a row
+    inserted after it, so the decision's row kept the erased pseudonym for
+    DECISION_AUDIT_RETENTION_DAYS -- reproduced on Postgres 16 (read the
+    context, commit an erasure, write the audit row: one row still held the
+    id, with its deviation and top features). The share lock orders the two:
+    the erasure's FOR UPDATE on the same row either finished first, and this
+    finds no active row, or waits for this commit, and its unlink then sees
+    this audit row. A learn has already locked the row with its UPDATE, so
+    this read is skipped after one."""
+    found = await db.scalar(
+        select(CustomerProfile.profile_id)
+        .where(CustomerProfile.profile_id == profile_id)
+        .where(CustomerProfile.profiling_enabled.is_(True))
+        .where(CustomerProfile.erased_at.is_(None))
+        .where(CustomerProfile.consent_basis != "objected")
+        .with_for_update(read=True)
+    )
+    return found is not None
+
+
 async def _spend_profile_budget(db: AsyncSession, ctx: ProfileContext) -> None:
-    """One challenge from this customer's PROFILE_MAX_ESCALATIONS per window.
-    The increment is done by the database, so two concurrent challenges for
-    one customer both count."""
+    """One PASSED challenge from this customer's PROFILE_MAX_ESCALATIONS per
+    window (called only by the probation learn, see _learn_and_audit). The
+    increment is done by the database, so two concurrent passes for one
+    customer both count."""
     now = utcnow()
     if profiles.budget_window_expired(ctx.escalation_window_start, now):
         values = {"escalation_count": 1, "escalation_window_start": now}
@@ -2833,8 +3123,9 @@ def _profile_request(
     a session token name any customer. A DISABLED layer is silent: the
     reference is ignored entirely, nothing is read or written, and the
     decision is exactly what it would be without it -- a misconfiguration must
-    not break a merchant's checkout. The per-merchant "profile" bucket is part
-    of the layer, so it is not charged while the layer is off either.
+    not break a merchant's checkout. The per-customer "profile" bucket is part
+    of the layer, so it is not charged while the layer is off either (it is
+    charged in _load_profile_context, and never refuses the decision).
 
     Merchant headers are consulted only when a reference is present; without
     one the request is the same request it was before references existed.
@@ -2849,7 +3140,6 @@ def _profile_request(
     customer_ref = _require_customer_ref(customer_ref)
     if not PROFILE_ENABLED:
         return None, None
-    _rate_limit("profile", merchant_id)
     return merchant_id, customer_ref
 
 
@@ -3059,8 +3349,22 @@ async def profile_erase(
         # session and audit rows themselves are not the customer's profile.
         await db.execute(_unlink_sessions_from_profiles(Session.profile_id == profile_id))
         await db.execute(
-            update(DecisionAudit).where(DecisionAudit.profile_id == profile_id).values(profile_id=None)
+            update(DecisionAudit)
+            .where(DecisionAudit.profile_id == profile_id)
+            # The compared session vector goes with the link: it is the
+            # customer's behavioural data, not part of the accountability
+            # record (models.DecisionAudit.candidate_vec).
+            .values(profile_id=None, candidate_vec=None)
         )
+        # And the review accesses. GET /api/profile/review writes the profile
+        # id into profile_access_audit, which is kept 365 days: left there,
+        # it re-linked the erased customer to every decision_audit row of the
+        # reviewed session (verdict, deviation, top features) through the
+        # session id, and anyone holding the profile key and the reference
+        # could recompute the pseudonym and find them. Operator, endpoint,
+        # session and time stay: the accountability record is who looked at
+        # what and when, not whose profile it was.
+        await db.execute(_unlink_access_audit_from_profiles(ProfileAccessAudit.profile_id == profile_id))
         # Accountability for the request, in the access-controlled table and
         # not stdout. Without the profile id: an erasure that left the
         # pseudonym behind in an audit row for a year would not be one.
@@ -3110,35 +3414,31 @@ async def report_outcome(
     if payload.outcome not in PROFILE_OUTCOMES:
         raise HTTPException(status_code=400, detail="Gecersiz islem sonucu")
 
-    owned_by_caller = select(CustomerProfile.profile_id).where(CustomerProfile.merchant_id == merchant_id)
-    target = (
-        CustomerProfileVector.session_id == payload.session_id,
-        CustomerProfileVector.profile_id.in_(owned_by_caller),
-    )
-
     async def work():
-        if payload.outcome == "settled":
-            # Lock the profile rows first, as learning and erasure do, so a
-            # promotion and a concurrent learn of the same customer compute
-            # their evictions one after the other instead of from two stale
-            # views of the buffer.
-            locked = (
-                await db.execute(
-                    update(CustomerProfile)
-                    .where(CustomerProfile.merchant_id == merchant_id)
-                    .where(
-                        CustomerProfile.profile_id.in_(
-                            select(CustomerProfileVector.profile_id).where(
-                                CustomerProfileVector.session_id == payload.session_id
-                            )
+        # Lock the profile rows first, as learning and erasure do, for both
+        # outcomes. A promotion and a concurrent learn of the same customer
+        # then compute their evictions one after the other instead of from two
+        # stale views of the buffer; and a dispute cannot delete a vector
+        # that a concurrent learn has just counted when it chose which
+        # reference to evict (which left the buffer one reference short).
+        locked = (
+            await db.execute(
+                update(CustomerProfile)
+                .where(CustomerProfile.merchant_id == merchant_id)
+                .where(
+                    CustomerProfile.profile_id.in_(
+                        select(CustomerProfileVector.profile_id).where(
+                            CustomerProfileVector.session_id == payload.session_id
                         )
                     )
-                    .values(updated_at=utcnow())
-                    .returning(CustomerProfile.profile_id)
                 )
-            ).scalars().all()
-            if not locked:
-                return
+                .values(updated_at=utcnow())
+                .returning(CustomerProfile.profile_id)
+            )
+        ).scalars().all()
+        if not locked:
+            return
+        if payload.outcome == "settled":
             promoted = (
                 await db.execute(
                     update(CustomerProfileVector)
@@ -3155,7 +3455,11 @@ async def report_outcome(
             for profile_id, modality, schema_version in promoted:
                 await _trim_references(db, profile_id, modality, schema_version)
         else:
-            await db.execute(delete(CustomerProfileVector).where(*target))
+            await db.execute(
+                delete(CustomerProfileVector)
+                .where(CustomerProfileVector.session_id == payload.session_id)
+                .where(CustomerProfileVector.profile_id.in_(sorted(locked)))
+            )
 
     await _profile_transaction(db, "Islem sonucu", work)
     return Response(status_code=204)
@@ -3248,7 +3552,8 @@ async def demo_charge(
     if payload.customer_ref is not None:
         customer_ref = _require_customer_ref(payload.customer_ref)
         if PROFILE_ENABLED:
-            _rate_limit("profile", DEMO_MERCHANT_ID)
+            # The per-customer "profile" bucket is charged in
+            # _load_profile_context, as for a merchant's decision.
             merchant_id = DEMO_MERCHANT_ID
         else:
             customer_ref = None
@@ -3274,6 +3579,7 @@ _AUDIT_BLOCK_COLUMNS = (
     DecisionAudit.top_features,
     DecisionAudit.reason,
     DecisionAudit.shadow,
+    DecisionAudit.is_synthetic,
 )
 
 
@@ -3306,6 +3612,10 @@ async def _profile_block(db: AsyncSession, session_id: str) -> dict:
         "escalated": False,
         # Computed and recorded, not acted on ("Golge modu -- karar etkilenmedi").
         "shadow": False,
+        # Synthetic demo data took part in the decision: the profile is a
+        # seeded synthetic customer or the session was simulated
+        # (decision_audit.is_synthetic; "Sentetik demo verisi").
+        "synthetic": False,
     }
     if not PROFILE_ENABLED:
         return block
@@ -3335,8 +3645,10 @@ async def _profile_block(db: AsyncSession, session_id: str) -> dict:
             for item in (audit["top_features"] or [])
             if isinstance(item, dict) and "feature" in item and "z" in item
         ],
-        escalated=audit["reason"] == "profile_deviation",
+        # Either way the layer asked for step-up; the state says which.
+        escalated=audit["reason"] in ("profile_deviation", "profile_rate_limited"),
         shadow=bool(audit["shadow"]),
+        synthetic=bool(audit["is_synthetic"]),
     )
     return block
 
@@ -3360,6 +3672,7 @@ _REVIEW_AUDIT_COLUMNS = (
     DecisionAudit.shadow,
     DecisionAudit.amount_band,
     DecisionAudit.new_beneficiary,
+    DecisionAudit.candidate_vec,
     DecisionAudit.profile_id,
 )
 
@@ -3472,6 +3785,15 @@ async def profile_review(
             references = [v for v in same_modality if profiles.is_reference(v)][: profiles.PROFILE_BUFFER_MAX]
             probation_vectors = [v for v in same_modality if v["probation"]]
 
+        if candidate is None:
+            # Neither flushes nor a learned vector: the case this surface
+            # exists for -- challenged, did not pass, complains days later.
+            # The deviating decision stored what it compared.
+            audited = next((a for a in reversed(audits) if a["candidate_vec"]), None)
+            if audited is not None:
+                candidate, candidate_source = audited["candidate_vec"], "decision_audit"
+                modality = modality or audited["modality"]
+
         reference_vecs = [r["vec"] for r in references]
         stats = profiles.feature_stats(reference_vecs)
         participating = profiles.participating_features(candidate, stats) if candidate is not None else []
@@ -3488,13 +3810,19 @@ async def profile_review(
                 for name, stat in stats.items()
             },
             "participating_features": participating,
-            # The calibration set the decision ranked this session against:
-            # each reference scored with itself left out, against the other
-            # references plus this session (full conformal,
+            # The calibration set for this candidate against the references
+            # stored NOW: each reference scored with itself left out, against
+            # the other references plus this session (full conformal,
             # profiles.calibration_deviations). The key keeps the spec's name.
+            # It is the set the decision ranked against only while the buffer
+            # has not changed since -- later learns, evictions, heals,
+            # settlements and disputes all change it, and the audit row keeps
+            # the decision's own numbers, not its reference ids. "recomputed"
+            # says whether the two still agree.
             "leave_one_out_deviations": (
                 profiles.calibration_deviations(candidate, reference_vecs) if participating else []
             ),
+            "recomputed": _review_recomputation(audits, candidate, candidate_source, reference_vecs, modality),
             # The pseudonym stays out of the body: the access audit row keeps
             # it, under the operator who asked.
             "decisions": [{k: v for k, v in a.items() if k != "profile_id"} for a in audits],
@@ -3516,6 +3844,48 @@ async def profile_review(
     if body is None:
         raise HTTPException(status_code=404, detail="Oturum bulunamadi")
     return body
+
+
+def _review_recomputation(
+    audits: list[dict], candidate: dict | None, candidate_source: str | None, references: list[dict], modality
+) -> dict | None:
+    """The newest audited comparison of this session, recomputed against the
+    references stored now -- and whether it still comes out the same.
+
+    The review is not a replay of the decision. The audit row stores the
+    decision's deviation, p-values and top features (and, for a deviating
+    decision, the compared vector), but not the reference set, which keeps
+    changing after the decision. So the reviewer gets the audited numbers
+    (in "decisions") beside a recomputation (here), and matches_decision says
+    whether they agree. False means the buffer moved on, not that either
+    number is wrong; the audited ones are what the decision acted on. None
+    when this session was never compared, or nothing is left to compare."""
+    audited = next((a for a in reversed(audits) if a["deviation"] is not None), None)
+    if audited is None:
+        return None
+    vec, source = candidate, candidate_source
+    if audited["candidate_vec"]:
+        # The vector this very decision compared, not today's flushes.
+        vec, source = audited["candidate_vec"], "decision_audit"
+    if vec is None:
+        return None
+    verdict = profiles.evaluate_profile(vec, references, modality=modality)
+    return {
+        "decided_at": audited["decided_at"],
+        "candidate_source": source,
+        "state": verdict.state,
+        "reference_n": verdict.reference_n,
+        "deviation": verdict.deviation,
+        "p_value": verdict.p_value,
+        "p_value_low": verdict.p_value_low,
+        "matches_decision": (
+            verdict.state == profiles.STATE_EVALUATED
+            and verdict.reference_n == audited["reference_n"]
+            and verdict.deviation == audited["deviation"]
+            and verdict.p_value == audited["p_value"]
+            and verdict.p_value_low == audited["p_value_low"]
+        ),
+    }
 
 
 @app.get("/api/score/{session_id}", dependencies=[Depends(require_dashboard_key)])
@@ -3544,6 +3914,8 @@ async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
         "response_time_ms": session.response_time_ms,
         "created_at": session.created_at,
         "last_seen_at": session.last_seen_at,
+        # A session driven by demo_seed.py --simulate ("Sentetik demo verisi").
+        "is_synthetic": bool(getattr(session, "is_synthetic", False)),
         "profile": await _profile_block(db, session_id),
         "history": [
             {
@@ -3573,6 +3945,8 @@ async def list_sessions(db: AsyncSession = Depends(get_db)):
             "response_time_ms": s.response_time_ms,
             "created_at": s.created_at,
             "last_seen_at": s.last_seen_at,
+            # The SOC list badges it and leaves it out of every metric card.
+            "is_synthetic": bool(getattr(s, "is_synthetic", False)),
         }
         for s in sessions
     ]

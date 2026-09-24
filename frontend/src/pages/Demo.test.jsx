@@ -1,7 +1,8 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PROFILE_STATE_LABELS } from "../components/ProfilePanel.jsx";
+import { SYNTHETIC_DEMO_CUSTOMERS } from "../demoCustomers.js";
 import Demo from "./Demo.jsx";
 
 // backend/lstm_model.py FEATURE_NAMES, in order. Pinned there by
@@ -330,6 +331,29 @@ describe("Demo", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("asks for a reload, not another code, when the token expires while the prompt is open", async () => {
+    // Tokens live 30 minutes. A 401 from /api/demo/verify means no code can
+    // help; showing the server's detail inside the still-open prompt left the
+    // customer typing codes into a dead session.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(STEP_UP))
+      .mockResolvedValueOnce(jsonResponse({ detail: "Oturum jetonunun suresi doldu" }, 401));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(<Demo />);
+    submit(container);
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText(/doğrulama kodu/i), { target: { value: "482913" } });
+    fireEvent.click(screen.getByRole("button", { name: "Doğrula" }));
+
+    expect(await screen.findByText(/davranış verisi toplanamadı/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText(/suresi doldu/)).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("names the demo customer in a field that says it is a demo shortcut", () => {
     render(<Demo />);
 
@@ -346,11 +370,13 @@ describe("Demo", () => {
     // namespace, where no real merchant's customer can be.
     const namespace = screen.getByText(/ayrılmış demo ad alanında tutulur/);
     expect(namespace).toHaveTextContent(/hiçbir gerçek satıcının müşterisiyle eşleşemez/);
+    // And how long it stays: the backend sweeps the demo namespace on the
+    // session's clock.
+    expect(namespace).toHaveTextContent(/24 saat içinde silinir/);
     expect(field.getAttribute("aria-describedby").split(" ")).toContain(namespace.id);
-    expect(screen.getByRole("link", { name: "KVKK Aydınlatma Metni" })).toHaveAttribute(
-      "href",
-      expect.stringMatching(/docs\/kvkk-aydinlatma\.md$/),
-    );
+    // The notice is served by the app itself (pages/KvkkNotice.jsx), so the
+    // link works offline and does not depend on a public repository.
+    expect(screen.getByRole("link", { name: "KVKK Aydınlatma Metni" })).toHaveAttribute("href", "/kvkk");
   });
 
   it("sends the demo customer reference with the charge, trimmed", async () => {
@@ -427,6 +453,70 @@ describe("Demo", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("lists the synthetic demo customers and says on every one of them that it is synthetic", () => {
+    // The prototype runs on synthetic customers because there is no customer
+    // base; what is not negotiable is that the page says so where a juror
+    // picks one. backend/test_demo.py pins the roster to demo_seed.py.
+    render(<Demo />);
+
+    const select = screen.getByLabelText("Demo Müşterisi");
+    const options = within(select).getAllByRole("option");
+    expect(options).toHaveLength(SYNTHETIC_DEMO_CUSTOMERS.length + 1);
+    SYNTHETIC_DEMO_CUSTOMERS.forEach((customer, i) => {
+      expect(options[i]).toHaveValue(customer.ref);
+      expect(options[i]).toHaveTextContent(customer.name);
+      expect(options[i]).toHaveTextContent(/ — sentetik geçmiş \(fare 20, klavye 20\)$/);
+    });
+    expect(options.at(-1)).toHaveTextContent(/Serbest referans/);
+
+    // One line, tied to the selector, naming them and what they are.
+    const note = screen.getByText(/sentetik demo müşterileridir/);
+    expect(note).toHaveTextContent("Ayşe, Mehmet ve Zeynep sentetik demo müşterileridir");
+    expect(note).toHaveTextContent(/simülatörle üretildi, gerçek kişi değildir/);
+    expect(select).toHaveAttribute("aria-describedby", note.id);
+
+    // Free entry is the default: nobody is compared with a synthetic history
+    // unless the presenter picks one.
+    expect(select).toHaveValue("serbest");
+    expect(screen.getByLabelText("Müşteri Referansı (demo)")).toHaveValue("demo-musteri-1");
+  });
+
+  it("pays as a synthetic customer under that customer's own reference", async () => {
+    const fetchMock = stubCharge(STEP_UP);
+
+    const { container } = render(<Demo />);
+    fireEvent.change(screen.getByLabelText("Demo Müşterisi"), { target: { value: "sentetik-ayse" } });
+    // The field shows what will be sent, and the reference itself says synthetic.
+    expect(screen.getByLabelText("Müşteri Referansı (demo)")).toHaveValue("sentetik-ayse");
+    submit(container);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(chargeBody(fetchMock).customer_ref).toBe("sentetik-ayse");
+    // A step-up against the synthetic history is the same generic prompt as
+    // every other one.
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+  });
+
+  it("keeps the selector and the reference field in agreement", () => {
+    render(<Demo />);
+    const select = screen.getByLabelText("Demo Müşterisi");
+    const field = screen.getByLabelText("Müşteri Referansı (demo)");
+
+    fireEvent.change(field, { target: { value: " sentetik-mehmet " } });
+    expect(select).toHaveValue("sentetik-mehmet");
+
+    fireEvent.change(field, { target: { value: "sentetik-mehmet-2" } });
+    expect(select).toHaveValue("serbest");
+
+    fireEvent.change(select, { target: { value: "sentetik-zeynep" } });
+    expect(field).toHaveValue("sentetik-zeynep");
+
+    // Back to free entry: the field returns to the default demo customer
+    // rather than silently keeping a synthetic reference.
+    fireEvent.change(select, { target: { value: "serbest" } });
+    expect(field).toHaveValue("demo-musteri-1");
+  });
+
   it("opens the code prompt for step_up, the reason a profile escalation arrives as", async () => {
     stubCharge(STEP_UP);
 
@@ -478,6 +568,9 @@ describe("Demo", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { container } = render(<Demo />);
+    // Paying as a synthetic customer -- the jury demo itself -- so the one
+    // flow a profile escalation is expected in is the one proven not to leak.
+    fireEvent.change(screen.getByLabelText("Demo Müşterisi"), { target: { value: "sentetik-ayse" } });
     act(() =>
       sdk.init.mock.calls[0][0].onUpdate({
         risk_score: 18.2,

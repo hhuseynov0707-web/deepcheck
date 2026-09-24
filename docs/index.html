@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DeepCheck — Real-Time Behavioral Bot Detection</title>
-  <meta name="description" content="DeepCheck is a behavioral AI SDK that separates humans from bots in real time — an explainable 0–100 risk score, scored in ~42 ms, with zero friction for real users." />
+  <meta name="description" content="DeepCheck is a behavioral AI SDK that separates humans from bots in real time — an explainable 0–100 risk score, scored in 17.7 ms, with zero friction for real users." />
   <meta property="og:title" content="DeepCheck — Real-Time Behavioral Bot Detection" />
-  <meta property="og:description" content="An explainable 0–100 risk score, scored in ~42 ms. No CAPTCHAs. No keystroke content captured. Just behavior." />
+  <meta property="og:description" content="An explainable 0–100 risk score, scored in 17.7 ms. No CAPTCHAs. No keystroke content captured. Just behavior." />
   <meta property="og:type" content="website" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2309090b'/%3E%3Cpath d='M9 17.5l4.5 4.5L23 10.5' stroke='%2310b981' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <style>
@@ -160,6 +160,12 @@
     .stat .num { font-family: var(--mono); font-size: 30px; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
     .stat .num span { color: var(--emerald-t); }
     .stat .cap { font-size: 13px; color: var(--muted); margin-top: 6px; }
+    .provenance {
+      font-size: 13px; color: var(--muted); line-height: 1.7; margin-top: 18px;
+      max-width: 76ch;
+    }
+    .provenance code { font-family: var(--mono); font-size: 12px; }
+    .provenance a { color: var(--emerald-t); }
 
     .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; counter-reset: step; }
     .step {
@@ -322,8 +328,8 @@
           </div>
         </div>
         <div class="demo-foot">
-          <span id="demoLatency">response_time: 41 ms</span>
-          <span id="demoConf">confidence: 0.94</span>
+          <span id="demoLatency">compute_risk: 17.7 ms</span>
+          <span id="demoConf">confidence: 0.88</span>
         </div>
       </div>
     </div>
@@ -332,11 +338,21 @@
   <section>
     <div class="container">
       <div class="stats">
-        <div class="stat"><div class="num">42<span> ms</span></div><div class="cap">Median model scoring time (p99: 47 ms)</div></div>
-        <div class="stat"><div class="num">6</div><div class="cap">Behavioral features per session window</div></div>
+        <div class="stat"><div class="num">17.7<span> ms</span></div><div class="cap">Measured time to score one flush (features + forest + SHAP)</div></div>
+        <div class="stat"><div class="num">12</div><div class="cap">Behavioral features per session window</div></div>
         <div class="stat"><div class="num">7</div><div class="cap">Model families measured — one kept, on evidence</div></div>
         <div class="stat"><div class="num">0</div><div class="cap">Keystrokes or card data captured. Timing only.</div></div>
       </div>
+      <p class="provenance">
+        Where these come from: 17.7&nbsp;ms is <code>compute_risk</code> measured in
+        <code>backend/scorer.py</code>. Detection accuracy has been measured on
+        <b>synthetic sessions and scripted browser runs</b> &mdash; never on recordings of
+        real customers, and never in production. The published figures, the caveats and
+        the things that did not work are in
+        <a href="https://github.com/hhuseynov0707-web/deepcheck">the repository</a>
+        (<code>docs/evaluation.md</code>). We would rather show a smaller real number
+        than a perfect synthetic one.
+      </p>
     </div>
   </section>
 
@@ -351,7 +367,7 @@
         <div class="step">
           <div class="n">1</div>
           <h3>Embed the SDK</h3>
-          <p>A 6&nbsp;KB script collects behavioral signals in the browser — mouse trajectories, click timing, scroll rhythm, typing cadence, hesitation gaps — and streams them every 2 seconds.</p>
+          <p>A 34&nbsp;KB script with no dependencies (12&nbsp;KB gzipped) collects behavioral signals in the browser — mouse trajectories, click timing, scroll rhythm, typing cadence, hesitation gaps — and streams them every 2 seconds.</p>
         </div>
         <div class="step">
           <div class="n">2</div>
@@ -360,8 +376,8 @@
         </div>
         <div class="step">
           <div class="n">3</div>
-          <h3>Act on the score</h3>
-          <p>Your app gets the score, label, and SHAP explanation in real time — let genuine users through, challenge the suspicious, block confirmed bots automatically.</p>
+          <h3>Your server acts on the decision</h3>
+          <p>The browser gets a score to display. The decision that gates the payment comes from one server call, because a control in the browser is a control the attacker can edit. The SHAP explanation goes to your SOC dashboard, not to the party being scored.</p>
         </div>
       </div>
       <div class="risk-scale">
@@ -389,7 +405,7 @@
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg></div>
           <h3>Real-time decisions</h3>
-          <p>Scores update every 2 seconds during the session, with model scoring measured at a 42 ms median — fast enough to gate the payment button itself.</p>
+          <p>Scores update every 2 seconds during the session, and scoring one flush was measured at 17.7 ms — the score is ready long before a customer finishes typing a card number. The payment is gated on the server, never in the browser.</p>
         </div>
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><path d="M4 19V5M4 19h16M8 15v-4M12 15V8M16 15v-6"/></svg></div>
@@ -403,13 +419,23 @@
         </div>
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"/></svg></div>
-          <h3>Resists smart bots</h3>
-          <p>Trained against Selenium-style automation that simulates human motion — robotic regularity is detected per channel, so one faked signal is never enough.</p>
+          <h3>Built against smart bots, and honest about it</h3>
+          <p>Six of the twelve features measure structure that independent jitter cannot fake — momentum in the pointer path, the heavy tail of human pauses, the delay when a hand moves from keyboard to mouse. Against an independently written humanised bot, AUC rose from 0.56 to 0.92; it is still approved, because the signal exists and the threshold is not placed to act on it yet. We publish that rather than claim the problem is solved.</p>
         </div>
         <div class="feature">
           <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M8 21h8"/></svg></div>
           <h3>SOC dashboard included</h3>
           <p>A live operations view of every session — risk history charts, top SHAP drivers, and one-glance triage sorted by severity.</p>
+        </div>
+        <div class="feature">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg></div>
+          <h3>A profile that only ever asks, never decides</h3>
+          <p>With the customer's explicit consent, DeepCheck can compare a session against that customer's own past sessions — the account-takeover case a bot score cannot see. It may only request extra verification: never block, never approve, never move a score. It is off by default, and its thresholds have so far been measured on synthetic identities only.</p>
+        </div>
+        <div class="feature">
+          <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2" stroke-linecap="round"><path d="M12 3v18M5 8l7-5 7 5"/><path d="M5 8v8l7 5 7-5V8"/></svg></div>
+          <h3>Runs in your perimeter</h3>
+          <p>One <code>docker-compose up</code>: API, models, database and dashboard. No data leaves your network, no client IP is written to the database, and raw telemetry is blanked after an hour and deleted after a day.</p>
         </div>
       </div>
     </div>
@@ -428,7 +454,7 @@
             </li>
             <li>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5" stroke-linecap="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
-              <span><b>REST API</b> — clean JSON responses with score, label, confidence, and SHAP top factors.</span>
+              <span><b>REST API</b> — clean JSON responses with score, label, confidence and an action to take. Ordinary REST, so a WebView-based wallet integrates exactly like a web checkout; there is no native mobile SDK yet.</span>
             </li>
             <li>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.5" stroke-linecap="round"><path d="M4 12.5l5 5L20 6.5"/></svg>
@@ -442,9 +468,10 @@
   DeepCheck.init({
     apiUrl: <span class="tk-str">"https://api.yourbank.com"</span>,
     onUpdate: (r) =&gt; {
-      <span class="tk-com">// { risk_score: 12.4, label: "Gerçek Kullanıcı",</span>
-      <span class="tk-com">//   confidence: 0.94, shap_explanation: [...] }</span>
-      gateCheckout(r.risk_score);
+      <span class="tk-com">// { risk_score: 12.4, label: "Gerçek Kullanıcı", confidence: 0.94 }</span>
+      <span class="tk-com">// Display only — never gate a payment here.</span>
+      <span class="tk-com">// Your BACKEND calls POST /api/decision and obeys `action`.</span>
+      showRiskBadge(r.risk_score);
     }
   });
 <span class="tk-tag">&lt;/script&gt;</span></pre>
@@ -457,7 +484,7 @@
       <div class="cta-panel">
         <div class="kicker">Get in touch</div>
         <h2>Stop bots. Keep customers.</h2>
-        <p>We are partnering with banks, payment providers, and e-commerce platforms for early pilots. Reach out and we will show you DeepCheck live on your own checkout flow.</p>
+        <p>We are looking for banks, payment providers and e-commerce platforms to run the first pilot. Reach out and we will show you DeepCheck live on your own checkout flow — and tell you exactly what has and has not been measured before you decide.</p>
         <div class="btn-row" style="justify-content:center">
           <a class="btn btn-primary" href="mailto:hhuseynov0707@gmail.com">Contact the team</a>
         </div>
@@ -482,13 +509,15 @@
     (function () {
       // Two alternating scenarios for the hero demo card
       const human = {
-        cls: "human", label: "GERÇEK KULLANICI", score: 12.4, conf: 0.94, latency: 41,
+        // confidence is max(p, 1-p) in backend/scorer.py, so it follows the score.
+        // latency is compute_risk as measured in backend/scorer.py.
+        cls: "human", label: "GERÇEK KULLANICI", score: 12.4, conf: 0.88, latency: 17.7,
         fill: "var(--emerald)",
         traj: { color: "#10b981", caption: "Mouse trajectory — natural micro-variance", jitter: true },
         shap: [["etkilesim_entropisi", 8.2], ["tereddut_skoru", 6.1], ["ivme_degisimi", 4.3]],
       };
       const bot = {
-        cls: "bot", label: "BOT TESPİT EDİLDİ", score: 94.1, conf: 0.97, latency: 38,
+        cls: "bot", label: "BOT TESPİT EDİLDİ", score: 94.1, conf: 0.94, latency: 17.7,
         fill: "var(--rose)",
         traj: { color: "#f43f5e", caption: "Mouse trajectory — constant velocity, zero variance", jitter: false },
         shap: [["etkilesim_entropisi", 28.3], ["tereddut_skoru", 24.1], ["ivme_degisimi", 19.7]],
@@ -532,26 +561,38 @@
 
       function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
+      // The four bands, exactly as backend/scorer.py applies them. The badge
+      // follows the DISPLAYED score rather than the target, so the card never
+      // shows "GERÇEK KULLANICI" above a score of 40 while the number is still
+      // travelling.
+      function bandOf(score) {
+        if (score >= 80) return { cls: "bot", label: "BOT TESPİT EDİLDİ" };
+        if (score >= 60) return { cls: "bot", label: "YÜKSEK RİSK" };
+        if (score >= 40) return { cls: "bot", label: "ŞÜPHELİ" };
+        return { cls: "human", label: "GERÇEK KULLANICI" };
+      }
+
       function tick(now) {
         const p = Math.min((now - animStart) / DURATION, 1);
         displayed = animFrom + (animTo - animFrom) * easeOutCubic(p);
         els.score.textContent = displayed.toFixed(1);
+        const band = bandOf(displayed);
+        els.badge.className = "badge " + band.cls;
+        els.badgeText.textContent = band.label;
+        els.score.className = "score-big " + band.cls;
+        els.fill.style.width = displayed + "%";
         if (p < 1) requestAnimationFrame(tick);
       }
 
       function apply(s) {
         current = s;
-        els.badge.className = "badge " + s.cls;
-        els.badgeText.textContent = s.label;
-        els.score.className = "score-big " + s.cls;
         animFrom = displayed; animTo = s.score; animStart = performance.now();
         requestAnimationFrame(tick);
-        els.fill.style.width = s.score + "%";
         els.fill.style.background = s.fill;
         els.path.setAttribute("d", makePath(s.traj.jitter));
         els.path.setAttribute("stroke", s.traj.color);
         els.caption.textContent = s.traj.caption;
-        els.latency.textContent = "response_time: " + s.latency + " ms";
+        els.latency.textContent = "compute_risk: " + s.latency.toFixed(1) + " ms";
         els.conf.textContent = "confidence: " + s.conf.toFixed(2);
         s.shap.forEach(([name, val], i) => {
           els.shapFills[i].style.width = Math.min(val * 2.6, 100) + "%";

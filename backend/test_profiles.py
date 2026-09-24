@@ -931,8 +931,14 @@ def test_identity_sessions_persist_the_person_and_refuse_touch():
 # structure -- which statements share a commit, what a failure rolls back, and
 # whether a lock is released -- so the fake below records statements per
 # transaction and models the two Postgres behaviours that structure depends on:
-# a failed statement aborts the transaction until a rollback, and an advisory
-# lock stays held until it is explicitly released.
+# a failed statement aborts the transaction until a rollback, and a
+# transaction-scoped advisory lock stays held until that transaction ends.
+#
+# What this fake CANNOT express is the bug W5 fixed: it is one connection, and
+# the leak needed two (the lock taken on the pooled connection the sweep
+# started on, the unlock issued on whichever connection came back after the
+# commit). test_the_retention_locks_are_transaction_scoped below guards the
+# fix by reading the statements themselves instead.
 
 
 def _main():
@@ -995,34 +1001,47 @@ class _FakeConnection:
         self.db = database
         self.pending = []
         self.aborted = False
+        # Advisory locks belong to a connection, not to the deployment: this
+        # is what THIS connection holds, and it is what the transaction ending
+        # releases.
+        self.locks = set()
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, *exc):
-        # Closing a session discards whatever was not committed.
+        # Closing a session discards whatever was not committed -- and ends
+        # the transaction, so Postgres drops the xact locks it held.
         self.pending = []
+        self._release()
         return False
+
+    def _release(self):
+        """Postgres releases a transaction-scoped advisory lock when the
+        transaction ends, on the connection that holds it."""
+        self.db.held_locks -= self.locks
+        self.locks = set()
 
     async def scalar(self, statement, params=None):
         sql = str(statement)
-        assert "pg_try_advisory_lock" in sql, sql
+        assert "pg_try_advisory_xact_lock" in sql, sql
         if params["key"] in self.db.held_locks:
             return False
         self.db.held_locks.add(params["key"])
+        self.locks.add(params["key"])
         return True
 
     async def execute(self, statement, params=None):
         from sqlalchemy.exc import IntegrityError, InternalError
 
         sql = str(statement)
+        # There is no unlock statement to model any more, and there must not
+        # be one: an unlock is what W5 found running on the wrong connection.
+        assert "pg_advisory_unlock" not in sql, sql
         if self.aborted:
-            # Postgres refuses every command in an aborted transaction,
-            # the unlock included, until a rollback.
+            # Postgres refuses every command in an aborted transaction until
+            # a rollback.
             raise InternalError(sql, params, Exception("current transaction is aborted"))
-        if "pg_advisory_unlock" in sql:
-            self.db.held_locks.discard(params["key"])
-            return _FakeResult()
         if self.db.fail_on and sql.startswith(self.db.fail_on):
             self.aborted = True
             # A real driver error carries the bound parameters -- here, the
@@ -1047,11 +1066,13 @@ class _FakeConnection:
         if self.pending:
             self.db.transactions.append(self.pending)
         self.pending = []
+        self._release()
 
     async def rollback(self):
         self.pending = []
         self.aborted = False
         self.db.rollbacks += 1
+        self._release()
 
 
 def _committed(database, prefix):
@@ -1149,6 +1170,7 @@ def test_profile_sweep_runs_in_its_own_transaction_in_order(monkeypatch, caplog)
         position("SELECT customer_profiles.profile_id"),
         position("UPDATE sessions"),
         position("UPDATE decision_audit"),
+        position("UPDATE profile_access_audit"),
         position("DELETE FROM customer_profiles "),
         position("DELETE FROM decision_audit"),
         position("DELETE FROM profile_access_audit"),
@@ -1158,6 +1180,60 @@ def test_profile_sweep_runs_in_its_own_transaction_in_order(monkeypatch, caplog)
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Profil temizligi:")]
     assert lines == ["Profil temizligi: 3 vektor, 1 profil, 2 karar kaydi, 1 erisim kaydi silindi"]
     assert _IDLE_PROFILE_ID not in caplog.text
+
+
+def test_the_retention_locks_are_transaction_scoped(monkeypatch):
+    """Both sweeps must take pg_try_advisory_xact_lock and must issue no
+    unlock at all.
+
+    An AsyncSession returns its connection to the pool on commit, so a
+    session-scoped lock taken before the sweep's work and released in a
+    finally after its commit is released on whatever connection came back
+    next. Measured on Postgres 16 with the previous code: the lock was taken
+    on backend 2480, the unlock ran on 2481 and returned false, and 2480 kept
+    the lock. With that connection pinned out of the pool -- which is what an
+    ordinary request does -- the very next _sweep_once() returned (0, 0) and
+    the 48-hour-old behavior_data row survived; with the xact form it returned
+    (2, 2) and the row was gone. Nothing logs a skipped pass, so this failed
+    silently: no raw blanking, no row deletion, no profile, vector or audit
+    deletion, against what docs/kvkk-aydinlatma.md and the Demo page promise.
+
+    The fake database above is a single connection and cannot reproduce a
+    two-connection leak, so this reads the statements instead."""
+    import asyncio
+    import pathlib
+
+    main = _main()
+    for sweep, key in (
+        (main._sweep_once, main._RETENTION_LOCK_KEY),
+        (main._sweep_profiles_once, main._PROFILE_RETENTION_LOCK_KEY),
+    ):
+        seen = []
+
+        class _Recording(_FakeConnection):
+            async def scalar(self, statement, params=None):
+                seen.append((str(statement), dict(params or {})))
+                return await super().scalar(statement, params)
+
+            async def execute(self, statement, params=None):
+                seen.append((str(statement), dict(params or {})))
+                return await super().execute(statement, params)
+
+        database = _FakeDatabase()
+        monkeypatch.setattr(main, "get_sessionmaker", lambda: (lambda: _Recording(database)))
+        asyncio.run(sweep())
+
+        lock_sql, lock_params = seen[0]
+        assert "pg_try_advisory_xact_lock" in lock_sql, lock_sql
+        assert lock_params == {"key": key}
+        assert not any("advisory" in sql for sql, _ in seen[1:]), seen
+        assert database.held_locks == set()
+
+    # And no unlock survives anywhere in the module: a second call site would
+    # leak exactly the same way, and the xact form has nothing to unlock.
+    source = pathlib.Path(main.__file__).read_text(encoding="utf-8")
+    assert "pg_advisory_unlock" not in source
+    assert "pg_try_advisory_lock" not in source
 
 
 def test_objection_tombstones_are_never_swept(monkeypatch):
@@ -1209,6 +1285,101 @@ def test_telemetry_sweep_failure_does_not_stop_the_profile_sweep(monkeypatch, ca
     assert _committed(database, "DELETE FROM customer_profiles ")
     assert _committed(database, "DELETE FROM decision_audit")
     assert main._PROFILE_RETENTION_LOCK_KEY not in database.held_locks
+    # And the failed telemetry pass released its own lock, by ending its
+    # transaction: a rollback is the only thing that ends an aborted one.
+    assert main._RETENTION_LOCK_KEY not in database.held_locks, "basarisiz temizlik kilidi birakmadi"
+
+
+def test_the_demo_namespace_lives_on_the_session_clock(monkeypatch):
+    """What a demo visitor leaves in the reserved "demo" namespace -- a vector
+    learned from their payment, the implicit profile their typed reference
+    created, the decision audit rows -- is deleted on the session's clock
+    (ROW_RETENTION_HOURS), not after 180 and 90 days: nobody consented on the
+    demo page and there is no erasure route into that namespace. The seeded
+    synthetic customers keep their history, and a merchant's customer keeps
+    the ordinary retention. Run against the in-memory table model, which
+    evaluates the sweep's actual WHERE clauses."""
+    import asyncio
+
+    main = _main()
+    tables = _ProfileTables()
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(hours=main.ROW_RETENTION_HOURS + 1)
+    fresh = now - timedelta(hours=1)
+    idle_visitor, active_visitor = _pid("demo", "ziyaretci-1"), _pid("demo", "ziyaretci-2")
+    seeded, customer = _pid("demo", "sentetik-ayse"), _pid("acme", _REF)
+    for pid, merchant, synthetic, seen in (
+        (idle_visitor, "demo", False, old),
+        (active_visitor, "demo", False, fresh),
+        (seeded, "demo", True, now - timedelta(days=30)),
+        (customer, "acme", False, old),
+    ):
+        tables.seed(
+            "customer_profiles",
+            profile_id=pid,
+            merchant_id=merchant,
+            is_demo=merchant == "demo",
+            is_synthetic=synthetic,
+            consent_basis="demo" if merchant == "demo" else "explicit_consent",
+            profiling_enabled=True,
+            last_seen_at=seen,
+        )
+    for pid, session_id, created, synthetic in (
+        (idle_visitor, "ziyaret-eski", old, False),
+        (active_visitor, "ziyaret-yeni", fresh, False),
+        (seeded, "tohum-1", now - timedelta(days=40), True),
+        (customer, "musteri-1", old, False),
+    ):
+        tables.seed(
+            "customer_profile_vectors",
+            profile_id=pid,
+            session_id=session_id,
+            created_at=created,
+            modality="mouse",
+            feature_schema_version=profiles.FEATURE_SCHEMA_VERSION,
+            vec={name: 0.5 for name in FEATURE_NAMES},
+            disp={},
+            flush_count=5,
+            is_synthetic=synthetic,
+        )
+    for session_id, pid, merchant, decided in (
+        ("ziyaret-eski", idle_visitor, "demo", old),
+        ("juri-ayse", seeded, "demo", old),
+        ("ziyaret-yeni", active_visitor, "demo", fresh),
+        ("musteri-1", customer, "acme", old),
+    ):
+        tables.seed("decision_audit", session_id=session_id, profile_id=pid, merchant_id=merchant, decided_at=decided)
+    tables.seed("profile_access_audit", operator_id="denetci-1", endpoint="profile.review", session_id="ziyaret-eski", profile_id=idle_visitor)
+
+    class _SweepDB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def scalar(self, statement, params=None):
+            assert "pg_try_advisory_xact_lock" in str(statement)
+            return True
+
+        async def execute(self, statement, params=None):
+            return tables.execute(statement)
+
+        async def commit(self):
+            tables.commit()
+
+        async def rollback(self):
+            tables.rollback()
+
+    monkeypatch.setattr(main, "get_sessionmaker", lambda: _SweepDB)
+    asyncio.run(main._sweep_profiles_once())
+
+    committed = tables.committed
+    assert {r["profile_id"] for r in committed["customer_profiles"]} == {active_visitor, seeded, customer}
+    assert {r["session_id"] for r in committed["customer_profile_vectors"]} == {"ziyaret-yeni", "tohum-1", "musteri-1"}
+    assert {r["session_id"] for r in committed["decision_audit"]} == {"ziyaret-yeni", "musteri-1"}
+    [access] = committed["profile_access_audit"]
+    assert access["profile_id"] is None and access["session_id"] == "ziyaret-eski"
 
 
 def test_profile_links_have_no_foreign_key():
@@ -1229,6 +1400,47 @@ def test_profile_links_have_no_foreign_key():
         "profile_access_audit",
     ):
         assert not tables[name].foreign_keys, f"{name} bir yabanci anahtar tasiyor"
+
+
+def test_an_absent_audit_vector_is_sql_null_not_json_null():
+    """`WHERE candidate_vec IS NOT NULL` has to mean "this decision kept the
+    vector it compared", and `WHERE top_features IS NOT NULL` has to mean "the
+    layer had an opinion".
+
+    SQLAlchemy's JSON types serialise Python None as the JSON value `null`
+    unless none_as_null is set, and _write_audit_row passes None explicitly on
+    every decision without a deviation. Measured on Postgres 16 before this
+    was set: after 10 decisions of which 2 deviated, all 10 rows answered
+    `candidate_vec IS NOT NULL` true, jsonb_typeof 'object' twice and 'null'
+    eight times, and the erasure UPDATE wrote JSON null too -- so an erased
+    row looked exactly like a row that never held a vector. The behavioural
+    data really was gone, so the KVKK erasure claim held; what did not hold is
+    the only query anyone would write to check it.
+
+    This checks the bind processor rather than a database, because the bind
+    processor is the thing that was wrong."""
+    from sqlalchemy.dialects import postgresql
+
+    _main()
+    import database
+    from database import Base
+
+    columns = Base.metadata.tables["decision_audit"].c
+    for name in ("candidate_vec", "top_features"):
+        column = columns[name]
+        assert column.nullable, name
+        process = column.type.bind_processor(postgresql.dialect())
+        assert process(None) is None, f"{name}: None hala JSON null olarak yaziliyor"
+        # A value still goes in as JSON, so nothing else about the column moved.
+        assert process({"a": 1.0}) not in (None, ""), name
+
+    # And the rows the previous code already wrote are repaired at boot.
+    statements = [s for s in database._ADDITIVE_MIGRATIONS if s.startswith("UPDATE decision_audit")]
+    assert len(statements) == 2, statements
+    for name in ("candidate_vec", "top_features"):
+        assert any(
+            f"SET {name} = NULL" in s and f"jsonb_typeof({name}) = 'null'" in s for s in statements
+        ), name
 
 
 # --- boot configuration (spec sections 3.1, 3.3, 3.5) --------------------------
@@ -1584,7 +1796,15 @@ class _ProfileTables:
         columns = list(statement.selected_columns)
         if len(columns) == 1 and isinstance(columns[0], functions.count):
             assert not statement._order_by_clauses and statement._limit_clause is None
-            return [(len(matched),)]
+            [argument] = list(columns[0].clauses)
+            if isinstance(argument, elements.UnaryExpression) and argument.operator is operators.distinct_op:
+                # COUNT(DISTINCT column): distinct non-NULL values, as SQL counts
+                # them -- the breaker's per-customer count depends on both halves.
+                name = argument.element.name
+                return [(len({row[name] for row in matched if row[name] is not None}),)]
+            if getattr(argument, "table", None) is None and getattr(argument, "name", None) == "*":
+                return [(len(matched),)]
+            raise NotImplementedError(f"profil tablo modeli bu sayimi modellemiyor: {argument!r}")
         # ORDER BY applied last key first, with a stable sort, so the first key
         # wins -- which is what SQL does.
         for clause in reversed(statement._order_by_clauses):
@@ -1955,7 +2175,14 @@ def _seed_customer(tables, merchant="acme", ref=_REF, sessions=("s-1", "s-2", "s
             flush_count=4,
         )
         tables.seed("sessions", id=f"{merchant}-{session_id}", profile_id=pid, profile_learned=True)
-        tables.seed("decision_audit", session_id=f"{merchant}-{session_id}", profile_id=pid, action="verify", reason="profile_deviation")
+        tables.seed(
+            "decision_audit",
+            session_id=f"{merchant}-{session_id}",
+            profile_id=pid,
+            action="verify",
+            reason="profile_deviation",
+            candidate_vec={name: 1.5 for name in FEATURE_NAMES},
+        )
     return pid
 
 
@@ -1963,7 +2190,12 @@ def test_erasure_removes_everything(api, caplog):
     """T21. Vectors and the profile row deleted, every link to the profile
     NULLed, all in ONE transaction, with an access-audit row that does not
     itself keep the pseudonym. Other customers and other merchants untouched.
-    Erasure is not objection: a later consent may start again."""
+    Erasure is not objection: a later consent may start again.
+
+    "Every link" includes an earlier REVIEW of this customer: the review
+    endpoint writes the profile id into profile_access_audit, kept 365 days,
+    and through its session id that row re-linked the erased customer to the
+    reviewed decision's verdict, deviation and top features."""
     import logging
 
     caplog.set_level(logging.DEBUG)
@@ -1971,6 +2203,8 @@ def test_erasure_removes_everything(api, caplog):
     pid = _seed_customer(tables)
     other = _seed_customer(tables, ref=_OTHER_REF, sessions=("s-9",))
     globex = _seed_customer(tables, merchant="globex", sessions=("s-1",))
+    tables.seed("profile_access_audit", operator_id="denetci-1", endpoint="profile.review", session_id="acme-s-1", profile_id=pid)
+    tables.seed("profile_access_audit", operator_id="denetci-1", endpoint="profile.review", session_id="acme-s-9", profile_id=other)
     client = api.client(api.db(tables=tables))
 
     response = client.post("/api/profile/erase", json={"customer_ref": _REF, "mode": "erase"}, headers=_ACME)
@@ -1986,10 +2220,19 @@ def test_erasure_removes_everything(api, caplog):
     assert pid not in {r["profile_id"] for r in committed["sessions"]}
     assert pid not in {r["profile_id"] for r in committed["decision_audit"]}
     assert sum(r["profile_id"] is None for r in committed["decision_audit"]) == 3
+    # The compared session vectors on those rows are the customer's
+    # behavioural data and go with the link; other customers' stay.
+    assert all(r["candidate_vec"] is None for r in committed["decision_audit"] if r["profile_id"] is None)
+    assert all(r["candidate_vec"] is not None for r in committed["decision_audit"] if r["profile_id"] is not None)
 
-    [audit] = committed["profile_access_audit"]
+    review, other_review, audit = committed["profile_access_audit"]
     assert audit["operator_id"] == "acme" and audit["endpoint"] == "profile.erase"
     assert audit["profile_id"] is None and audit["session_id"] is None
+    # The review stays as an accountability record -- who looked, at which
+    # session, when -- without the pseudonym. Another customer's keeps it.
+    assert (review["operator_id"], review["endpoint"], review["session_id"]) == ("denetci-1", "profile.review", "acme-s-1")
+    assert review["profile_id"] is None, "silinen musterinin takma adi erisim kaydinda kaldi"
+    assert other_review["profile_id"] == other
 
     assert pid not in repr(committed)
     assert pid not in caplog.text and pid[:12] not in caplog.text and _REF not in caplog.text
@@ -2006,6 +2249,7 @@ def test_objection_survives_erasure(api):
     after a later erasure, and also for a customer who never had a profile."""
     tables = _ProfileTables()
     pid = _seed_customer(tables)
+    tables.seed("profile_access_audit", operator_id="denetci-1", endpoint="profile.review", session_id="acme-s-1", profile_id=pid)
     db = api.db(session=api.allow_session(), tables=tables)
     client = api.client(db)
 
@@ -2026,6 +2270,10 @@ def test_objection_survives_erasure(api):
     assert row["escalation_count"] == 0 and row["consecutive_passed_escalations"] == 0
     assert [r for r in tables.committed["customer_profile_vectors"] if r["profile_id"] == pid] == []
     assert pid not in {r["profile_id"] for r in tables.committed["sessions"]}
+    # The tombstone keeps the pseudonym -- it is what refuses a new consent --
+    # but nothing else does: the same unlinks as an erasure.
+    assert pid not in {r["profile_id"] for r in tables.committed["decision_audit"]}
+    assert pid not in {r["profile_id"] for r in tables.committed["profile_access_audit"]}
 
     refused = consent()
     assert refused.status_code == 409 and refused.json()["detail"] == "Bu musteri profillemeye itiraz etti"
@@ -2084,9 +2332,14 @@ def test_disputed_outcome_unlearns_the_session(api):
         return client.post("/api/outcome", json={"session_id": session_id, "outcome": outcome}, headers=headers)
 
     assert len(vectors(acme)) == 3
+    before = len(tables.statements)
     disputed = report("s-1", "disputed")
     assert disputed.status_code == 204 and disputed.content == b""
     assert set(vectors(acme)) == {"s-2", "s-3"}, "itiraz edilen oturum profilden cikarilmadi"
+    # The profile row is locked (UPDATE) before the vector goes, as learning
+    # locks it before choosing what to evict: the two cannot interleave.
+    writes = [s for s in tables.statements[before:] if s[0] != "select"]
+    assert writes == [("update", "customer_profiles"), ("delete", "customer_profile_vectors")], writes
     assert set(vectors(globex)) == {"s-1"}, "baska saticinin vektoru silindi"
 
     assert report("s-2", "settled").status_code == 204
@@ -2202,12 +2455,21 @@ def test_a_failed_profile_write_is_logged_without_identifiers(api, caplog):
         assert leaked not in response.text
 
 
-def test_profile_buckets_are_charged_per_merchant(api, monkeypatch):
-    """Section 11.3. Consent, erase and outcome share one per-merchant bucket;
-    decisions carrying a reference have their own, charged only while the
-    layer is on -- a switched-off layer must not start refusing checkouts."""
-    monkeypatch.setitem(api.main.RATE_LIMITS, "profile_admin", (2, 60))
-    monkeypatch.setitem(api.main.RATE_LIMITS, "profile", (1, 3600))
+def test_profile_buckets_never_refuse_a_checkout(api, monkeypatch):
+    """Section 11.3, as changed. Consent, erase and outcome share one
+    per-merchant bucket and answer 429 past it. Decisions naming a customer
+    have a bucket PER CUSTOMER, and exhausting it never refuses the decision:
+    the profile is not read, and when enforcing the answer is step-up (told to
+    the client as step_up), unlocked by a fresh step-up like any other verify.
+
+    It used to be one bucket per MERCHANT that answered 429 for the whole
+    decision, bot verdict included: one customer pressing pay took every
+    other customer of that merchant down with it. And an abstention in its
+    place would have been worse -- a victim's account pressed past the limit
+    would then be judged without its profile, retries turned into approval."""
+    main = api.main
+    monkeypatch.setitem(main.RATE_LIMITS, "profile_admin", (2, 60))
+    monkeypatch.setitem(main.RATE_LIMITS, "profile", (1, 3600))
     client = api.client(api.db(session=api.allow_session()))
 
     for _ in range(2):
@@ -2217,19 +2479,70 @@ def test_profile_buckets_are_charged_per_merchant(api, monkeypatch):
     assert client.post("/api/profile/erase", json={"customer_ref": _REF, "mode": "erase"}, headers=_ACME).status_code == 429
     assert client.post("/api/outcome", json={"session_id": "s", "outcome": "settled"}, headers=_GLOBEX).status_code == 204
 
-    def decide(extra=None, headers=None):
-        return api.decide(api.db(session=api.allow_session()), extra, headers).status_code
+    for escalation in (False, True):
+        api.configure(escalation=escalation)
+        main._rate_hits.clear()
+        tables = _ProfileTables()
+        pid = _seed_profile(tables)
 
-    assert decide({"customer_ref": _REF}, _ACME) == 200
-    assert decide({"customer_ref": _REF}, _ACME) == 429
-    assert decide() == 200, "referanssiz karar profil kovasina takildi"
-    assert decide({"customer_ref": _REF}, _GLOBEX) == 200
+        def decide(ref=_REF, headers=_ACME, value=_MATCHING, verified=False):
+            session_id = str(uuid.uuid4())
+            db = _customer_session(api, tables, session_id, value=value)
+            if verified:
+                db.session.verified_at = main.utcnow() - timedelta(seconds=5)
+            before = len(tables.statements)
+            response = _post_decision(api, db, session_id, ref=ref, headers=headers)
+            assert response.status_code == 200, response.text
+            return response.json(), tables.statements[before:], session_id
+
+        first, _, _ = decide()
+        assert (first["action"], first["reason"]) == ("allow", "score")
+
+        # The same customer again, matching as before: nothing about the
+        # profile is read, and the decision is never refused.
+        second, statements, session_id = decide()
+        assert ("select", "customer_profiles") not in statements
+        assert ("select", "customer_profile_vectors") not in statements
+        [row] = _audit_rows(tables, session_id)
+        assert row["profile_state"] == "rate_limited" and row["profile_id"] is None
+        assert second["risk_score"] == first["risk_score"] and second["label"] == first["label"]
+        if escalation:
+            assert (second["action"], second["reason"]) == ("verify", "step_up"), second
+            assert second["message"] == main.REASON_MESSAGES["step_up"]
+            assert (row["reason"], row["public_reason"]) == ("profile_rate_limited", "step_up")
+            unlocked, _, _ = decide(verified=True)
+            assert (unlocked["action"], unlocked["reason"]) == ("allow", "verified")
+        else:
+            # Shadow: recorded, and the decision is exactly the plain one.
+            assert second == first, second
+            assert row["reason"] == "score" and row["shadow"] is True
+
+        # Other customers -- of this merchant and of another -- are untouched,
+        # and a decision naming nobody never meets the bucket.
+        other, _, _ = decide(ref=_OTHER_REF)
+        assert (other["action"], other["reason"]) == ("allow", "score"), other
+        globex, _, _ = decide(headers=_GLOBEX)
+        assert (globex["action"], globex["reason"]) == ("allow", "score"), globex
+        assert api.decide(api.db(session=api.allow_session())).status_code == 200
+        assert ("profile", pid) in main._rate_hits and ("profile", "acme") not in main._rate_hits
+        assert not any(_REF in key for _, key in main._rate_hits), "ham referans hiz sinirlayicida tutuluyor"
+
+    # The demo charge is limited the same way, per demo customer.
+    api.configure(escalation=True)
+    main._rate_hits.clear()
+    tables = _ProfileTables()
+    _seed_profile(tables, merchant="demo", ref=_DEMO_REF)
+    statuses = []
+    for _ in range(2):
+        session_id = str(uuid.uuid4())
+        statuses.append(_post_charge(api, _customer_session(api, tables, session_id, value=_MATCHING), session_id).json()["status"])
+    assert statuses == ["charged", "declined"], statuses
 
     api.configure(layer=False)
-    api.main._rate_hits.clear()
+    main._rate_hits.clear()
     for _ in range(3):
-        assert decide({"customer_ref": _REF}, _ACME) == 200
-    assert ("profile", "acme") not in api.main._rate_hits
+        assert api.decide(api.db(session=api.allow_session()), {"customer_ref": _REF}, _ACME).status_code == 200
+    assert not any(bucket == "profile" for bucket, _ in main._rate_hits)
 
 
 def test_unlinking_a_profile_never_refreshes_session_freshness(api, monkeypatch):
@@ -2619,6 +2932,8 @@ def test_learning_is_idempotent(api):
     [session_row] = [r for r in tables.committed["sessions"] if r["id"] == session_id]
     assert session_row["profile_learned"] is True and session_row["profile_id"] == pid
     assert len(_vectors(tables, pid)) == 6
+    # A clean learn records no passed challenge, so it spends no budget.
+    assert _profile_row(tables, pid)["escalation_count"] == 0
     # The profile is ACTIVE: the audit row carries its id, and the raw
     # reference is nowhere.
     assert all(r["profile_id"] == pid for r in _audit_rows(tables, session_id))
@@ -2685,6 +3000,29 @@ def test_only_allow_teaches_the_profile(api, monkeypatch):
         written = _vectors(tables, pid, session_id=session_id)
         assert len(written) == (1 if expected == "allow" else 0), f"'{expected}' profil ogretti: {written}"
 
+    # A verify that a step-up rescued teaches nothing either -- unless its
+    # cause was the profile itself (probation, see T17). The payment goes
+    # through; the behaviour was still never something the evidence approved.
+    rescued = [
+        ("ladder verify", dict(score=72.0, label="Yüksek Risk")),
+        ("ambiguous", dict(score=50.0, label="Şüpheli", flush_count=10)),
+        ("sequential", dict(score=12.0, per_flush=[95.0] * 7 + [10.0] * 3, flush_count=10)),
+    ]
+    for name, spec in rescued:
+        tables = _ProfileTables()
+        pid = _seed_profile(tables, n=5)
+        session_id = str(uuid.uuid4())
+        score, label = spec.pop("score"), spec.pop("label", "Gerçek Kullanıcı")
+        db = _customer_session(api, tables, session_id, value=_MATCHING, score=score, label=label, **spec)
+        assert _post_decision(api, db, session_id).json()["action"] == "verify", name
+        [audit] = _audit_rows(tables, session_id)
+        db.session.verified_at = api.main.utcnow() - timedelta(seconds=5)
+        body = _post_decision(api, db, session_id).json()
+        assert (body["action"], body["reason"]) == ("allow", "verified"), (name, body)
+        assert _vectors(tables, pid, session_id=session_id) == [], f"kurtarilan '{name}' profil ogretti"
+        if name == "sequential":
+            assert audit["reason"] == "sequential", audit["reason"]
+
 
 def test_step_up_rescued_deviation_is_learned_on_probation(api):
     """T17, and the user's own example end to end: grandmother's profile is
@@ -2704,7 +3042,8 @@ def test_step_up_rescued_deviation_is_learned_on_probation(api):
     assert declined["decision"]["message"] == api.main.REASON_MESSAGES["step_up"]
     [audit] = _audit_rows(tables, session_id)
     assert (audit["reason"], audit["public_reason"]) == ("profile_deviation", "step_up")
-    assert _profile_row(tables, pid)["escalation_count"] == 1
+    # Issuing a challenge spends nothing: the budget counts PASSED challenges.
+    assert _profile_row(tables, pid)["escalation_count"] == 0
     assert _vectors(tables, pid, session_id=session_id) == [], "reddedilen odeme profile ogretildi"
 
     assert _post_verify(api, db, session_id).status_code == 200
@@ -2712,7 +3051,7 @@ def test_step_up_rescued_deviation_is_learned_on_probation(api):
     assert charged["status"] == "charged" and charged["charge_id"] is not None
     assert (charged["decision"]["action"], charged["decision"]["reason"]) == ("allow", "verified")
     assert charged["decision"]["risk_score"] == declined["decision"]["risk_score"]
-    # The rescued decision is not a second challenge: the budget is spent once.
+    # The pass is what spends the budget -- once, by the learn that records it.
     assert _profile_row(tables, pid)["escalation_count"] == 1
 
     [learned] = _vectors(tables, pid, session_id=session_id)
@@ -2721,9 +3060,11 @@ def test_step_up_rescued_deviation_is_learned_on_probation(api):
     assert _profile_row(tables, pid)["is_demo"] is True
     assert [r["reason"] for r in _audit_rows(tables, session_id)] == ["profile_deviation", "verified"]
 
-    # Again for the same session: charged, and still exactly one vector.
+    # Again for the same session: charged, still exactly one vector, and the
+    # pass is not counted twice.
     assert _post_charge(api, db, session_id).json()["status"] == "charged"
     assert len(_vectors(tables, pid, session_id=session_id)) == 1
+    assert _profile_row(tables, pid)["escalation_count"] == 1
 
     # THE ACCEPTED COST, chosen explicitly: the grandchild is not remembered.
     # Their next checkout in the same pattern is challenged again -- declined
@@ -3038,22 +3379,34 @@ def test_maturity_counts_only_references(api, monkeypatch):
 
 
 def test_per_profile_challenge_budget(api):
-    """T19. However the statistic behaves, no customer is challenged by this
-    layer more than PROFILE_MAX_ESCALATIONS times in PROFILE_BUDGET_WINDOW_DAYS.
-    The fourth deviation in the window is recorded and not acted on."""
+    """T19. No customer is challenged by this layer after PASSING
+    PROFILE_MAX_ESCALATIONS of its challenges in PROFILE_BUDGET_WINDOW_DAYS: the
+    next deviation in the window is recorded and not acted on. The budget
+    counts passes, not challenges issued -- see
+    test_an_unanswered_challenge_never_becomes_an_approval for why."""
     api.configure(escalation=True)
     tables = _ProfileTables()
-    pid = _seed_profile(tables)
-    actions = []
-    for _ in range(profiles.PROFILE_MAX_ESCALATIONS + 1):
-        session_id = str(uuid.uuid4())
-        actions.append(_post_decision(api, _customer_session(api, tables, session_id), session_id).json()["action"])
-    assert actions == ["verify"] * profiles.PROFILE_MAX_ESCALATIONS + ["allow"], actions
-    assert _audit_rows(tables, session_id)[0]["profile_state"] == "budget_exhausted"
-    assert _audit_rows(tables, session_id)[0]["p_value"] <= profiles.PROFILE_ALPHA, "butce durumu kanitini sildi"
+    # Two passes already this window, and none of them in a row (a clean
+    # session in between reset the healing counter), so it is the budget and
+    # not self-healing that stops the challenges.
+    pid = _seed_profile(
+        tables, escalation_count=profiles.PROFILE_MAX_ESCALATIONS - 1, escalation_window_start=datetime.now(timezone.utc)
+    )
+    session_id = str(uuid.uuid4())
+    _challenge_and_pass(api, tables, session_id, _DEVIATING)
+    row = _profile_row(tables, pid)
+    assert row["escalation_count"] == profiles.PROFILE_MAX_ESCALATIONS
+    assert row["stats_rebuilt_at"] is None and row["consecutive_passed_escalations"] == 1
+
+    session_id = str(uuid.uuid4())
+    body = _post_decision(api, _customer_session(api, tables, session_id), session_id).json()
+    assert (body["action"], body["reason"]) == ("allow", "score"), body
+    [audit] = _audit_rows(tables, session_id)
+    assert audit["profile_state"] == "budget_exhausted"
+    assert audit["p_value"] <= profiles.PROFILE_ALPHA, "butce durumu kanitini sildi"
     assert _profile_row(tables, pid)["escalation_count"] == profiles.PROFILE_MAX_ESCALATIONS
 
-    # A window that has run out starts over.
+    # A window that has run out starts over, at the next pass.
     tables = _ProfileTables()
     pid = _seed_profile(
         tables,
@@ -3061,16 +3414,66 @@ def test_per_profile_challenge_budget(api):
         escalation_window_start=datetime.now(timezone.utc) - timedelta(days=profiles.PROFILE_BUDGET_WINDOW_DAYS + 1),
     )
     session_id = str(uuid.uuid4())
-    assert _post_decision(api, _customer_session(api, tables, session_id), session_id).json()["action"] == "verify"
+    _challenge_and_pass(api, tables, session_id, _DEVIATING)
     row = _profile_row(tables, pid)
     assert row["escalation_count"] == 1
     assert datetime.now(timezone.utc) - row["escalation_window_start"] < timedelta(minutes=1)
 
 
+def test_an_unanswered_challenge_never_becomes_an_approval(api):
+    """The account-takeover attacker without the OTP -- the one person this
+    layer exists for -- must not be able to turn challenges he cannot answer
+    into a charge. When the budget was spent by ISSUING a challenge, pressing
+    pay four times did exactly that: verify, verify, verify, then allow on
+    budget_exhausted, for that session and for every new one for 30 days.
+
+    Retrying one session, opening fresh sessions, and the demo charge: every
+    answer stays a challenge, the budget stays untouched, and the breaker
+    counts this customer once however often he retries."""
+    import asyncio
+
+    api.configure(escalation=True)
+    tables = _ProfileTables()
+    pid = _seed_profile(tables)
+    presses = 2 * profiles.PROFILE_MAX_ESCALATIONS + 1
+
+    session_id = str(uuid.uuid4())
+    db = _customer_session(api, tables, session_id)
+    retries = [_post_decision(api, db, session_id).json() for _ in range(presses)]
+    assert [(b["action"], b["reason"]) for b in retries] == [("verify", "step_up")] * presses, retries
+
+    fresh = []
+    for _ in range(profiles.PROFILE_MAX_ESCALATIONS + 1):
+        sid = str(uuid.uuid4())
+        fresh.append(_post_decision(api, _customer_session(api, tables, sid), sid).json()["action"])
+    assert fresh == ["verify"] * (profiles.PROFILE_MAX_ESCALATIONS + 1), fresh
+
+    row = _profile_row(tables, pid)
+    assert row["escalation_count"] == 0 and row["consecutive_passed_escalations"] == 0
+    assert {r["profile_state"] for r in tables.committed["decision_audit"]} == {"evaluated"}
+    assert _vectors(tables, pid, probation=True) == [], "yanitlanmayan sorgulama ogretildi"
+
+    # Every retry wrote an enforced profile_deviation row; the breaker still
+    # sees one customer.
+    enforced = [r for r in tables.committed["decision_audit"] if r["reason"] == "profile_deviation" and not r["shadow"]]
+    assert len(enforced) == presses + profiles.PROFILE_MAX_ESCALATIONS + 1
+    api.main._profile_breaker.update(checked_at=None)
+    assert asyncio.run(api.main._profile_breaker_count(api.db(tables=tables))) == 1
+
+    # The same through the demo charge: never charged without the code.
+    tables = _ProfileTables()
+    _seed_profile(tables, merchant="demo", ref=_DEMO_REF)
+    session_id = str(uuid.uuid4())
+    db = _customer_session(api, tables, session_id)
+    statuses = [_post_charge(api, db, session_id).json()["status"] for _ in range(presses)]
+    assert statuses == ["declined"] * presses, statuses
+
+
 def test_circuit_breaker_suppresses_escalations(api, monkeypatch, caplog):
-    """T20. Above an absolute deployment-wide ceiling of enforced escalations
-    the layer stops acting, says so once per window with no identifiers, and
-    keeps recording. Shadow rows challenged nobody and do not count."""
+    """T20. Above an absolute deployment-wide ceiling of customers given an
+    enforced challenge the layer stops acting, says so once per window with no
+    identifiers, and keeps recording. Shadow rows challenged nobody and do not
+    count, and a customer counts once however many rows its retries wrote."""
     import logging
 
     caplog.set_level(logging.DEBUG)
@@ -3079,19 +3482,30 @@ def test_circuit_breaker_suppresses_escalations(api, monkeypatch, caplog):
     tables = _ProfileTables()
     pid = _seed_profile(tables)
     now = datetime.now(timezone.utc)
+    for index in range(5):
+        tables.seed(
+            "decision_audit", session_id="eski", profile_id=f"golge-{index}", reason="profile_deviation", shadow=True, decided_at=now
+        )
+    tables.seed(
+        "decision_audit", session_id="eski", profile_id="eski-musteri", reason="profile_deviation", shadow=False,
+        decided_at=now - timedelta(hours=2),
+    )
+    # One other customer's session retried five times: one customer, not five.
     for _ in range(5):
-        tables.seed("decision_audit", session_id="eski", reason="profile_deviation", shadow=True, decided_at=now)
-    tables.seed("decision_audit", session_id="eski", reason="profile_deviation", shadow=False, decided_at=now - timedelta(hours=2))
+        tables.seed("decision_audit", session_id="tekrar", profile_id="tekrarlayan", reason="profile_deviation", shadow=False, decided_at=now)
 
     session_id = str(uuid.uuid4())
     assert _post_decision(api, _customer_session(api, tables, session_id), session_id).json()["action"] == "verify", (
         "golge satirlar veya pencere disi satirlar devre kesiciyi acti"
     )
 
-    for _ in range(2):
-        tables.committed["decision_audit"].append(
-            tables.with_defaults("decision_audit", dict(session_id="yeni", reason="profile_deviation", shadow=False, decided_at=now))
+    # A third customer challenged in the window, after the retrying one and
+    # this test's own: past the ceiling of 2.
+    tables.committed["decision_audit"].append(
+        tables.with_defaults(
+            "decision_audit", dict(session_id="yeni", profile_id="yeni-musteri", reason="profile_deviation", shadow=False, decided_at=now)
         )
+    )
     api.main._profile_breaker.update(checked_at=None)
 
     suppressed = []
@@ -3229,6 +3643,19 @@ def test_profile_id_is_never_logged(api, caplog):
         assert not any(leaked in body for body in bodies)
 
 
+def test_info_lines_reach_a_handler():
+    """Section 11.1 asks for profile events at INFO, and nothing configured
+    logging: Python's last-resort handler prints WARNING and above, so every
+    INFO line of the deepcheck loggers was dropped. main attaches one handler
+    at INFO, which the scorer's logger reaches too."""
+    import logging
+
+    _main()
+    deepcheck = logging.getLogger("deepcheck")
+    assert deepcheck.handlers, "deepcheck loglarini yazacak bir isleyici yok"
+    assert logging.getLogger("deepcheck.scorer").isEnabledFor(logging.INFO)
+
+
 def test_a_failed_profile_read_is_answered_without_identifiers(api, caplog):
     """Section 11.1 on the decision path. A database error message carries the
     statement's bound parameters -- here the profile id -- so a failed read is
@@ -3255,6 +3682,54 @@ def test_a_failed_profile_read_is_answered_without_identifiers(api, caplog):
     assert _audit_rows(tables, session_id) == [] and _vectors(tables, pid, session_id=session_id) == []
     for leaked in (pid, pid[:12], _REF):
         assert leaked not in caplog.text and leaked not in response.text
+
+
+def test_a_decision_racing_an_erasure_does_not_keep_the_pseudonym(api):
+    """An erasure that commits while a decision is being made. The decision
+    read the profile at its start, and the erasure's UPDATE decision_audit
+    cannot see a row inserted after it, so the audit row used to be written
+    with the erased profile id and kept it for 90 days -- reproduced on
+    Postgres 16 for an enforced deviation and for a shadow match. Interleaved
+    here in that order: read and decide, erasure commits, then write. The row
+    is still written (the decision happened) but names no profile, and nothing
+    is learned into the erased customer."""
+    import asyncio
+
+    main = api.main
+    for escalation, value, expected in ((True, _DEVIATING, "verify"), (False, _MATCHING, "allow")):
+        api.configure(escalation=escalation)
+        tables = _ProfileTables()
+        pid = _seed_profile(tables)
+        session_id = str(uuid.uuid4())
+        db = _customer_session(api, tables, session_id, value=value)
+
+        async def read_and_decide():
+            ctx = await main._load_profile_context(db, session_id, "acme", _REF)
+            return ctx, await main._decide_on_evidence(db, db.session, session_id, profile_ctx=ctx)
+
+        ctx, verdict = asyncio.run(read_and_decide())
+        assert ctx.profile_id == pid and verdict.action == expected
+
+        erased = api.client(api.db(tables=tables)).post(
+            "/api/profile/erase", json={"customer_ref": _REF, "mode": "erase"}, headers=_ACME
+        )
+        assert erased.status_code == 204
+
+        final = main._apply_step_up(db.session, verdict)
+        asyncio.run(main._learn_and_audit(db, db.session, session_id, final, verdict.reason, ctx, "acme", None))
+        [row] = _audit_rows(tables, session_id)
+        assert row["action"] == expected and row["profile_state"] == "evaluated"
+        assert row["profile_id"] is None, f"{expected}: silinen profilin kimligi karar kaydina yazildi"
+        assert _vectors(tables, pid) == [], f"{expected}: silinen profile vektor ogretildi"
+        assert pid not in repr(tables.committed)
+
+        # Without an erasure the same decision keeps its link.
+        tables = _ProfileTables()
+        pid = _seed_profile(tables)
+        session_id = str(uuid.uuid4())
+        _post_decision(api, _customer_session(api, tables, session_id, value=value), session_id)
+        [row] = _audit_rows(tables, session_id)
+        assert row["profile_id"] == pid
 
 
 # The property the whole layer exists to keep, swept over every combination the
@@ -3299,13 +3774,19 @@ def _seed_profile_state(state, tables, merchant, ref):
         )
     elif state == "breaker":
         _seed_profile(tables, merchant=merchant, ref=ref)
-        for _ in range(profiles.PROFILE_BREAKER_MAX):
-            tables.seed("decision_audit", session_id="baska", reason="profile_deviation", shadow=False, decided_at=now)
+        # PROFILE_BREAKER_MAX other customers: the breaker counts customers.
+        for index in range(profiles.PROFILE_BREAKER_MAX):
+            tables.seed(
+                "decision_audit", session_id="baska", profile_id=f"baska-{index}", reason="profile_deviation", shadow=False,
+                decided_at=now,
+            )
     else:
         _seed_profile(tables, merchant=merchant, ref=ref)
     if state == "thin_session":
         return _DEVIATING, 0b111, "pointer_mouse"
-    if state == "match":
+    if state in ("match", "rate_limited"):
+        # rate_limited: a mature profile the session MATCHES, and the
+        # customer's decision bucket exhausted (set by the sweep itself).
         return _MATCHING, _ALL_MEASURED, "pointer_mouse"
     return _DEVIATING, _ALL_MEASURED, "pointer_mouse"
 
@@ -3322,6 +3803,7 @@ _PROFILE_SWEEP_STATES = (
     "deviating",
     "budget_exhausted",
     "breaker",
+    "rate_limited",
 )
 
 
@@ -3333,8 +3815,9 @@ def test_profile_layer_never_blocks_and_never_changes_the_score(api, monkeypatch
     is returned untouched, reason and message included; the payment outcome
     of the demo charge changes only by being declined; and the ONLY change the
     layer ever makes is allow|warn -> verify (told to the client as step_up),
-    enforced, on a deviating mature profile within budget and breaker, with no
-    fresh step-up. When the session's step-up IS fresh, _apply_step_up turns
+    enforced, on a deviating mature profile within budget and breaker -- or
+    for a customer whose decision bucket is exhausted, matching or not -- with
+    no fresh step-up. When the session's step-up IS fresh, _apply_step_up turns
     that verify into allow/verified at once -- the customer has already proved
     themselves in this session -- so the action stays an approval and only the
     reason says why. Nothing else, in any state, moves anything.
@@ -3408,6 +3891,8 @@ def test_profile_layer_never_blocks_and_never_changes_the_score(api, monkeypatch
                         tables = _ProfileTables()
                         value, mask, pointer = _seed_profile_state(state, tables, merchant, ref)
                         flushes = _session_flushes(value, mask=mask, pointer=pointer)
+                        limit = (0, 3600) if state == "rate_limited" else (10**9, 3600)
+                        monkeypatch.setitem(main.RATE_LIMITS, "profile", limit)
                         got, status = post(endpoint, make_db(outcome, step_up, tables, flushes), ref)
                         where = f"{endpoint}/{outcome}/{state}/step-up={step_up}/escalation={escalation}"
                         checked += 1
@@ -3420,7 +3905,10 @@ def test_profile_layer_never_blocks_and_never_changes_the_score(api, monkeypatch
                         acts = (
                             escalation
                             and evidence_action in ("allow", "warn")
-                            and (state == "deviating" or (step_up == "fresh" and state in ("budget_exhausted", "breaker")))
+                            and (
+                                state in ("deviating", "rate_limited")
+                                or (step_up == "fresh" and state in ("budget_exhausted", "breaker"))
+                            )
                         )
                         if not acts:
                             assert got == base, f"{where}: {got} != {base}"
@@ -3437,9 +3925,10 @@ def test_profile_layer_never_blocks_and_never_changes_the_score(api, monkeypatch
                             if endpoint == "charge":
                                 assert (base_status, status) == ("charged", "declined")
     assert checked == 2 * len(_EVIDENCE_OUTCOMES) * 3 * 2 * len(_PROFILE_SWEEP_STATES)
-    # allow and warn, both endpoints: deviating (3 step-up states) plus budget
-    # and breaker under a fresh step-up -- all only when enforcing.
-    assert changed == 2 * 2 * (3 + 2), changed
+    # allow and warn, both endpoints: deviating and rate-limited (3 step-up
+    # states each) plus budget and breaker under a fresh step-up -- all only
+    # when enforcing.
+    assert changed == 2 * 2 * (3 + 3 + 2), changed
 
 
 # --- the SOC block and the review surface (spec sections 5.5, 5.6) --------------
@@ -3457,6 +3946,7 @@ _PROFILE_BLOCK_KEYS = {
     "top_features",
     "escalated",
     "shadow",
+    "synthetic",
 }
 
 
@@ -3592,14 +4082,19 @@ def test_review_endpoint_needs_its_own_credential(api, monkeypatch, caplog):
         "step_up",
         "evaluated",
     )
-    # The calibration set a reviewer sees is the one the decision ranked
-    # against: each reference scored against the other references plus this
-    # session (full conformal), and re-ranking the audited deviation against it
-    # reproduces the audited p-values.
+    # With the buffer unchanged since the decision, the calibration set a
+    # reviewer sees is the one the decision ranked against: each reference
+    # scored against the other references plus this session (full conformal),
+    # and re-ranking the audited deviation against it reproduces the audited
+    # p-values -- which "recomputed" says in one flag.
     calibration = profiles.calibration_deviations(body["candidate"]["vec"], [r["vec"] for r in body["references"]])
     assert body["leave_one_out_deviations"] == calibration
     high, low = profiles.conformal_rank(decision["deviation"], body["leave_one_out_deviations"])
     assert (round(high, 4), round(low, 4)) == (decision["p_value"], decision["p_value_low"])
+    assert decision["candidate_vec"] == {name: _DEVIATING for name in FEATURE_NAMES}
+    recomputed = body["recomputed"]
+    assert recomputed["matches_decision"] is True and recomputed["candidate_source"] == "decision_audit"
+    assert (recomputed["deviation"], recomputed["p_value"]) == (decision["deviation"], decision["p_value"])
     assert pid not in response.text, "inceleme yaniti takma adi iceriyor"
 
     [access] = tables.committed["profile_access_audit"]
@@ -3611,11 +4106,15 @@ def test_review_endpoint_needs_its_own_credential(api, monkeypatch, caplog):
     )
 
     # After the 24h telemetry retention: the session row and its flushes are
-    # gone, the audit row is not, and a learned session still has its vector.
+    # gone, and this session -- challenged, never passed, so never learned --
+    # has no stored vector. The deviating decision kept what it compared, so
+    # the reviewer still sees it: the case this surface exists for.
     gone = api.db(session=None, tables=tables)
     later = api.client(gone).get(path, headers=_REVIEWER)
-    assert later.status_code == 200 and later.json()["candidate"] == {"source": None, "vec": None}
+    assert later.status_code == 200
+    assert later.json()["candidate"] == {"source": "decision_audit", "vec": {name: _DEVIATING for name in FEATURE_NAMES}}
     assert later.json()["decisions"][0]["reason"] == "profile_deviation"
+    assert later.json()["recomputed"]["matches_decision"] is True
 
     unknown = api.client(gone).get("/api/profile/review/hic-olmamis-oturum", headers=_REVIEWER)
     assert unknown.status_code == 404
@@ -3638,6 +4137,40 @@ def test_review_endpoint_needs_its_own_credential(api, monkeypatch, caplog):
         assert leaked not in caplog.text
 
 
+def test_review_says_when_it_no_longer_reproduces_the_decision(api, monkeypatch):
+    """The review recomputes against the references stored when the reviewer
+    asks, and those move on: here the customer checks out normally twice after
+    the contested decision, and both sessions are learned. The audit row keeps
+    the decision's own numbers; the review shows them beside the recomputation
+    and says the two no longer agree, instead of presenting today's set as the
+    one the decision used. A matching decision stores no vector at all."""
+    main = api.main
+    monkeypatch.setattr(main, "PROFILE_REVIEW_KEYS", {"denetci-1": _REVIEW_KEY})
+    api.configure(escalation=True)
+    tables = _ProfileTables()
+    _seed_profile(tables)
+    contested = str(uuid.uuid4())
+    db = _customer_session(api, tables, contested)
+    assert _post_decision(api, db, contested).json()["action"] == "verify"
+    [audit] = _audit_rows(tables, contested)
+
+    for _ in range(2):
+        sid = str(uuid.uuid4())
+        assert _post_decision(api, _customer_session(api, tables, sid, value=_MATCHING), sid).json()["action"] == "allow"
+        [matching] = _audit_rows(tables, sid)
+        assert matching["candidate_vec"] is None, "sapmayan karar vektor sakladi"
+
+    review = api.client(api.db(session=None, tables=tables)).get(f"/api/profile/review/{contested}", headers=_REVIEWER)
+    assert review.status_code == 200, review.text
+    body = review.json()
+    [decision] = body["decisions"]
+    assert (decision["deviation"], decision["p_value"]) == (audit["deviation"], audit["p_value"])
+    recomputed = body["recomputed"]
+    assert recomputed["candidate_source"] == "decision_audit"
+    assert recomputed["matches_decision"] is False, "degisen referanslar karari yeniden uretiyormus gibi sunuldu"
+    assert recomputed["deviation"] != audit["deviation"]
+
+
 def test_review_keys_are_their_own_secret():
     """Section 5.6 at boot. The review credential list parses like the
     merchant list, and a review key may not double as any other secret -- a
@@ -3655,12 +4188,130 @@ def test_review_keys_are_their_own_secret():
                 assert secret not in result["error"]
 
 
-def _published_evaluation() -> str:
+def _doc(name: str) -> str:
     import os
 
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "profile-evaluation.md")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", name)
     with open(path, encoding="utf-8") as fh:
         return fh.read()
+
+
+def _published_evaluation() -> str:
+    return _doc("profile-evaluation.md")
+
+
+def _published_latency():
+    """Section 11 of docs/profile-evaluation.md, parsed.
+
+    Returns {topology: {path: (p50, p95)}} in the page's row order, where path
+    is one of off / shadow / escalates / learns. Every figure is read off the
+    page, so the numbers below are whatever the last lab run published."""
+    import re
+
+    text = _published_evaluation()
+    section = text[text.index("## 11. Latency") : text.index("## 12. ")]
+    rows = re.findall(
+        r"^\| ([^|]+?) \| " + r" \| ".join([r"([0-9.]+) / ([0-9.]+) ms"] * 4) + r" \|$",
+        section,
+        re.MULTILINE,
+    )
+    assert len(rows) == 4, f"bolum 11 tablosu okunamadi: {rows}"
+    return section, [
+        (
+            row[0].strip(),
+            {
+                "off": (row[1], row[2]),
+                "shadow": (row[3], row[4]),
+                "escalates": (row[5], row[6]),
+                "learns": (row[7], row[8]),
+            },
+        )
+        for row in rows
+    ]
+
+
+def test_report_corrections_latency_matches_the_published_evaluation():
+    """docs/rapor-duzeltmeleri.md exists to replace the pre-evaluation
+    report's unsupported numbers with sourced ones, so a stale number in IT is
+    the worst kind: it is the number the team pastes into the final report.
+
+    Every duration it attributes to `docs/profile-evaluation.md` §11 -- in the
+    latency table, in the summary row of claim 4, in the paste-ready
+    replacement text, and in the honest-claims table -- has to be a figure
+    that page actually carries, in the same role. F3 regenerated that page and
+    this file was left behind: it still quoted p95 8,3 ms for the layer off
+    and 43,2 ms for enforcing, which appear nowhere on the page, while
+    TECHNICAL_GUIDE.md §17 and docs/juri-cevaplari.md already carried 7,4 and
+    34,8 ms -- three jury-facing documents, two answers, one measurement.
+
+    Turkish writes the decimal separator as a comma, so the figures are
+    compared after normalising it."""
+    import itertools
+    import re
+
+    section, published = _published_latency()
+    report = _doc("rapor-duzeltmeleri.md")
+
+    def figures(line):
+        return [f.replace(",", ".") for f in re.findall(r"\d+,\d+", line)]
+
+    container, container_repeat, windows, windows_repeat = published
+    assert container[0].startswith("container") and windows[0].startswith("Windows"), published
+
+    # 1. The latency table, row by row. The compute_risk row is sourced from
+    # backend/scorer.py, not from the page, so it is not checked here.
+    after_heading = report[report.index("**Bugün doğru olan: süre") :].split("\n")
+    table = "\n".join(itertools.takewhile(lambda line: not line.startswith("-"), after_heading))
+    lines = [line for line in table.split("\n") if line.startswith("| `/api/decision`")]
+    expected = {
+        "müşteri profili kapalı": "off",
+        "profil gölge modda": "shadow",
+        "profil uyguluyor ve öğreniyor": "learns",
+        "profil uyguluyor ve ek doğrulama istiyor": "escalates",
+    }
+    assert len(lines) == len(expected), table
+    for line in lines:
+        [path] = [p for label, p in expected.items() if label in line]
+        assert figures(line) == [
+            *container[1][path],
+            *container_repeat[1][path],
+        ], f"{path}: {line}"
+
+    # 2. The Windows row: the layer-off p95 of both runs, then the range over
+    # every profile-on p95, then how many configurations broke the budget.
+    [line] = [line for line in table.split("\n") if "Windows ana makinesinden" in line]
+    on = [
+        windows[1][path][1] for path in ("shadow", "escalates", "learns")
+    ] + [windows_repeat[1][path][1] for path in ("shadow", "escalates", "learns")]
+    assert figures(line) == [
+        windows[1]["off"][1],
+        windows_repeat[1]["off"][1],
+        min(on, key=float),
+        max(on, key=float),
+    ], line
+    over = [p95 for _, paths in published for _, p95 in paths.values() if float(p95) > 50]
+    turkish = {1: "bir", 2: "iki", 3: "üç", 4: "dört", 5: "beş", 6: "altı"}
+    assert f"{turkish[len(over)]} yapılandırma" in line, line
+    # And the page's own prose names the same set, so the two cannot drift.
+    assert section.count("ms)") >= len(over)
+    for p95 in over:
+        assert f"({p95} ms)" in section, p95
+
+    # 3. The three places that quote one pair for the container: the best case
+    # with the layer off, and the worst case with it on.
+    best = container[1]["off"][1]
+    worst = max(
+        (p95 for _, paths in (container, container_repeat) for key, (_, p95) in paths.items() if key != "off"),
+        key=float,
+    )
+    for marker in (
+        "| 4 | AWS Lambda",
+        "> içinde, müşteri profili kapalıyken",
+        "| 10 | Skorlama",
+    ):
+        [line] = [line for line in report.split("\n") if line.startswith(marker)]
+        quoted = [f for f in figures(line) if f != "17.7"]  # compute_risk
+        assert quoted == [best, worst], f"{marker}: {quoted} != {[best, worst]}"
 
 
 def _markdown_tables(text: str):

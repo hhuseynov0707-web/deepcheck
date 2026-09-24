@@ -26,6 +26,9 @@ RUN npm ci --no-audit --no-fund
 
 COPY frontend/ .
 COPY sdk/ /app/sdk/
+# The KVKK notice has one source, docs/kvkk-aydinlatma.md; the /kvkk page
+# imports it at build time from ../docs, as in local development.
+COPY docs/kvkk-aydinlatma.md /app/docs/kvkk-aydinlatma.md
 
 # Vite inlines import.meta.env at BUILD time, so the API URL has to be known
 # here rather than at container start. docker-compose passes it as a build

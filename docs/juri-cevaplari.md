@@ -420,23 +420,47 @@ söylüyor.
 
 ---
 
-# Demo Prosedürü — Müşteri profilinin ek doğrulama istemesi
+# Demo Prosedürü — Sentetik demo müşterileri
 
-## Neden sahnede sıfırdan kurulamaz
+> **Önce bunu söyleyin.** Jüri üyesinin sentetik bir müşteri adına ödemesi
+> katmanın **mekanizmasını** gösterir, gerçek kişilerdeki doğruluğunu değil.
+> Gerçek bir kişi, tanımı gereği hiçbir simülatör kimliğine benzemez; bu yüzden
+> ek doğrulama beklenir ve bu beklenti bir başarı ölçümü değildir. Gerçek
+> müşterilerde yanlış sorgulama ve yakalama oranı ölçülmedi.
 
-Profil katmanı bir müşteriyi yalnızca **kendi** geçmişiyle, aynı giriş türünde
-(fare, klavye, dokunmatik) karşılaştırır ve bunun için en az **19 referans
-oturum** ister. Bu sayı ayarlanmadı, aritmetikten geliyor: n referansla
-ulaşılabilecek en küçük p-değeri 1/(n+1), yani 0.05 düzeyinde 19'un altında
-katman hiç soru soramaz. Bir profile İstanbul günü başına en fazla **3** oturum
-öğretilir (`PROFILE_LEARN_PER_DAY`), böylece bir saldırgan müşterinin
-davranış zarfını bir öğleden sonrada yeniden kuramaz. Sonuç: bir demo
-müşterisi **en erken 7 günde** olgunlaşır. Profil jüriden önce kurulur, jüri
-önünde yalnızca son adım gösterilir.
+## Neden sentetik müşteri
 
-**Tohum verisi yok.** Veritabanına elle vektör yazılmaz; bot laboratuvarı,
-betik veya sentetik oturum kullanılmaz. Profildeki her referans, bir ekip
-üyesinin demo sayfasında gerçekten yaptığı bir ödemedir.
+Profil katmanı bir müşteriyi yalnızca **kendi** geçmişiyle ve aynı giriş
+türünde (fare, klavye, dokunmatik) karşılaştırır. Bunun için en az **19
+referans oturum** gerekir. Bu sayı ayarlanmadı, aritmetikten geliyor: n
+referansla ulaşılabilecek en küçük p-değeri 1/(n+1)'dir, yani 0.05 düzeyinde
+19'un altında katman hiç soru soramaz. Bir profile günde en fazla **3** oturum
+öğretilir, dolayısıyla gerçek bir müşteri en erken 7 günde olgunlaşır. Ekibin
+bir müşteri tabanı yok.
+
+Bu yüzden prototip üç **sentetik demo müşterisiyle** çalışır: Ayşe, Mehmet ve
+Zeynep. Her biri simülatörün bir kimliğidir (`train_model.simulate_identity_sessions`).
+Her birine **20 fare + 20 klavye** oturumluk bir geçmiş yüklenir. Geçmiş,
+canlı bir oturumun geçtiği yoldan geçer: her akış `/api/analyze` gövdesi gibi
+doğrulanır, `compute_risk` ile ölçülür ve öğrenme yolu (`_learn_session`) ile
+kaydedilir. Müşteriler ayrılmış `demo` satıcı ad alanında durur ve hiçbir
+gerçek satıcının müşterisiyle eşleşemez.
+
+## Sentetik veri nerede ve nasıl işaretlenir
+
+| Yer | İşaret |
+|---|---|
+| Veritabanı | `customer_profiles.is_synthetic`, `customer_profile_vectors.is_synthetic`; sentetik bir profille verilen her karar için `decision_audit.is_synthetic`; `--simulate` oturumları için `sessions.is_synthetic` |
+| Müşteri referansı | `sentetik-ayse`, `sentetik-mehmet`, `sentetik-zeynep` |
+| Referans oturum kimlikleri | `sentetik-ayse-mouse-01` … (böyle bir oturum hiç yaşanmadı) |
+| Demo sayfası | Seçicide "Ayşe — sentetik geçmiş (fare 20, klavye 20)" ve altında "Ayşe, Mehmet ve Zeynep sentetik demo müşterileridir…" satırı |
+| SOC panosu | "Sentetik demo verisi" rozeti: simüle edilmiş oturumlarda ve sentetik profille verilen kararlarda. Metrik kartları simüle edilmiş oturumları saymaz ve kaç tanesinin dışarıda kaldığını yazar |
+| Ölçümler | Hiçbirine girmez. `profile_lab.py` sunulan veritabanını açmaz. `record_session.py` simüle edilmiş bir oturumu değerlendirme kümesine yazmaz. `backend/test_demo.py` ikisini de denetler |
+
+Sentetik bir müşteriye **hiçbir oturum öğretilmez**: karşılaştırma için
+kullanılır ama gerçek kişinin oturumu onun geçmişine eklenmez. Aksi hâlde
+"sentetik" denen bir profilin içinde gerçek bir kişinin davranış verisi
+dururdu.
 
 ## Hazırlık — yalnızca demo makinesinin `.env` dosyası
 
@@ -444,154 +468,160 @@ betik veya sentetik oturum kullanılmaz. Profildeki her referans, bir ekip
 
 ```
 DEEPCHECK_PROFILE_KEY=<python -c "import secrets; print(secrets.token_urlsafe(32))">
-DEEPCHECK_MERCHANT_KEYS=yerel-satici:<ikinci, farklı bir token>
+DEEPCHECK_MERCHANT_KEYS=ornek-satici:<ikinci, farklı bir token>
 PROFILE_LAYER=1
-PROFILE_ESCALATION=0
+PROFILE_ESCALATION=1
+DEMO_ENDPOINTS=1
 ```
 
-- Satıcı anahtarı demo ödemesinde kullanılmaz (demo sayfası ayrılmış `demo`
-  ad alanına yazar), ama katman en az bir satıcı tanımlı olmadan açılmaz.
-- Kurulum **gölge modunda** yapılır (`PROFILE_ESCALATION=0`): katman hesaplar,
-  kaydeder ve öğrenir ama kimseden kod istemez. Profil olgunlaştıktan sonra ekip
-  üyesinin kendi ödemelerinden biri sapma sayılırsa sorgulama bütçesi harcanmaz
-  ve o oturum profile öğretilmez.
-- Kurulum boyunca değişmemesi gerekenler: `DEEPCHECK_PROFILE_KEY` ve
-  `DEEPCHECK_PROFILE_KEY_VERSION` (anahtar değişirse her profil sessizce
-  sıfırlanır), veritabanı hacmi (**`docker-compose down -v` çalıştırılmaz**,
-  profilleri siler) ve `FEATURE_SCHEMA_VERSION` (artıran bir kod güncellemesi
-  mevcut profili karşılaştırma dışı bırakır).
+- Satıcı anahtarı demo ödemesinde kullanılmaz, ama katman en az bir satıcı
+  tanımlı olmadan açılmaz. `demo` kimliği ayrılmıştır, bir satıcıya verilemez.
+- `PROFILE_ESCALATION=1` **yalnızca bu demo içindir**. Zorunlu mod, gerçek
+  bir kişi farklı oturum ve cihazlarda ölçülmeden üründe açılmamalıdır.
+  `0` bırakılırsa pencere açılmaz, ama pano sapmayı yine gösterir.
 
-## 1. Adım — Kurulum (jüriden en az 7 gün önce başlar)
+## Kurulum — tek komut
 
-Ekip üyesi A, **her gün 3 ödeme** yapar. Her seferinde:
+```bash
+docker compose up -d --build
+docker compose exec backend python demo_seed.py
+```
 
-1. `http://localhost:3000/demo` sayfasını yeniden yükler. Her yükleme yeni bir
-   oturumdur ve bir oturum profile yalnızca bir kez öğretilir.
-2. "Müşteri Referansı (demo)" alanında `demo-musteri-1` yazdığını kontrol eder.
-3. Aynı dizüstü bilgisayarda, alanlara **fare veya touchpad ile tıklayarak**
-   formu gerçekten doldurur. Hiç işaretçi olayı olmayan oturum "Klavye",
-   telefon "Dokunmatik" sayılır ve ayrı bir referans kümesi biriktirir, ama
-   günlük 3 hakkı yine tüketir.
-4. Onayla'ya basar.
+Çıktının her satırı "SENTETİK demo müşterisi" der ve iki giriş türü için
+`20/20` gösterir. Komut tekrar çalıştırılabilir: sağlam bir müşteriye
+dokunmaz. Durumu görmek için `--status`, baştan kurmak için `--reset`
+kullanılır. `--reset` ayrıca sorgulama bütçelerini sıfırlar. Yükleme bu
+dizüstü bilgisayarda yaklaşık 20 saniye sürdü.
 
-Profile yalnızca **onaylanan** (`allow`) ödeme öğretilir: doğrudan onay ya da
-doğrulama kodu girilerek alınan onay. "Şüpheli" bandında uyarıyla geçen
-(`warn`), reddedilen ya da en az 3 ölçülmüş davranış penceresi toplanamamış
-(`PROFILE_MIN_FLUSHES`) ödeme öğretilmez. Böyle bir ödeme o gün yeni bir
-oturumla tekrarlanabilir.
+## Jüri önünde
 
-**İlerleme SOC panosunda izlenir.** Oturum seçildiğinde "Müşteri Profili"
-kartında `Fare: n / 19` görünür. Bu, ödeme kararı **verildiği andaki**
-referans sayısıdır. Bu yüzden bir ödemenin katkısı ancak bir sonraki ödemenin
-kartında görünür. Onayla'ya basılmadan önce kart "Profil yok" der; bu beklenen
-davranıştır. Kurulum boyunca kartta "Gölge modu — karar etkilenmedi" rozeti
-durur.
-
-Hedef 19 değil **20** referanstır. Kalibrasyon kümesi, bu oturumla
-karşılaştırılamayacak kadar az özellik ölçmüş referansları dışarıda bırakır.
-Küme 19'un altına düşerse katman yine susar; kart bu durumda "Karşılaştırılabilir
-referans yetersiz" yazar. 7 gün × 3 = 21 ödeme bunu karşılar, tampon en fazla
-20 oturum tutar.
-
-## 2. Adım — Jüri oturumundan hemen önce
-
-`.env` içinde `PROFILE_ESCALATION=1` yapılır ve `docker-compose up -d`
-çalıştırılır. Değişen konteyner yeniden oluşturulur, veritabanı hacmi korunur.
-Bu ayar **yalnızca bu demo içindir**: zorunlu mod, gerçek bir kişi farklı
-oturum ve cihazlarda ölçülmeden üründe açılmamalıdır (bkz.
-[`docs/profile-evaluation.md`](profile-evaluation.md) §12). Zorunlu mod
-açılmak istenmezse 3. adım gölge modunda da yapılabilir. O zaman pencere
-açılmaz, ama pano sapmayı yine gösterir.
-
-## 3. Adım — Jüri önünde
-
-1. SOC panosu açık tutulur.
-2. **Başka bir kişi (B)**, aynı bilgisayarda ve aynı fareyle, **yeni
-   yüklenmiş** demo sayfasında `demo-musteri-1` referansıyla formu doldurur ve
-   Onayla'ya basar. Sayfa bu oturumda daha önce doğrulama kodu almış
-   olmamalıdır. Taze bir doğrulama, sonraki profil sorgusunu da karşılar. Bu
-   bilinçli bir tercih: aksi, doğru kodu giren müşteriye tekrar tekrar kod
-   soran döngüyü geri getirirdi.
-3. Katman B'nin oturumunu, A'nın kalibrasyon kümesindeki oturumların
-   **hepsinden** daha uç bulursa ödeme sayfasında doğrulama kodu penceresi
-   açılır. Sayfa nedenini söylemez. İstemciye giden gerekçe, küme ve konformal
-   kontrollerle aynı genel `step_up`'tır. Risk skoru ve etiket değişmez.
-4. **Kod girilmeden önce** panoda B'nin oturumu seçilir: "Değerlendirildi",
-   "Ek doğrulama istendi", p-değeri (20 referansla en küçüğü 1/21 ≈ 0.0476) ve
-   en çok sapan özellikler görünür. İstemcinin görmediği gerekçe yalnızca SOC
-   tarafındadır. Kartta "Ek doğrulama istendi" yoksa pencere profil yüzünden
+1. SOC panosu (`/dashboard`) ayrı bir sekmede açık tutulur.
+2. Demo sayfası **yeniden yüklenir**; her yükleme yeni bir oturumdur.
+   "Demo Müşterisi" seçicisinden bir sentetik müşteri seçilir (ör. Ayşe).
+   Altındaki referans alanında `sentetik-ayse` görünür.
+3. Jüri üyesi kart bilgilerini **fareyle** alanlara tıklayarak doldurur ve
+   hemen Onayla'ya basar. Klavyeyle ya da telefonla ödeme için aşağıdaki
+   sınırlara bakın.
+4. Beklenen sonuç doğrulama kodu penceresidir. Sayfa nedenini söylemez:
+   istemciye giden gerekçe, diğer kontrollerle aynı genel `step_up`'tır.
+   Risk skoru ve etiket değişmez.
+5. **Kod girilmeden önce** panoda bu oturum seçilir. "Müşteri Profili"
+   kartında şunlar görünür: "Sentetik demo verisi", "Değerlendirildi",
+   "Ek doğrulama istendi", "Fare: 20 / 19 — Olgun", p-değeri **0.0476** ve en
+   çok sapan üç özellik. 0.0476, 20 referansla ulaşılabilecek en küçük
+   p-değeridir (1/21). Yani bu oturum, geçmişteki 20 oturumun **hepsinden**
+   daha uçtur. Kartta "Ek doğrulama istendi" yoksa pencere profil yüzünden
    değil, skor gibi başka bir kontrol yüzünden açılmıştır.
-5. B kodu girer ve ödeme alınır. Bu, "torun büyükannesi adına ödüyor"
-   senaryosudur: katman yalnızca ek doğrulama ister, engellemez. O gün 3
-   öğrenme hakkı dolmamışsa B'nin oturumu profile **deneme (probation)**
-   olarak kaydedilir. Son karar artık `verified` olduğu için kartta "Ek
-   doğrulama istendi" rozeti kalkar.
-6. **Bilinçli olarak kabul edilen bedel.** Deneme olarak kaydedilen oturum
-   referans **değildir**: sapma hesabına ve olgunluk sayısına katılmaz.
-   Bu yüzden B aynı şekilde bir kez daha öderse yine doğrulama kodu istenir.
-   Bu bir engelleme değil, fazladan bir doğrulamadır. Oturum ancak satıcı
-   ödemeyi onayladığında (`POST /api/outcome`, `settled`) ya da üst üste 3
-   başarılı doğrulama profili yenilediğinde referans olur. Demo ad alanında
-   satıcı anahtarı olmadığı için demoda yalnızca ikinci yol vardır. Panoda
-   kart bu oturumu "Onay bekleyen oturum: 1" olarak referanslardan ayrı
-   gösterir. Nedeni ölçüldü: deneme oturumları referans sayıldığında, kodu
-   bir kez ele geçirip geçen saldırganın sonraki oturumlarını da koruyordu.
-   Sentetik kimliklerde tek bir saldırgan oturumu, saldırganın sonraki
-   oturumlarında ek doğrulama oranını %48.5'ten %25.0'a düşürdü (2026-09-16
-   ölçümü, [`docs/profile-evaluation.md`](profile-evaluation.md) başındaki
-   önce/sonra tablosu). Bugünkü kuralla, onay bekleyen oturum olarak saklanan
-   0, 1, 2, 4 ya da 6 saldırgan oturumunda oran her seferinde %47.5 kaldı
-   (§7). Bu kuralın bedeli de ölçüldü: sorgulanıp doğrulamayı geçen farklı bir
-   kişi aynı şekilde geri geldiğinde, sonraki oturumu farede %71.7, klavyede
-   %62.4 oranında yeniden sorgulandı (§7). Her biri bir engelleme değil, bir
-   doğrulamadır ve bir profil 30 günde en fazla 3 kez sorar.
+6. Jüri üyesi kodu girer ve ödeme alınır. Katman yalnızca ek doğrulama
+   ister: engellemez, onaylamaz, skoru değiştirmez. Bu, "torun büyükannesi
+   adına ödüyor" durumudur: sapma bir hüküm değil, kanıt istemek için bir
+   nedendir.
+7. **Karşıt örnek:**
+   `docker compose exec backend python demo_seed.py --simulate ayse`.
+   Aynı sentetik kimlikten **yeni** bir oturum, gerçek HTTP yolundan geçer:
+   oturum açma, iş kanıtı, 10 `/api/analyze` akışı ve ödeme. Çıktı
+   "SİMÜLE EDİLMİŞ OTURUM — gerçek bir kişi değil" başlığını taşır. Beklenen
+   sonuç "ek doğrulama istenmedi" ve büyük bir p-değeridir. Panoda bu oturum
+   "Sentetik demo verisi" rozetiyle görünür ve metrik kartlarına katılmaz.
+   Aynı kimlik bile ara sıra sorgulanır: sentetik kimliklerde bu oran %4.9'dur
+   ve çıktı böyle bir durumda bunu yazar.
+
+## 2026-09-19 doğrulaması
+
+Yalıtılmış bir Docker yığınında yapıldı: `DEBUG=0`, zorunlu mod ve sunulan
+model. "Jüri üyesi" satırları gerçek demo sayfasında, laboratuvarın insan
+hareket modeliyle (`lab/bot_lab.py`) sürülen bir Playwright oturumudur. Bu bir
+kişi değil, bir betiktir.
+
+| Oturum | Oturum skoru | Karar | Profil katmanı |
+|---|---|---|---|
+| Jüri üyesi betiği, Ayşe | 29.5 (Gerçek Kullanıcı) | ek doğrulama; kodla ödeme alındı | değerlendirildi, fare, 20 referans, p 0.0476 |
+| Jüri üyesi betiği, Mehmet | 23.0 (Gerçek Kullanıcı) | ek doğrulama | değerlendirildi, fare, 20 referans, p 0.0476 |
+| `--simulate ayse` (fare) | 0.0 | ödeme alındı | değerlendirildi, p 0.6667 |
+| `--simulate mehmet` (fare, 2 kez) | 0.0, 0.0 | ödeme alındı | değerlendirildi, p 0.7143 / 0.8095 |
+| `--simulate zeynep --modality keyboard` (2 kez) | 0.7 (ilk çalıştırma) | ödeme alındı | **karşılaştırma yapılmadı** (olgunlaşmadı) |
+
+Aynı konteynerde, her müşterinin kendi kimliğinden giriş türü başına 30 yeni
+oturum daha ölçüldü. Bunlar HTTP yolundan değil, kararın kullandığı aynı
+istatistikle (`profiles.evaluate_profile`) yüklenen geçmişe karşı
+değerlendirildi:
+
+- **Fare:** 90 oturumun 88'i karşılaştırıldı ve geçti, 2'si sorgulandı.
+- **Klavye:** karşılaştırılan oturum sayısı Ayşe'de 30/30, Mehmet'te 20/30,
+  Zeynep'te 0/30 oldu. Klavye oturumu 12 özelliğin yalnızca 6–7'sini ölçer.
+  Karşılaştırılabilir referans ya da özellik yetmediğinde katman tahmin
+  yürütmez, susar.
+
+> **Sentetik kimlikler ve bir tarayıcı betiği üzerinde ölçüldü; gerçek
+> müşteri verisi yoktur.** Bu tablo bir doğruluk ölçümü değil, mekanizmanın
+> uçtan uca çalıştığının kaydıdır. İki jüri üyesi betiğinin ikisinin de
+> sorgulanması, gerçek tarayıcı telemetrisinin simülatörden ayrışmasının
+> sonucudur (bkz. `lab/README.md`), bir yakalama oranı değildir.
+
+## Sınırlar ve prova kuralları
+
+- **Giriş türü.** Fareyle ödeyin. Klavyeyle ödeme gösterilecekse Ayşe
+  seçilir. Zeynep'in klavye geçmişiyle karşılaştırma yapılamıyor ve bu,
+  katmanın kanıt yetersizken susmasını göstermek için kullanılabilir.
+  Telefonda (dokunmatik) sentetik geçmiş yoktur, katman karşılaştırma
+  yapmaz.
+- **Sorgulama bütçesi yalnızca geçilen sorgulamaları sayar.** Bir müşteri 30
+  gün içinde **3** ek doğrulamayı doğru kodla geçtiyse, profil o pencerede bir
+  daha sormaz ve kart "Sorgulama bütçesi doldu" der. Kod girilmeden kapatılan
+  pencere hak harcamaz. Önceden her sorgulama, yanıtlanmasa bile, bir hak
+  harcıyordu. Bu yüzden kodu bilmeyen bir saldırgan Onayla'ya dört kez basınca
+  dördüncüde ödeme geçiyordu; bu açık kapatıldı. Sentetik müşteriler öğrenmediği
+  için geçilen sorgulama onlara kaydedilmez ve gösterim sayısı bütçeyle sınırlı
+  değildir. `demo_seed.py --reset` jüriden önce yine de çalıştırılabilir.
+- **Karar sınırı.** Bir müşteri adına bir saatte işçi başına 60 ödeme kararından
+  sonra (varsayılan 2 işçiyle 120) o saat içinde profil okunmaz ve o müşterinin
+  her ödemesi, zorunlu modda, ek doğrulamaya gider. Kart bunu "Bu müşteri için karar
+  sınırı aşıldı — profil okunmadı" diye gösterir. Sınır bir müşterinin davranış
+  zarfının deneme yanılmayla taranmasını önler. Diğer müşterileri etkilemez ve
+  ödemeyi hiçbir zaman hata ile reddetmez. Bir provada aynı sentetik müşteriyle
+  bu kadar ödeme yapılmaz; kalabalık bir stantta `demo-musteri-1` için olabilir.
+- **Demo verisi 24 saat tutulur.** Demo ad alanında ziyaretçiden kalan her şey
+  (öğrenilen vektör, demo profili, karar kaydı) oturumla birlikte 24 saatte
+  silinir. Sayfadaki "KVKK Aydınlatma Metni" bağlantısı `docs/kvkk-aydinlatma.md`
+  taslağını uygulamanın içinde (`/kvkk`) açar; internet bağlantısı gerekmez.
+- **Karar anı.** Form doldurulunca beklemeden ödenir. Ödemeden sonra sayfa
+  açık kaldıkça oturum skoru değişebilir: doğrulamada bir oturumun skoru
+  ödemeden sonra 29.5'ten 78.8'e çıktı. Ödeme kararı ise verildiği andaki
+  kayıtla SOC'ta durur.
+- **Sentetik müşteri öğrenmez.** Bu yüzden deneme (probation) kaydı ve üst
+  üste 3 başarılı doğrulamayla kendi kendini onarma sentetik müşterilerle
+  gösterilmez. Bu kurallar gerçek profiller için geçerlidir ve
+  [`docs/profile-evaluation.md`](profile-evaluation.md) §7'de sentetik
+  kimliklerle ölçülmüştür.
+- **Anahtar ve veritabanı.** `DEEPCHECK_PROFILE_KEY` değişirse ya da
+  `docker compose down -v` çalıştırılırsa sentetik müşteriler kaybolur.
+  `demo_seed.py` yeniden çalıştırılır.
 
 ## Beklenti — dürüst hali
 
-**Ek doğrulama garanti değildir.** Farklı bir kişi A'nın kendi oturumlarından
-daha uç görünmüyorsa ödeme doğrudan geçer ve panoda p-değeri 0.05'in üstünde
-görünür. Bu bir arıza değil, kalibre edilmiş davranıştır; jüriye de böyle
-anlatılır. Ne sıklıkla olacağına dair elimizdeki tek sayılar sentetiktir
+Ne sıklıkla sorgulandığına dair elimizdeki tek sayılar sentetiktir
 ([`docs/profile-evaluation.md`](profile-evaluation.md) §5 ve §9, fare, 20
-referans):
+referans, tam konformal sıralama):
 
 | | Oran |
 |---|---|
-| Farklı kişi ek doğrulamaya düştü | %47.5 (%95 GA %44.0–50.8) |
-| Aynı kişi yanlışlıkla sorgulandı (**alt sınır**) | %4.9 (%95 GA %4.0–5.9) |
-| Farklı kişi, kişi-içi değişkenlik varsayımı 0.6 yerine 0.3 / 1.0 olsaydı | %68.0 / %27.3 |
-
-Üç satırın üçü de şu an kullanılan kodun, yani **tam konformal** sıralamanın
-2026-09-18 ölçümüdür (§5 ve §9). Onun yerine geçtiği birini-dışarıda-bırakan
-sıralama, aynı oturumlarda aynı kişiyi %6.0 oranında sorguluyordu: aday ile
-referanslar aynı fonksiyonla puanlanmadığı için 0.05 düzeyi bir oran olarak
-tutmuyordu (sayfanın başındaki önce/sonra tablosu).
+| Farklı sentetik kişi ek doğrulamaya düştü | %47.5 (%95 GA %44.0–50.8) |
+| Aynı sentetik kişi yanlışlıkla sorgulandı (**alt sınır**) | %4.9 (%95 GA %4.0–5.9) |
 
 > **Sentetik kimlikler üzerinde ölçüldü; gerçek müşteri verisi yoktur.** Tek
-> bir gerçek kişinin çok sayıda oturumu henüz ölçülmedi ve bu demo da bir
-> ölçüm değildir: demo müşterisi `is_demo` olarak işaretlenir ve raporlanan
-> hiçbir ölçüme katılmaz.
-
-## Prova kuralları — jüri gününün hakkını harcamamak için
-
-- **Sorgulama bütçesi.** Bir profil 30 günde en fazla **3** kez ek doğrulama
-  ister (`PROFILE_MAX_ESCALATIONS`). Sonrasında katman susar ve kart
-  "Sorgulama bütçesi doldu" der. Her prova bir hak harcar. Aynı müşteride en
-  fazla bir prova yapılır. Daha fazlası gerekiyorsa A, aynı 7 gün içinde ikinci
-  bir demo müşterisini (ör. `demo-musteri-prova`) paralel kurar; günlük sınır
-  müşteri başınadır.
-- **Kendi kendini onarma.** Üst üste **3** kez sorgulanıp doğru kodu girilen
-  profil yanlış kabul edilir: bu 3 deneme oturumu referansa terfi eder ve
-  profil en yeni 10 oturuma indirilir (`PROFILE_HEAL_AFTER`,
-  `PROFILE_HEAL_KEEP`). Profil yeniden olgunlaşana kadar, yani en az 3 gün,
-  katman susar. Tek bir başarılı doğrulama hiçbir oturumu terfi ettirmez.
-  Provada B kodu **girmez**, pencereyi kapatır.
+> bir gerçek kişinin çok sayıda oturumu henüz ölçülmedi. Bu demo da bir ölçüm
+> değildir: sentetik müşteriler ve onlarla verilen kararlar `is_synthetic`
+> olarak işaretlenir ve raporlanan hiçbir ölçüme katılmaz.
 
 ## Bu demo neyi gösterir, neyi göstermez
 
-**Gösterir:** Katmanın tek çıktısı ek doğrulamadır; skor, etiket ve engelleme
-değişmez. Gerekçe istemciye söylenmez, yalnızca SOC panosunda ve denetim
-kaydında durur. Doğru kodu giren kişi ödemeyi tamamlar.
+**Gösterir:**
+
+- Katmanın tek çıktısı ek doğrulamadır; skor, etiket ve engelleme değişmez.
+- Gerekçe istemciye söylenmez, yalnızca SOC panosunda ve denetim kaydında
+  durur.
+- Doğru kodu giren kişi ödemeyi tamamlar.
+- Profili oluşturan kimliğin yeni bir oturumu sorgulanmadan geçer.
 
 **Göstermez:**
 
@@ -603,4 +633,251 @@ kaydında durur. Doğru kodu giren kişi ödemeyi tamamlar.
 
 ---
 
+# Beşinci Soru — Veri toplama, verimlilik, entegrasyon ve eşzamanlılık
+
+## Soru
+
+> Müşteri verisi nasıl toplanıyor da sistem müşteriyi tanıyor? Bu kadar veri
+> sunucuyu yormuyor mu, maliyeti artırmıyor mu? Bu SDK her tür e-cüzdana
+> entegre edilebilir mi? Aynı anda çok sayıda istek gelirse sunucu çöker mi?
+
+Dördü de aşağıda ayrı ayrı cevaplanıyor. Sayıların hepsi ölçümden geliyor;
+ölçülmemiş olan her yerde "ölçülmedi" yazıyor.
+
+> **Bu bölümdeki hiçbir sayı gerçek müşteri verisinden gelmiyor.** Profil
+> katmanının oranları sentetik kimliklerle, tarayıcı ölçümleri betikle
+> yürütülen Playwright trafiğiyle ölçüldü.
+
+## 1. Müşteri verisi nasıl toplanıyor, sistem müşteriyi nasıl tanıyor?
+
+**Toplanan şey davranış, kimlik değil.** SDK sayfada çalışırken 2 saniyede bir,
+son 10 saniyelik pencereyi gönderir (`sdk/deepcheck.js`): işaretçi hareketi,
+tıklama zamanlaması, kaydırma, tuş **basma anları** (hangi tuş olduğu asla),
+odak kayıpları. Tuş içeriği, alan içeriği, DOM ve pano okunmaz. IP adresi
+veritabanına yazılmaz; uvicorn ve nginx erişim kayıtları kapalıdır
+(`backend/entrypoint.sh`, `frontend/nginx.conf`).
+
+**Akıştan 12 öznitelik çıkarılır** (`backend/lstm_model.py` `FEATURE_NAMES`) ve
+Random Forest her akışı skorlar. Buraya kadarı müşteriyi tanımaz; yalnızca
+"bu davranış insana mı benziyor" sorusunu cevaplar.
+
+**Müşteriyi tanıyan kısım ayrı bir katmandır ve takma adla çalışır.** Satıcı
+ödeme kararını sorarken kendi müşteri referansını gönderir. DeepCheck bu
+referansı saklamaz: ondan `HMAC-SHA256(satıcı, referans)` ile bir `profile_id`
+türetir (`backend/profiles.py`, `derive_profile_id`). Ham referans hiçbir
+tabloda, hiçbir yanıtta ve hiçbir kayıt satırında bulunmaz.
+
+**Geçmiş nasıl birikiyor.** Yalnızca **kanıtın tek başına onayladığı** bir
+oturum öğrenilir (`allow`, gerekçe `score`). Oturumun 12 özniteliğinin medyanı
+bir vektör olarak saklanır. Girdi türü başına (fare / klavye / dokunmatik) en
+fazla **20 referans** ve ayrıca **4 deneme (probation)** vektörü tutulur; günde
+en fazla 3 oturum öğrenilir.
+
+**Ne zaman karşılaştırmaya başlar.** `PROFILE_ALPHA = 0.05` seçildiği için
+olgunluk eşiği hesapla çıkar: 1/(n+1) ≤ 0,05 ⇒ **n ≥ 19 referans**
+(`backend/profiles.py`). Bunun altında katman hiçbir şey söylemez.
+
+**Sapma ne yapar — ve ne yapmaz.** Bu, ürünün en önemli kuralıdır: sapma
+**asla** bir dolandırıcılık hükmü değildir. Katmanın yapabildiği tek şey,
+`allow` veya `warn` olan bir kararı `verify`ye çevirmektir. Skoru, etiketi ve
+engelleme kararını değiştiremez; hiçbir koşulda `block` üretemez. Torununa
+ödeme yaptıran yaşlı müşteri engellenmez, **ek doğrulama istenir**; doğru kodu
+girince ödeme tamamlanır ve o oturum deneme vektörü olarak saklanır.
+
+**Hukuki taraf.** Profil, KVKK anlamında **özel nitelikli (biyometrik)** veridir
+ve yalnızca açık rızayla, satıcı tarafından açılır
+(`POST /api/profile/consent`). Silme ve itiraz için `POST /api/profile/erase`
+vardır; silme, takma adı denetim tablolarından da düşürür. Saklama süresi 180
+gün hareketsizliktir. Demo sayfasında bırakılan her şey **24 saatte** silinir.
+Ayrıntı: [`docs/kvkk-aydinlatma.md`](kvkk-aydinlatma.md),
+[`docs/dpia.md`](dpia.md).
+
+**Jüriye tek cümle:** sistem müşteriyi bir kimlikten değil, satıcının verdiği
+takma addan tanır; öğrendiği şey o takma ada bağlı **en fazla 24 küçük sayı
+vektörüdür**; ve bu geçmişin yapabildiği tek şey ek doğrulama istemektir.
+Toplamanın teknik ayrıntısı [`TECHNICAL_GUIDE.md`](../TECHNICAL_GUIDE.md) §18,
+satıcı tarafındaki akış [`entegrasyon.md`](entegrasyon.md) §5'tedir.
+
+## 2. Bu kadar veri sunucuyu yormuyor mu? Maliyet?
+
+Hayır — ve nedenini aritmetikle gösterebiliyoruz.
+[`TECHNICAL_GUIDE.md`](../TECHNICAL_GUIDE.md) §17 bu hesabın tamamıdır.
+
+**Saklanan veri küçüktür.** Saklanan şey ham telemetri değil, 12 sayıdır. Ham
+bloklar **1 saat** sonra boşaltılır, satırlar **24 saatte** silinir. Uzun süre
+saklanan tek şey küçük ve sınırlıdır: karar başına bir denetim satırı (90 gün)
+ve müşteri başına, girdi türü başına en fazla 24 vektör.
+
+**Yük, işlem sayısıyla değil, eşzamanlı ziyaretçi sayısıyla artar.** SDK sayfa
+açık olduğu sürece 2 saniyede bir gönderir, yani bir aktif oturum saniyede
+**0,5 istek** demektir; 60 saniyelik bir ödeme ≈ **30 akış + 1 karar**.
+
+**İstek başına maliyet** (ölçüm satırları: `docs/profile-evaluation.md` §11,
+konteyner, Linux, n=300; ve `backend/scorer.py`):
+
+| yol | değer | türü |
+|---|---|---|
+| bir akışın skorlanması (`compute_risk`) | 17,7 ms | **ölçüm** |
+| `/api/decision`, profil katmanı kapalı | p50 5,0 / p95 7,4 ms | **ölçüm** |
+| `/api/decision`, profil katmanı açık (gölge) | p50 24,0 / p95 34,8 ms | **ölçüm** |
+| `/api/decision`, profil ek doğrulama istiyor | p50 16,0 / p95 21,8 ms | **ölçüm** |
+| `/api/analyze` uçtan uca | ~23 ms | **hesap** (17,7 skorlama + 5,0 istek yolu) |
+
+`/api/analyze` tek başına hiç ölçülmedi; bu kurgu, aşağıdaki hesabın en büyük
+hata kaynağıdır ve öyle söylenmelidir.
+
+**Çekirdek başına kaç kullanıcı — aritmetik:**
+
+```
+  1000 ms / 23 ms          = 43 analiz/sn/vCPU
+  43 / 0,5 (oturum başına)  = ~87 eşzamanlı aktif ödeme oturumu/vCPU
+```
+
+Yöntemin tek gerçek eşzamanlılık ölçümüne uzaklığı **%2,4**: `AUDIT.md` C-3
+(eski üç modelli topluluk, istek başına ~74 ms, tek işçi) 20 eşzamanlı çağrıda
+13,2 istek/sn ölçtü; aynı hesap 1000/74 = 13,5 verir. Bu, eski kodda tek bir
+noktadır — bugünkü sayının doğrulaması değil, yöntemin neden alıntılandığının
+gerekçesidir.
+
+**Ödeme başına maliyet — aritmetik.** 30 × 23 ms + 1 × 24 ms = **0,71
+CPU-saniye** ⇒ bir vCPU-saat ≈ **5.000 ödeme** (3600 / 0,71). Bir bulut
+fiyatı yazmıyoruz, çünkü satın almadık: ödeme başına çıkarım maliyeti, sizin
+vCPU-saat fiyatınızın **1/5000**'idir. Profil katmanı bu 0,71'in içindedir,
+üstüne değil: otuz bir istekten birine 19 ms ekler, yani **+%2,7**.
+
+**Depolama.** Satır boyutları Postgres 16'da ölçüldü (`pg_total_relation_size`,
+indeksler dâhil); bölme ve çarpma işlemleri aritmetiktir:
+
+| ne | boyut | türü |
+|---|---|---|
+| bir akış satırı, ham telemetriyle | 6,1 kB | ölçüm |
+| aynı satır, 1 saatlik boşaltmadan sonra | 644 B | ölçüm |
+| bir profil vektörü | 1.363 B | ölçüm |
+| bir ödeme, ilk saat (30 akış) | 183 kB | hesap |
+| aynı ödeme, 1.–24. saat | 19 kB | hesap |
+| bir müşteri profili, üst sınır (20 + 4 vektör, tek girdi türü) | 32,7 kB | hesap |
+| **1.000.000 müşteri, tek girdi türü** | **32,7 GB** | hesap |
+| 1.000.000 müşteri, iki girdi türü | 65,4 GB | hesap |
+| çalışma kümesi, saatte 1.000 ödemede (183 MB ham + 444 MB boşaltılmış) | ~630 MB | hesap |
+
+İki şey bu tabloyu okurken önemlidir. (1) Profil tablosunda **büyüme terimi
+yoktur** — tampon 20 referans + 4 onay bekleyen vektörde tahliye eder, yani
+32,7 kB bir tavandır, beklenti değil; beş oturumu olan müşteri 6,8 kB tutar ve
+müşterilerin çoğunun hiç olgunlaşmaması beklenir. (2) Çalışma kümesi bir
+geçmiş değil, bir saatlik trafiktir: büyümez, orada durur.
+
+> **Etiket:** yukarıdaki "hesap" satırları **ölçümlerden türetilmiş
+> aritmetiktir, yük testi değildir**. Rapora bu etiketle girmelidir. Hesabın
+> tamamı ve girdilerinin her biri:
+> [`TECHNICAL_GUIDE.md`](../TECHNICAL_GUIDE.md) §17,
+> [`entegrasyon.md`](entegrasyon.md) §9.
+
+## 3. Bu SDK her tür e-cüzdana entegre edilebilir mi?
+
+**Dürüst cevap: her web tabanlı ödeme akışına evet, "her tür"e henüz hayır.**
+Adımların tamamı, yük sözleşmesi ve hata yönetimiyle birlikte
+[`entegrasyon.md`](entegrasyon.md) belgesindedir.
+
+| ortam | bugün | not |
+|---|---|---|
+| web ödeme sayfası | **çalışıyor** | bu depodaki demo tam olarak bu desen |
+| WebView tabanlı e-cüzdan | **aynı SDK** | uçtan uca test edilmedi; dokunmatik için hiçbir oran ölçülmedi |
+| yerel Android / iOS | **yol haritası** | yerel SDK yok; API platformdan bağımsız REST, yükü uygulamanın kendisi üretmeli |
+| müşteri referansı olmayan misafir ödemesi | bot skoru çalışır | müşteri profili katmanına hiç ulaşmaz |
+
+**Bugün çalışan.** Satıcının kontrol ettiği herhangi bir web ödeme sayfası: bir
+`<script>` etiketi, bir `DeepCheck.init({ apiUrl })` çağrısı ve sunucu tarafında
+işlemi onaylamadan önce `POST /api/decision`. Adımlar
+[`README.md`](../README.md) "Entegrasyon" bölümünde, ayrıntısı
+[`entegrasyon.md`](entegrasyon.md) §2'de. Backend, satıcının kendi
+ağında çalışan bir konteynerdir; veri çevre dışına çıkmaz. Ödeme sağlayıcısına,
+kart şemasına veya cüzdanın muhasebesine hiç dokunulmaz — katman yalnızca
+"bu ödemeyi onaylamadan önce ek doğrulama iste" der.
+
+**Bugün çalışmayan, açıkça:**
+
+- **Yerel mobil uygulamalar (iOS/Android).** SDK tarayıcı JavaScript'idir ve
+  Pointer Events kullanır. Uygulama içi WebView çalışır; yerel bir SDK
+  **yoktur** ve yazılmadı.
+- **Dokunmatik geçmiş ölçülmedi.** Kod `touch` girdi türünü tanır, ama sentetik
+  simülatörün parmak modeli olmadığı için dokunmatik için hiçbir oran ölçülmedi
+  (`backend/train_model.py` dokunmatik talebini reddeder). Telefonda katman
+  çalışır, ama kalitesi hakkında elimizde sayı yoktur.
+- **Müşteri referansı olmayan misafir ödemesi** bu katmana hiç ulaşmaz. Bot
+  skoru çalışmaya devam eder; müşteri geçmişi diye bir şey yoktur.
+- **Ek doğrulama kanalı satıcınındır.** Katmanın gücü o kanalın gücü kadardır.
+  Satıcının kendi OTP'sini geçen bir doğrulamayı DeepCheck'e bildireceği bir uç
+  nokta **henüz yok**; bugün bunu yalnızca demo akışı yapabiliyor.
+
+## 4. Aynı anda çok sayıda istek gelirse sunucu çöker mi?
+
+**CPU yüzünden hayır — ve önemlisi, yoğunlukta kapı açılmaz.**
+[`TECHNICAL_GUIDE.md`](../TECHNICAL_GUIDE.md) §17.5'in özeti:
+
+**Bugün ne oluyor:**
+
+- **Tavan aşıldığında istekler kuyruğa girer ve yavaşlar**, düşürülmez ve süreç
+  ölmez. Kâğıt üzerinde tavan, vCPU başına ~87 eşzamanlı ödeme oturumudur
+  (yukarıdaki aritmetik).
+- **Yavaşlama onaya dönüşmez.** Her başarısızlık yolu `verify` ile biter:
+  oturum kaydı yoksa, kanıt 3 akıştan azsa, telemetri bayatsa, skor yoksa ya da
+  sonlu değilse, profil okuması başarısızsa — hiçbirinde `allow` çıkmaz. Yani
+  doymuş bir DeepCheck "herkesten ikinci faktör iste" hâline düşer: dönüşüm
+  kaybettirir, dolandırıcılık geçirmez. Bir ödeme kapısı için doğru yön budur
+  ve yük testinin eksikliği bu yüzden bir **boyutlandırma** açığıdır, güvenlik
+  açığı değil.
+- **İstek boyutu sınırlıdır.** Analiz yükündeki her liste `max_length` taşır
+  (2000 işaretçi noktası, 1000 kaydırma, 1000 tuş olayı…), yani tek bir çağrı
+  keyfî olarak pahalı yapılamaz.
+- **Olay döngüsü bloklanmaz.** `compute_risk` iş parçacığı havuzunda çalışır
+  (`run_in_threadpool`). Önceden satır içi çalışıyordu ve her şeyi bloklardı:
+  `AUDIT.md` C-3, 20 eşzamanlı akışta olay döngüsünde p95 762 ms, en fazla
+  1510 ms gecikme ölçtü. Asıl tehlikeli olan buydu — zaman aşımına uğrayan bir
+  sağlık kontrolü, **sağlıklı** bir konteyneri yeniden başlattırır.
+- **Çağıran başına hız sınırı vardır** (`RATE_LIMITS`, işçi başına ve bellekte):
+  IP başına oturum açma 10/dk, oturum başına akış 60/dk, oturum başına karar
+  20/dk, müşteri başına profilli karar 60/saat, satıcı başına profil yönetimi
+  600/dk.
+
+**Gerçekten devirebildiğimiz tek şey bellekti, yük değil.** Dört işçi;
+forestların, SHAP açıklayıcısının ve torch'un dörder kopyasını tutar, her biri
+~300–400 MB. Docker Desktop'ın öntanımlı ~2 GB'lık sanal makinesinde, yanında
+Postgres ve nginx varken makine takas alanına düşer: `/api/health`, CPU %1'deyken
+**25 saniyede** cevap verdi (`backend/entrypoint.sh`). `UVICORN_WORKERS`
+öntanımlı olarak bu yüzden 2'dir. Ana makineyi yalnızca çekirdek sayısına göre
+boyutlandırmak bu hatayı tekrarlar.
+
+**Yük boşaltma tasarımı — yazıldı, uygulanmadı** (§17.7; bir özellik sanılmasın
+diye açıkça tasarım olarak duruyor):
+
+1. **Kuyruğa almak yerine boşalt:** skorlama havuzunun etrafında sabit
+   derinlikte bir semafor ve dolduğunda `Retry-After` ile hızlı 503.
+   Boşaltılacak olan `/api/analyze`'dir — düşen bir akış 2 saniyelik bir kanıt
+   penceresi kaybettirir ve SDK'nın kayan tamponu onu bir sonraki akışta zaten
+   yeniden gönderir. `/api/decision` **boşaltılmamalıdır**: ödeme başına tek
+   istektir ve başarısızlık modu zaten `verify`dir.
+2. **SDK'da geri çekilme:** 503/429'da `Retry-After`'a uymak, yoksa aralığı 16
+   saniyeye kadar ikiye katlamak, başarıdan sonra 2 saniyeye dönmek — tam
+   jitter ile. Jitter olmadan yeniden başlatılan bir dağıtım bütün açık
+   sayfalara aynı yeniden deneme anını verir.
+3. **Yatay ölçekleme:** konteynerler oturum durumu tutmaz, yani daha fazla
+   konteyner + yük dengeleyici. Durumsuz olmayan iki şey var: bellekteki hız
+   sınırları ve profil devre kesicisinin önbelleği; ikisi de örnek sayısı
+   arttıkça **zayıflar**, yanlışlamaz.
+4. **Paylaşılan sınır deposu (Redis):** bir sınırın işçi sayısından bağımsız
+   olarak aynı anlama gelmesi için.
+5. **Havuz zaman aşımı ve eşzamanlılık tavanı:** sistemin birikmek yerine hızlı
+   başarısız olması için. Üçü de `get_engine()` ve uygulama fabrikasında
+   birer satırlık değişiklik; eksik olan, sayıları belirleyecek yük testidir.
+
+**Söylemediğimiz şey.** Bu kodla **yük testi yapılmadı**. Eşzamanlı istek sayısı
+sınırlanmıyor ve veritabanı bağlantı havuzunda zaman aşımı ayarlı değil
+(işçi başına 5 + 10 bağlantı, 30 saniyelik bekleme: bir ödeme kapısında 30
+saniyelik bekleme, askıda kalmaktan ayırt edilemez). Dürüst iş sırası: önce
+havuz zaman aşımı ve eşzamanlılık tavanı (madde 5), sonra boşaltma ve geri
+çekilme (1–2), **sonra** bu bölümü ölçümle değiştirecek bir yük testi.
+
+---
+
 *İlgili ölçümler: [`docs/evaluation.md`](evaluation.md), [`docs/profile-evaluation.md`](profile-evaluation.md), [`backend/model_selection.py`](../backend/model_selection.py).*
+*Entegrasyon ayrıntısı: [`docs/entegrasyon.md`](entegrasyon.md). Kapasite hesabının tamamı: [`TECHNICAL_GUIDE.md`](../TECHNICAL_GUIDE.md) §17.*

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, Link, useLocation } from "react-router-dom";
 
 import Dashboard from "./pages/Dashboard.jsx";
 import Demo from "./pages/Demo.jsx";
+import KvkkNotice from "./pages/KvkkNotice.jsx";
 
 function NavBar() {
   const location = useLocation();
@@ -35,6 +36,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/demo" replace />} />
         <Route path="/demo" element={<Demo />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/kvkk" element={<KvkkNotice />} />
       </Routes>
     </div>
   );

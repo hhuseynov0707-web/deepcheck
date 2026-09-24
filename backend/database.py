@@ -68,7 +68,9 @@ async def init_db() -> None:
 
 
 # Columns and indexes added after the first release. Every statement must be
-# safe to run on a schema that already has it (IF NOT EXISTS).
+# safe to run on a schema that already has it (IF NOT EXISTS), and the two
+# data repairs at the end must be safe to run on data that has already been
+# repaired.
 _ADDITIVE_MIGRATIONS = (
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ",
     "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS clock_offset_ms BIGINT",
@@ -92,9 +94,9 @@ _ADDITIVE_MIGRATIONS = (
     # --- Per-customer behavioural profile ------------------------------------
     # Columns and indexes only. The four new tables are created by create_all
     # above; what needs repeating here is everything create_all will not add to
-    # a table that already exists. Every statement is metadata-only, so boot
-    # stays fast for all four workers queued behind the advisory lock, and
-    # there is no ADD CONSTRAINT anywhere -- Postgres has no
+    # a table that already exists. Every statement in THIS block is
+    # metadata-only, so boot stays fast for all four workers queued behind the
+    # advisory lock, and there is no ADD CONSTRAINT anywhere -- Postgres has no
     # "ADD CONSTRAINT IF NOT EXISTS", and this design deliberately has no
     # foreign keys to add.
     "ALTER TABLE behavior_data ADD COLUMN IF NOT EXISTS measured_mask INTEGER",
@@ -124,6 +126,20 @@ _ADDITIVE_MIGRATIONS = (
     "ALTER TABLE customer_profiles ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE customer_profile_vectors ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE decision_audit ADD COLUMN IF NOT EXISTS is_synthetic BOOLEAN NOT NULL DEFAULT FALSE",
+    # The compared session vector on a deviating decision, for the human
+    # review once the flushes are gone (models.DecisionAudit.candidate_vec).
+    "ALTER TABLE decision_audit ADD COLUMN IF NOT EXISTS candidate_vec JSONB",
+    # The only statements here that touch data rather than the schema. The two
+    # JSONB columns used to store Python None as the JSON value `null` instead
+    # of SQL NULL (see models.DecisionAudit), so `IS NOT NULL` matched every
+    # row ever written -- including rows an erasure had already cleared. New
+    # rows are correct; these fix the ones already in the table. They are
+    # idempotent: after the first boot they match nothing. They are a
+    # sequential scan of decision_audit, which is bounded by
+    # DECISION_AUDIT_RETENTION_DAYS, and they run under the same boot lock as
+    # the rest, so one worker does the work and the others wait.
+    "UPDATE decision_audit SET candidate_vec = NULL WHERE jsonb_typeof(candidate_vec) = 'null'",
+    "UPDATE decision_audit SET top_features = NULL WHERE jsonb_typeof(top_features) = 'null'",
 )
 
 

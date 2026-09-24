@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import CardTypeIcon from "../components/CardTypeIcon.jsx";
 import RiskBadge from "../components/RiskBadge.jsx";
 import VerificationModal from "../components/VerificationModal.jsx";
+import { SYNTHETIC_DEMO_CUSTOMERS, syntheticCustomerLabel } from "../demoCustomers.js";
 import { detectCardType, formatCardNumber, formatCvv, formatExpiry } from "../utils/cardFormat.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -48,11 +49,40 @@ const CUSTOMER_REF_HELP =
 // merchant id "demo", which _load_merchant_keys refuses to hand to any real
 // merchant, and its profile row is is_demo=true. Worded so it says nothing
 // about whether this customer has a profile or what state it is in.
+// The retention sentence is backend/main.py's demo rule: everything a visitor
+// leaves in the demo namespace is swept on the session's clock
+// (ROW_RETENTION_HOURS, 24 by default).
 const CUSTOMER_REF_NAMESPACE_WARNING =
-  "Uyarı: bu referans yalnızca ayrılmış demo ad alanında tutulur; hiçbir gerçek satıcının müşterisiyle eşleşemez ve raporlanan ölçümlere katılmaz.";
-// GitHub renders the Markdown; the frontend bundle has no Markdown renderer and
-// the notice is a document, not part of the checkout.
-const KVKK_NOTICE_URL = "https://github.com/hhuseynov0707-web/deepcheck/blob/main/docs/kvkk-aydinlatma.md";
+  "Uyarı: bu referans yalnızca ayrılmış demo ad alanında tutulur; hiçbir gerçek satıcının müşterisiyle eşleşemez ve raporlanan ölçümlere katılmaz. Bu ödemeden demo ad alanında kalan her şey 24 saat içinde silinir.";
+// The jury prototype's SYNTHETIC demo customers (backend/demo_seed.py), offered
+// beside free entry. The team has no customer base, so these are simulator
+// identities with a seeded history -- and the page says so twice: in every
+// option label and in the line under the selector. Both are static facts about
+// the seed, not something the server said about a profile, so the rule above
+// ("nothing about the profile comes back to this page") still holds: a juror
+// paying as Ayşe learns nothing from the server that the label did not state.
+//
+// Free entry stays the DEFAULT on purpose. The page's main demonstration is the
+// behavioural score, and a default that names a mature synthetic customer
+// would put the profile layer's step-up in front of every visitor who simply
+// fills in the card, blurring which check asked for the code. Choosing a
+// synthetic customer is a deliberate act of the presenter.
+const CUSTOM_CUSTOMER = "serbest";
+
+function listInTurkish(names) {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} ve ${names[names.length - 1]}`;
+}
+
+const SYNTHETIC_CUSTOMERS_NOTE = `${listInTurkish(
+  SYNTHETIC_DEMO_CUSTOMERS.map((c) => c.name),
+)} sentetik demo müşterileridir: geçmişleri simülatörle üretildi, gerçek kişi değildir.`;
+
+// Served by this app (pages/KvkkNotice.jsx renders docs/kvkk-aydinlatma.md).
+// It used to point at the file on GitHub, which did not exist -- a 404 on the
+// jury-facing link -- and could only ever work for a pushed, public repository,
+// never on an offline LAN demo.
+const KVKK_NOTICE_URL = "/kvkk";
 
 // No session id or token (the SDK never registered), or the server rejected
 // the token. Distinct from a network failure, which still routes to step-up.
@@ -150,6 +180,17 @@ export default function Demo() {
     return value || null;
   }
 
+  // Derived from the reference field rather than stored beside it, so the two
+  // can never disagree: the field always shows the reference that will be
+  // sent, and typing a synthetic customer's reference selects that customer.
+  const selectedSynthetic = SYNTHETIC_DEMO_CUSTOMERS.find((c) => c.ref === customerRef.trim());
+  const customerChoice = selectedSynthetic ? selectedSynthetic.ref : CUSTOM_CUSTOMER;
+
+  function chooseCustomer(value) {
+    setCustomerRef(value === CUSTOM_CUSTOMER ? DEFAULT_CUSTOMER_REF : value);
+    setCustomerRefError(null);
+  }
+
   // The periodic flush runs every 2 s, so without this up to two seconds of
   // the customer's most recent input -- the moments right before "Onayla" --
   // have not reached the server when it decides. flush() never rejects by
@@ -239,8 +280,8 @@ export default function Demo() {
         // Verification unlocks it on the server.
         //
         // That includes "step_up", the one public reason the server collapses
-        // cluster, conformal, ambiguous and the per-customer profile deviation
-        // into. Telling them apart here would require the server to name which
+        // cluster, conformal, ambiguous, sequential, the per-customer profile
+        // deviation and the per-customer decision limit into. Telling them apart here would require the server to name which
         // check fired, which is the tuning signal it withholds.
         setShowVerifyModal(true);
       }
@@ -285,6 +326,15 @@ export default function Demo() {
         headers,
         body: JSON.stringify({ session_id: sessionId, code }),
       });
+      if (res.status === 401) {
+        // The session token expired (30 minutes) or was rejected while the
+        // prompt was open. No code can help now, and the charge path answers
+        // the same 401 with the reload message -- so does this one, instead
+        // of showing the server's untranslated detail inside the prompt.
+        setShowVerifyModal(false);
+        setReloadMessage(RELOAD_MESSAGE);
+        return { ok: false };
+      }
       const body = await res.json().catch(() => ({}));
       if (!res.ok) return { ok: false, message: body?.detail || "Doğrulama başarısız" };
       return { ok: body?.verified === true, message: body?.message };
@@ -304,6 +354,11 @@ export default function Demo() {
 
   const inputClass =
     "w-full bg-[#09090b] text-zinc-100 border border-zinc-800 rounded-md p-3 font-mono text-sm tracking-widest focus:outline-none focus:border-zinc-700 transition-colors duration-200 ease-out placeholder-zinc-600";
+  // Proportional type, not the card fields' spaced monospace: in that style the
+  // option label was cut off after "20 fare + 2" in the 1280 px layout, and the
+  // part a juror must be able to read is the whole label.
+  const selectClass =
+    "w-full bg-[#09090b] text-zinc-100 border border-zinc-800 rounded-md p-3 text-sm focus:outline-none focus:border-zinc-700 transition-colors duration-200 ease-out";
 
   return (
     <div className="min-h-[calc(100vh-64px)] px-4 py-10">
@@ -432,7 +487,28 @@ export default function Demo() {
                 something a real checkout asks its customer. It stands in for
                 the merchant server naming the customer. */}
             <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-zinc-700 p-3">
-              <label htmlFor="customer-ref" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
+              <label htmlFor="demo-customer" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
+                Demo Müşterisi
+              </label>
+              <select
+                id="demo-customer"
+                value={customerChoice}
+                onChange={(e) => chooseCustomer(e.target.value)}
+                aria-describedby="demo-customer-note"
+                className={selectClass}
+              >
+                {SYNTHETIC_DEMO_CUSTOMERS.map((customer) => (
+                  <option key={customer.ref} value={customer.ref}>
+                    {syntheticCustomerLabel(customer)}
+                  </option>
+                ))}
+                <option value={CUSTOM_CUSTOMER}>Serbest referans (aşağıdaki alana yazılır)</option>
+              </select>
+              <p id="demo-customer-note" className="text-xs text-amber-400/90">
+                {SYNTHETIC_CUSTOMERS_NOTE}
+              </p>
+
+              <label htmlFor="customer-ref" className="mt-2 text-xs font-medium text-zinc-400 uppercase tracking-wider">
                 Müşteri Referansı (demo)
               </label>
               <input

@@ -160,6 +160,13 @@ async def _load(db, session_id: str) -> dict | None:
     session = await db.get(Session, session_id)
     if session is None:
         return None
+    if getattr(session, "is_synthetic", False):
+        # Driven by demo_seed.py --simulate: simulator output, not a person.
+        # This function is the one gate between the served database and the
+        # evaluation set (data/real/, and lab/real_telemetry.json with
+        # --to-training); filed as "human", simulator telemetry would enter
+        # every later measurement while reporting nothing.
+        return None
 
     result = await db.execute(
         select(BehaviorData)
@@ -380,7 +387,7 @@ async def preview(session_ids: list[str], label: str) -> int:
                 records.append(record_data)
 
     for session_id in missing:
-        print(f"BULUNAMADI  {session_id}: oturum yok veya hic akis kaydedilmemis")
+        print(f"BULUNAMADI  {session_id}: oturum yok, hic akis kaydedilmemis ya da sentetik (demo_seed.py --simulate)")
 
     if not records:
         print("Onizlenecek oturum yok.")
@@ -421,7 +428,7 @@ async def record(
         for session_id in session_ids:
             record_data = await _load(db, session_id)
             if record_data is None:
-                print(f"ATLANDI  {session_id}: oturum yok veya hic akis kaydedilmemis")
+                print(f"ATLANDI  {session_id}: oturum yok, hic akis kaydedilmemis ya da sentetik (demo_seed.py --simulate)")
                 continue
             # A driven browser filed as a person is the one error this whole
             # dataset cannot survive: it teaches the detector that automation
@@ -462,7 +469,11 @@ async def resolve_since(since: str) -> list[str]:
     moment = parse_since(since)
     async with get_sessionmaker()() as db:
         result = await db.execute(
-            select(Session.id).where(Session.created_at >= moment).order_by(Session.created_at.asc())
+            select(Session.id)
+            .where(Session.created_at >= moment)
+            # A --since sweep never even proposes a simulated session.
+            .where(Session.is_synthetic.is_(False))
+            .order_by(Session.created_at.asc())
         )
         return [row[0] for row in result.all()]
 

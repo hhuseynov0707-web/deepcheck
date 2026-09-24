@@ -8,7 +8,7 @@ Built for the **Teknofest Financial Technologies Competition**.
 
 ```
 Genuine user  →  12.4  →  payment proceeds silently
-Bot detected  →  94.1  →  session blocked, with the reasons attached
+Bot detected  →  94.1  →  server declines the charge; the SOC sees why
 ```
 
 ---
@@ -24,7 +24,7 @@ Behavior is expensive to fake convincingly and free to observe. DeepCheck watche
 Three properties make it usable in a payment flow rather than just a lab:
 
 - **Invisible.** One script tag. Nothing is shown to the user, nothing is asked of them.
-- **Explainable.** Every score carries its SHAP feature attribution, so a fraud analyst — or a regulator — can see *why* a session was flagged instead of trusting a black box.
+- **Explainable.** Every score carries its SHAP feature attribution, so a fraud analyst — or a regulator — can see *why* a session was flagged instead of trusting a black box. It is stored on the row and shown in the SOC dashboard, and deliberately **not** returned to the party being scored: naming the three features that convicted a caller is a tuning signal.
 - **Privacy-preserving.** The SDK records keystroke *timing* only. Never key content, never field values, never card data. Nothing sensitive leaves the page.
 
 ---
@@ -48,22 +48,26 @@ flowchart LR
 
     H[(PostgreSQL)]
 
+    M[Merchant backend]
+
     A -->|every 2s| B
     B --> C
     C --> D
     D --> G
     G --> H
-    G -->|score + label + SHAP| A
+    G -->|score + label| A
     A --> I
-    H --> J
-    I -->|checkout| K[POST /api/decision]
+    H -->|score, SHAP, profile card| J
+    I -->|session_id + token| M
+    M -->|"+ merchant key, customer_ref (optional)"| K[POST /api/decision]
     H --> K
-    K -->|allow / warn / verify / block| I
+    K -->|allow / warn / verify / block| M
+    M --> I
 ```
 
 The score the browser sees is for display. The decision that gates a payment is made by `POST /api/decision` on the server, from the score stored in Postgres — a control in the browser is a control the attacker can edit.
 
-**What this evidence is worth.** Telemetry is submitted by the client, and the session token only proves the sender holds a token for that session — never that a human produced the behaviour. An adversarial run against this stack blocks straight-line automation 92% of the time and catches none of an independently written humanised bot. So behavioural risk belongs alongside device, network and card-level signals as one input to a decision, not as the sole gate on a payment. The demo gates on it alone because a demo has nothing else to gate on.
+**What this evidence is worth.** Telemetry is submitted by the client, and the session token only proves the sender holds a token for that session — never that a human produced the behaviour. Against an adversarial harness written from motor-control first principles rather than from this project's own personas, the served model blocked straight-line automation 100% of the time and approved an independently written humanised bot 100% of the time (12 sessions per class, [docs/evaluation.md](docs/evaluation.md)). So behavioural risk belongs alongside device, network and card-level signals as one input to a decision, not as the sole gate on a payment. The demo gates on it alone because a demo has nothing else to gate on.
 
 The SDK keeps a 10-second rolling window of behavior and flushes every 2 seconds, so a couple of quiet seconds — a user typing without moving the mouse — doesn't blank out the signal.
 
@@ -89,11 +93,39 @@ To train the models ahead of time and skip the wait on first boot:
 cd backend && python train_model.py
 ```
 
+### Jury demo: synthetic customers
+
+The per-customer profile layer can only compare a customer with their own history once it holds 19 of their sessions in one input type, and the team has no customer base. The jury prototype therefore uses **synthetic demo customers**: Ayşe, Mehmet and Zeynep are simulator identities (`train_model.simulate_identity_sessions`), each seeded with 20 mouse and 20 keyboard sessions in the reserved `demo` merchant namespace. They are not people, and every place that shows them says so. The data is flagged `is_synthetic`, the customer references read `sentetik-…`, and the Demo page selector says "sentetik geçmiş". The SOC panel badges simulated sessions and decisions made against a synthetic profile "Sentetik demo verisi". It reads the flag from `GET /api/score` and `GET /api/sessions`, and where the server does not send it the badge is absent rather than wrong. The metric cards leave simulated sessions out. No evaluation script reads them.
+
+Add to `.env` (the full reasoning is in `.env.example`, section *Jury prototype*):
+
+```
+DEEPCHECK_PROFILE_KEY=<python -c "import secrets; print(secrets.token_urlsafe(32))">
+DEEPCHECK_MERCHANT_KEYS=ornek-satici:<a second, different token>
+PROFILE_LAYER=1
+PROFILE_ESCALATION=1
+DEMO_ENDPOINTS=1
+```
+
+```bash
+docker compose up -d --build
+docker compose exec backend python demo_seed.py              # seed; idempotent, about 20 s
+docker compose exec backend python demo_seed.py --status     # budgets and state
+docker compose exec backend python demo_seed.py --reset      # delete and seed again
+docker compose exec backend python demo_seed.py --simulate ayse   # contrast case
+```
+
+On `/demo`, pick a customer under **Demo Müşterisi**, fill in the card with the mouse and press Onayla. A person's session deviates from the simulator's history, so the page asks for the verification code and the SOC card shows "Ek doğrulama istendi" beside the maturity (`Fare: 20 / 19`) and the most deviating features. `--simulate` runs a new session of the *same* synthetic identity through the real HTTP path and is expected not to be challenged.
+
+Verified end to end on 2026-09-19 in an isolated Docker stack (DEBUG=0, enforcing, the served model). A Playwright session scripted with the lab's human motion model (`lab/bot_lab.py`, not a person) paid as Ayşe and as Mehmet. Both scored in the green band (29.5 and 23.0) and both were stepped up by the profile layer (`profile_deviation`, p = 1/21, 20 references), and the code then let the payment through. `--simulate` for Ayşe and Mehmet (mouse) was charged without a challenge (p 0.67 and 0.81). **That demonstrates the mechanism, not accuracy on real people.** A real person differs from every simulator identity by construction. The only same-person figure is the synthetic one in [docs/profile-evaluation.md](docs/profile-evaluation.md): 4.9% challenged, a lower bound. Use the mouse. For fresh sessions of the same identity, a keyboard-only session was compared in 30, 20 and 0 of 30 tries for Ayşe, Mehmet and Zeynep. A keyboard session measures only 6–7 of the 12 features, and below that the layer abstains rather than guess. Touch has no synthetic history at all. The step-by-step jury procedure (Turkish) is in [docs/juri-cevaplari.md](docs/juri-cevaplari.md#demo-prosedürü--sentetik-demo-müşterileri).
+
 ---
 
 ## How the scoring works
 
-Six behavioral features are extracted from each flush, every one normalized to roughly 0–1:
+Twelve behavioral features are extracted from each flush, every one normalized to roughly 0–1.
+
+The first six are **marginal statistics** — variances, entropies, means:
 
 | Feature | What it measures |
 |---|---|
@@ -104,14 +136,29 @@ Six behavioral features are extracted from each flush, every one normalized to r
 | `tiklama_yogunlugu` | Click density inside the most recent 5-second window |
 | `odak_degisimi` | How often the tab lost focus |
 
+An attacker reproduces marginal statistics with independent per-step noise, and noise is free: measured here, a straight-line bot with two pixels of jitter halved its risk score and was approved. The other six measure **structure** that independent noise does not have, which takes modelling human motor control rather than adding noise:
+
+| Feature | What it measures |
+|---|---|
+| `hiz_otokorelasyonu` | Lag-1 autocorrelation of pointer speed — real motion carries momentum; IID jitter has ~none |
+| `yon_tutarliligi` | Mean cosine between consecutive move vectors — real motion is target-directed |
+| `zaman_kuantasyonu` | How often an inter-event gap repeats the *same millisecond*; scripted timers do, hands do not |
+| `duraklama_dagilimi` | Coefficient of variation of gaps — human pauses are heavy-tailed, a fixed delay is not |
+| `tiklama_oncesi_hareket` | Share of clicks preceded by pointer motion — a synthetic click teleports |
+| `kanal_gecis_gecikmesi` | Median delay when input switches between pointer and keyboard — a hand has to move |
+
+The structural six are a **designed** mitigation, not a measured one: they were written against this project's own adversary, and the lab's "human" rows are scripted. And four of the twelve saturate on real browser telemetry — `scroll_hizi_varyansi` was never measured once in 234 captured lab rows, `ivme_degisimi` sits at exactly 1.0 in 90 of them. `TECHNICAL_GUIDE.md` §20 has the counts and the re-capture plan.
+
 Interaction entropy is computed per channel and then combined, rather than by merging every timestamp into one stream first. Merging is the obvious implementation and it is wrong: interleaving several independently-regular channels produces a sequence that looks irregular even when each channel is perfectly robotic on its own — a beat-frequency artifact that measured ~0.92 entropy for three channels that individually scored 0.0.
 
 Those features feed one model:
 
 ```
-fraud_probability = RandomForest
-risk_score        = 100 × fraud_probability
+vote_share = RandomForest.predict_proba(features)[fraud]
+risk_score = 100 × vote_share
 ```
+
+`vote_share` is the forest's vote share, **not** a calibrated `P(fraud | behaviour)`. Nothing has calibrated it against a base rate, because there is no labelled real traffic to calibrate against. `confidence` in the API response is the same number.
 
 It used to be a blend, `0.6 × RandomForest + 0.4 × LSTM`, and the LSTM was **removed on measurement** too. `backend/model_selection.py` reproduces the study. The LSTM was trained on simulated sessions only, and on browser traffic its output collapsed toward "human": bots scoring ≥60 fell from 0.90 (forest alone) to 0.79 in the blend. In the mid-session handover it existed for, it reacted four flushes *later* than the forest reading the current flush. Gradient boosting was measured too and not adopted. It caught more of the attack scenarios it had seen, but with a human scenario held out of training, LightGBM blocked 74% of those unseen humans; the forest blocked none. The honest cost is in the study: the LSTM also damped legitimate scores, so more typical users now reach step-up verification instead of an immediate approval.
 
@@ -163,6 +210,22 @@ A session's reported score is the **median of its last 5 flushes**, not the inst
 | `GET /api/sessions` | `X-Dashboard-Key` | All sessions, for the dashboard |
 | `GET /api/health` | — | Service and model status |
 
+Four more exist only for the per-customer profile layer, which is **off by
+default**; with it off they all answer 503. Each needs a merchant credential
+(`X-Merchant-Id` + `X-Merchant-Key`), and `POST /api/decision` accepts an
+optional `customer_ref` with the same headers:
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /api/profile/consent` | merchant | The **only** way a profile is created. Records the lawful basis; 409 if the customer objected |
+| `POST /api/profile/erase` | merchant | `mode: erase` deletes everything; `mode: object` also leaves a tombstone. Always 204, so it is not an existence oracle |
+| `POST /api/outcome` | merchant | Mark a session `settled` or `disputed`; a dispute deletes that session's stored vector |
+| `GET /api/profile/review/{session_id}` | `X-Review-Operator` + `X-Review-Key` | Human review of a contested decision, per operator, with an access-audit row |
+
+A raw `customer_ref` travels only inside a POST body — never a path, never a
+query string, never a log — and is turned into an HMAC pseudonym immediately.
+`TECHNICAL_GUIDE.md` §18 is the whole chain; §19 is what the layer does.
+
 Session ids are minted server-side and signed with HMAC-SHA256 over
 `DEEPCHECK_SECRET`. A client can hold a token but cannot mint one, so
 telemetry cannot be posted under a session id its sender was not given. The
@@ -176,12 +239,15 @@ within its session, and any telemetry whose clock-independent fingerprint
 recording of a real person cannot be replayed under a fresh token, with or
 without its timestamps rewritten.
 
-**Evidence before a verdict.** `/api/decision` uses Wald's sequential
-probability ratio test rather than a flush counter: it accumulates the
-per-flush log-likelihood ratio and stops as soon as the evidence supports a
-verdict, so a blatant session is decided on its first flush and an ambiguous
-one keeps collecting instead of being waved through when a counter is
-satisfied. Between the bounds the answer is step-up. It also answers `verify`
+**Evidence before a verdict.** `/api/decision` uses a stopping rule in the
+shape of Wald's sequential probability ratio test, not a flush counter. It adds
+up per-flush log-odds and stops once the sum crosses a bound. The scores are
+uncalibrated forest vote shares from overlapping 10 s windows, so the bounds
+are an operating point measured on synthetic data, not Wald's error rates. A
+blatant session is decided at the three-flush floor, and an ambiguous one keeps
+collecting instead of being waved through when a counter is satisfied. Between
+the bounds the answer is step-up, and crossing the bot bound gives at least
+step-up, whatever the smoothed score says. It also answers `verify`
 while the session's last flush is older than 30 s.
 
 One consequence worth naming: a mid-band score (40-60, "Şüpheli") never
@@ -203,7 +269,10 @@ among held-out real human sessions, the system refuses to block on it and asks
 for verification instead. It can only soften a decision, never harden one, so
 a mistake costs a challenge rather than a customer. Distribution-free and
 independent of the model; its strength is the diversity of the calibration
-sample. One plausible window is cheap to fabricate; six
+sample. **As served it softens no block:** the bundles hold 36 calibration
+values from the lab's scripted Playwright personas (no real human sessions),
+the highest 27.71, so every score of 80 or more gets p = 1/37 = 0.027 < 0.05.
+The model bundle logs this state at load. One plausible window is cheap to fabricate; six
 seconds of sustained behaviour is not, and a verdict must be about behaviour
 that is happening now.
 
@@ -211,8 +280,12 @@ that is happening now.
 token. The token that `/api/analyze` requires comes only from
 `POST /api/session/attest`, in exchange for a solved proof of work and two
 runtime measurements: the clamp on `performance.now()` and the median delay of
-`setTimeout(..., 0)`. Both are properties of the engine rather than the page,
-so a client that fabricates telemetry has to fabricate them too.
+`setTimeout(..., 0)`. Both values are self-reported. What the two checks
+establish is that some client did the proof of work for this session inside
+the challenge window and reported values inside browser-plausible bounds --
+not that it is a browser, ran the SDK, or has a person behind it. A script
+that reads the SDK passes: a plain Python client obtained a token 50 times out
+of 50 (`backend/main.py`, the runtime-attestation comment).
 
 Measured, because the number matters more than the idea: a 12-bit proof costs
 Chromium about **75 ms over 7,600 hashes**, and costs a Python script about
@@ -231,17 +304,23 @@ values.
 Chromium reports its clock clamp as exactly 100.0 µs, which is the documented
 value and a good sign the measurement reflects the engine.
 
-**Rate limits.** Per IP for minting (20/min) and per session for scoring
+**Rate limits.** Per IP for minting (10/min) and per session for scoring
 (60/min) and checkout (20/min), returning 429 with `Retry-After`. Scoring is
 keyed by session rather than by address on purpose: a demo stand or an office
-puts many genuine users behind one IP. Counters live in each worker's memory,
-so with the default 4 workers the effective ceiling is up to 4x these numbers;
-a shared backend is the upgrade path for more than one host.
+puts many genuine users behind one IP. Two more exist for the profile layer:
+profiled decisions per **customer** (60/h), which never refuses the checkout —
+it stops the profile being read and asks for step-up instead — and profile
+admin calls per merchant (600/min). Counters live in each worker's memory, so
+the effective ceiling is up to `UVICORN_WORKERS` x these numbers; a shared
+backend is the upgrade path for more than one host.
 
 **Retention.** Raw telemetry is blanked after an hour and whole rows deleted
-after a day, by a sweep that runs every 10 minutes under a Postgres advisory
-lock so only one worker does the work. The six features and the score survive
-the first stage, so the dashboard history keeps working.
+after a day, by a sweep that runs every 10 minutes under a **transaction-scoped**
+Postgres advisory lock so only one worker does the work. The twelve features and
+the score survive the first stage, so the dashboard history keeps working. A
+second, independent sweep in its own transaction handles the profile layer:
+idle profiles at 180 days, decision-audit rows at 90 and access-audit rows at
+365. Neither sweep's failure can roll back or stop the other.
 
 ### SDK usage
 
@@ -263,6 +342,25 @@ the first stage, so the dashboard history keeps working.
 `DeepCheck.getSessionId()` and `DeepCheck.getToken()` return what the checkout
 call needs; `DeepCheck.ready()` resolves once the server has minted the
 session.
+
+`DeepCheck.flush()` sends the current window immediately and resolves when that
+send finishes. It **never rejects**, so it is safe to `await` on the checkout
+path — call it before asking for a decision, so the decision is made on the
+behaviour that just happened rather than on a window up to two seconds old.
+
+Three behaviours worth knowing before you integrate:
+
+- **Each flush carries `client_sent_at`**, the sender's own clock. The server
+  checks how old the events are on *that* clock, plus the stability of the
+  session's clock offset, instead of comparing an absolute clock — so a
+  customer whose machine is ten minutes off is not rejected.
+- **On a 401 the SDK registers a new session once** and resends, so
+  `getSessionId()` and `getToken()` can change during the life of a page. Read
+  them when you need them; do not cache them at load.
+- **There is no back-off on 429 or 503.** Any non-2xx raises into `onError` and
+  a `deepcheck:error` DOM event, and a failed request never reaches `onUpdate`
+  — a dead backend cannot look like a clean score. A back-off is designed in
+  `TECHNICAL_GUIDE.md` §17.7 and is not implemented.
 
 ---
 
@@ -366,30 +464,43 @@ python train_model.py
 
 `--to-training` is the part that matters: without it a recording lands where only `evaluate.py` reads it and never reaches the model. See [data/real/README.md](data/real/README.md) for what to collect — variety of input device matters more than volume.
 
+**And a defect in the data itself.** In those 234 captured rows,
+`scroll_hizi_varyansi` was never measured once — all 234 sit at its neutral
+fallback, because no scenario scrolls — and `ivme_degisimi` reads exactly 1.0
+in 90 of them, including *every* `H1_human` row and *every* `A3_human_mimic`
+row. Between the lab's model of a person and the lab's best mimic, that feature
+carries one bit, and it is the same bit. The percentile endpoints were fitted on
+the simulator's distribution and real Chromium motion sits above the top of the
+range. The fix is already half built — `lab/capture.py` now records raw
+telemetry and `train_model` blends real raw values into the percentile pool —
+but the existing file predates it and carries no raw, so retraining today
+changes nothing. Re-capturing and retraining is the next step and has not been
+done: [`TECHNICAL_GUIDE.md` §20](TECHNICAL_GUIDE.md#20-saturation-of-real-browser-features-and-the-re-capture-plan).
+
 ---
 
 ## Performance
 
-Measured on a development machine against the shipped models, 60 runs after warm-up:
+**Scoring one flush** (`compute_risk`: feature extraction, the Random Forest and SHAP attribution) measured **17.7 ms** after the Isolation Forest left the score; it was 31.7 ms with it (`backend/scorer.py`). An older table here gave 42.4 ms: that was the three-model ensemble (Random Forest, Isolation Forest and LSTM), which no longer exists. This excludes the database write and network transit, so it is not an end-to-end figure.
 
-| Metric | Value |
-|---|---|
-| Mean | 42.4 ms |
-| p50 | 42.3 ms |
-| p95 | 44.3 ms |
-| p99 | 47.1 ms |
+**The checkout decision** (`POST /api/decision`) is measured end to end in the application, against a throwaway Postgres 16 with synthetic sessions, with the per-customer profile layer off, in shadow and enforcing: `docs/profile-evaluation.md` §11. Inside the docker-compose topology every configuration is within the 50 ms budget at p95; through Docker Desktop's port mapping on the Windows development host several are not.
 
-This is **model scoring time** — feature extraction, all three models, and SHAP attribution. It excludes the database write and network transit, so it is not an end-to-end figure. Measure your own deployment before quoting a number.
+**Capacity, storage and overload** are worked through on paper in [`TECHNICAL_GUIDE.md` §17](TECHNICAL_GUIDE.md#17-capacity-cost-and-overload--on-paper), from the per-request and per-row measurements that do exist: about **87 concurrent checkout sessions per vCPU** at saturation, **0.71 CPU-seconds per checkout**, **183 kB of storage per checkout** in the first hour falling to nothing after a day, and **32.7 kB** for a customer's whole behavioural profile. Row sizes there were measured on Postgres 16; the throughput figures are arithmetic from them, checked against the one real concurrency run in `AUDIT.md` to within 2.4 %.
+
+**No load test has been run.** These are single-request latencies and per-row sizes, not a capacity measurement. Past the ceiling, requests queue and latency rises rather than being dropped, and every failure path resolves to `verify` — a saturated DeepCheck asks everyone for a second factor instead of letting fraud through. §17.6 lists what is still unbounded and §17.7 is the load-shedding design that does not exist yet. Measure your own deployment before quoting a number.
 
 ---
 
 ## Testing
 
 ```bash
-cd backend && python test_scorer.py
+cd backend && DEEPCHECK_SECRET=... DASHBOARD_KEY=... DEBUG=0 python -m pytest -q
+cd frontend && npm test && npm run build
 ```
 
-Twelve regression tests, each one a bug that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, a checkout that was approved because the score never arrived. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+**169 backend tests** (54 scoring and API, 97 profile layer, 18 synthetic demo) and **59 frontend tests**, all passing as of 2026-09-20. Most of them are a bug that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, a checkout approved because the score never arrived, a step-up that could be turned into an approval by pressing pay again. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+
+The profile layer's central property is asserted directly rather than argued: one test sweeps 1,320 combinations over HTTP and checks that the layer never blocks and never moves the score or the label.
 
 The API tests run against a stub database rather than Postgres, deliberately: an authorization check that needs infrastructure to test is an authorization check that stops being tested.
 
@@ -403,19 +514,35 @@ Measuring against real people is a separate question, and an open one — see [d
 
 ```
 deepcheck/
-├── sdk/deepcheck.js          Browser SDK — behavioral collection
+├── sdk/deepcheck.js          Browser SDK — behavioral collection (34 KB, no deps)
 ├── backend/
-│   ├── main.py               FastAPI endpoints
+│   ├── main.py               FastAPI endpoints, decision path, retention sweeps
 │   ├── scorer.py             Feature extraction, scoring, smoothing, SHAP
-│   ├── lstm_model.py         FEATURE_NAMES + the (unserved) LSTM definition
+│   ├── lstm_model.py         FEATURE_NAMES, FEATURE_SCHEMA_VERSION, unserved LSTM
+│   ├── profiles.py           Per-customer profile statistic (pure, no I/O)
+│   ├── profile_lab.py        Measures that layer → docs/profile-evaluation.md
 │   ├── model_selection.py    Model-family and temporal-model study
 │   ├── train_model.py        Synthetic data generation + training
-│   ├── test_scorer.py        Behavioral regression tests
-│   └── models.py             SQLAlchemy schema
+│   ├── demo_seed.py          Synthetic demo customers for the jury prototype
+│   ├── benchmark.py          Form-fill generator, latency and score benchmarks
+│   ├── record_session.py     Record a labelled real session to data/real/
+│   ├── evaluate.py           Score those recordings → docs/evaluation.md
+│   ├── test_scorer.py        54 tests — scoring, auth, enforcement, tokens
+│   ├── test_profiles.py      97 tests — the profile layer end to end
+│   ├── test_demo.py          18 tests — synthetic demo labelling
+│   └── models.py             SQLAlchemy schema (+ 4 profile tables)
 ├── frontend/src/
 │   ├── pages/Demo.jsx        Payment demo with live scoring
-│   └── pages/Dashboard.jsx   SOC dashboard, D3 charts
-└── docs/index.html           Product landing page (served by GitHub Pages)
+│   ├── pages/Dashboard.jsx   SOC dashboard, D3 charts, profile card
+│   └── pages/KvkkNotice.jsx  /kvkk, rendered from docs/kvkk-aydinlatma.md
+├── lab/                      Playwright capture and adversarial harness
+├── data/real/                Recordings of real people — currently EMPTY
+└── docs/
+    ├── evaluation.md         Browser-lab measurements
+    ├── profile-evaluation.md Profile layer, generated by profile_lab.py
+    ├── juri-cevaplari.md     Turkish answers for the jury
+    ├── kvkk-aydinlatma.md    Privacy notice · dpia.md · rapor-duzeltmeleri.md
+    └── index.html            Product landing page (served by GitHub Pages)
 ```
 
 **Stack:** FastAPI · PostgreSQL · scikit-learn · PyTorch · SHAP · React · Vite · Tailwind · D3
@@ -442,9 +569,11 @@ This is a **competition MVP**, and worth reading as one.
 
 The detection pipeline, the SDK, and both interfaces work end to end and are what you see running. Models are trained on synthetic personas **blended with 234 labelled real-browser rows** captured by `lab/capture.py`, held out by run. That is a real measurement and a narrow one: the "human" rows are scripted approximations driven through a real browser, not recordings of people, so no figure here should be read as production performance. Collecting sessions from real users is the next substantive step and the one everything else waits on.
 
-Risk enforcement is server-side. `POST /api/decision` is the only place the thresholds are applied; session tokens are signed and issued only against a solved proof of work plus runtime measurements consistent with a browser; telemetry replay is rejected three ways; evidence is accumulated by a sequential probability ratio test rather than a fixed flush count, and an ambiguous session is never charged; the demo's charge and step-up both live behind the server; the SOC endpoints are behind a key; and requests are rate limited per IP for minting and per session for scoring and checkout.
+Risk enforcement is server-side. `POST /api/decision` is the only place the thresholds are applied; session tokens are signed, expire after 30 minutes, and are issued only against a solved proof of work plus two self-reported runtime values (which a script that reads the SDK can also report); telemetry replay is rejected three ways; evidence is accumulated by a sequential stopping rule (SPRT-shaped, without Wald's error guarantees) rather than a fixed flush count, and an ambiguous session is never charged; the demo's charge and step-up both live behind the server; the SOC endpoints are behind a key; and requests are rate limited per IP for minting and per session for scoring and checkout.
 
-Still tracked work rather than oversights: a migration tool for the database schema, key rotation, training-data provenance recorded in the model bundle (the startup check knows a model's scikit-learn version and feature set but not what it was trained on, which is how a synthetic-only model served the demo unnoticed), and a detector that generalises to mimicry it has no samples of. The deployment is sized for a demonstration.
+There is a second control, off by default: a **per-customer behavioural profile** that compares a session against that customer's own past sessions and may ask for extra verification — never block, never approve, never change a score. It is the only thing here aimed at human account takeover and it does nothing against card-testing bots. Every threshold in it was measured on **synthetic identities** ([docs/profile-evaluation.md](docs/profile-evaluation.md)), no real customer has ever been profiled, and it ships off for exactly that reason. [`TECHNICAL_GUIDE.md` §18–§19](TECHNICAL_GUIDE.md) is how customer data is collected, what the statistic is, and what it deliberately does not do.
+
+Still tracked work rather than oversights: a migration tool for the database schema, key rotation, training-data provenance recorded in the model bundle (the startup check knows a model's scikit-learn version and feature set but not what it was trained on, which is how a synthetic-only model served the demo unnoticed), a detector that generalises to mimicry it has no samples of, the feature saturation in §20, and a load test. The deployment is sized for a demonstration.
 
 ---
 
@@ -478,6 +607,21 @@ Copy `.env.example` to `.env` before deploying anywhere that is not a laptop.
 | `RAW_RETENTION_HOURS` / `ROW_RETENTION_HOURS` | When raw telemetry is blanked (default 1 h) and whole rows deleted (default 24 h) |
 | `REAL_TELEMETRY_PATH` | Where training looks for `lab/real_telemetry.json`. The default assumes `lab/` sits beside `backend/`; docker-compose mounts it into the container so that holds there too |
 | `POW_DIFFICULTY_BITS` | Leading zero bits required of the session proof of work (default 12) |
+| `BIND_ADDR` | Host address the published ports listen on. `127.0.0.1` by default, which keeps them off the network |
+| `UVICORN_WORKERS` | Worker processes (default 2). Each holds its own copy of the models, ~300–400 MB |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials; docker-compose builds `DATABASE_URL` from them |
+| `PROFILE_RETENTION_DAYS` / `DECISION_AUDIT_RETENTION_DAYS` / `PROFILE_ACCESS_RETENTION_DAYS` | Profile-layer retention (180 / 90 / 365 days) |
+
+And the per-customer profile layer, which is **off unless all of these are set** and has **no development fallback in any mode**, `DEBUG=1` included:
+
+| Variable | Purpose |
+|---|---|
+| `DEEPCHECK_MERCHANT_KEYS` | `id:key` pairs. A merchant backend sends these with every `customer_ref`. A malformed entry stops the boot, in every mode |
+| `DEEPCHECK_PROFILE_KEY` | The HMAC key that turns (merchant, customer reference) into the stored pseudonym. **Rotating it is a silent mass reset** — see `.env.example` |
+| `DEEPCHECK_PROFILE_KEY_VERSION` | Stamped on every profile; a profile from another version is never compared |
+| `PROFILE_LAYER` | `1` computes, stores and audits the layer's opinion (shadow mode) |
+| `PROFILE_ESCALATION` | `1` additionally lets it ask for verification. Ignored while `PROFILE_LAYER` is off |
+| `PROFILE_REVIEW_KEYS` | Per-**operator** credentials for the human-review endpoint. Deliberately not `DASHBOARD_KEY`: a shared password cannot attribute a read to anyone |
 
 The frontend image builds the static bundle and serves it with nginx. For
 hot-reloading development use the override:

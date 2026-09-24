@@ -3,7 +3,8 @@
 Drives a **real Chromium browser** against the **real SDK** and the **real
 backend**. Every number produced here travels the same path as a production
 session: browser input events → `sdk/deepcheck.js` → `POST /api/analyze` →
-server-side `POST /api/transaction`.
+server-side `POST /api/demo/charge`, which runs the same decision code as
+`POST /api/decision` and charges only on `allow` or `warn`.
 
 ## Why this exists
 
@@ -28,22 +29,32 @@ detector can be trained and graded on the distribution it actually faces.
 ## Running it
 
 ```bash
-# 1. Backend, with the harness origin allowed through CORS
+# 1. Backend, with the harness origin allowed through CORS, Postgres up and a
+#    trained model on disk. DEMO_ENDPOINTS=1 is required: /api/demo/charge
+#    answers 404 without it.
 cd backend
-DEEPCHECK_SECRET=lab DEEPCHECK_OPERATOR_KEY=lab \
-DEEPCHECK_ALLOWED_ORIGINS=http://127.0.0.1:3000 \
+DATABASE_URL=postgresql+asyncpg://deepcheck:deepcheck@127.0.0.1:5432/deepcheck \
+DEEPCHECK_SECRET=lab DASHBOARD_KEY=lab DEBUG=0 DEMO_ENDPOINTS=1 \
+CORS_ORIGINS=http://127.0.0.1:3100 \
 uvicorn main:app --port 8000
 
 # 2. Attack ladder (in another shell, from the repo root)
 pip install -r lab/requirements.txt
+python -m playwright install chromium
 python lab/bot_lab.py --api http://127.0.0.1:8000
 
 # 3. Capture labelled telemetry for training/evaluation
-python lab/capture.py --api http://127.0.0.1:8000 --repeats 10
+python lab/capture.py --api http://127.0.0.1:8000 --repeats 8
 ```
 
-The harness is served on port 3000 so it matches the backend's default CORS
-allowlist. Nothing else may be listening there.
+Both tools serve the harness on **127.0.0.1:3100** — 3000 is taken by the demo
+frontend container in this repository — so that is the origin `CORS_ORIGINS`
+must allow. Nothing else may be listening there.
+
+`capture.py` reads `GET /api/score/{id}` to check the features the server
+stored against the ones it extracts locally from the same raw payload, so it
+needs the backend's `DASHBOARD_KEY` (`--dashboard-key`, or the environment
+variable). `--no-verify` skips that check and the `backend/` import with it.
 
 ## The ladder
 
@@ -79,3 +90,40 @@ broke through at the end — which is exactly the outcome that matters.
   the decisions — the lab would stop measuring what the product does.
 - These are scripted attacks, not a determined human attacker with unlimited
   attempts. They establish a floor, not a ceiling.
+- **H1 and H2 are scripts, not people.** Every kinematic property they have was
+  chosen by whoever wrote the scenario, so a 0 % false-positive rate against
+  them means "does not flag this lab's model of a user", never "does not flag
+  customers".
+
+## What the capture file currently cannot tell you
+
+The dataset in `lab/real_telemetry.json` (234 flushes, 47 runs, captured
+2026-09-06) has a measured blind spot, counted directly from the file:
+
+| feature | state in those 234 rows |
+|---|---|
+| `scroll_hizi_varyansi` | **never measured once** — all 234 sit at its neutral fallback, because no scenario scrolls |
+| `ivme_degisimi` | exactly 1.0 in **90** rows, including *every* `H1_human` and *every* `A3_human_mimic` row |
+| `duraklama_dagilimi` | exactly 1.0 in **109** rows |
+| `tiklama_oncesi_hareket` | measured in 66 rows, and at 1.0 in all 66 |
+| `odak_degisimi` | 0.0 in all 234 — a real measurement, not a fallback: the scripted runs never blur the tab |
+
+A feature pinned at a boundary cannot separate anything, so `ivme_degisimi`
+carries the same single bit for the lab's model of a person and for its best
+mimic. The cause is visible in the served bundle: the log-percentile endpoints
+for that feature are 10^−7.021 … 10^−5.532, fitted on the **simulator's**
+distribution, and real Chromium pointer motion sits above the top of the range.
+
+The repair is half built and **not finished**:
+
+1. `capture.py` now records the `raw` channels beside the features, so a
+   rescaling can be replayed instead of re-captured.
+2. `train_model.compute_feature_scaling(real_raw=…)` blends real raw values
+   into the percentile pool, weighted so they carry the same total mass as the
+   synthetic values. The blend can only **widen** the range.
+3. The samples in the existing file **predate step 1 and carry no `raw`**, so
+   `load_real_raw_for_scaling()` returns an empty list and retraining today
+   changes the scale not at all.
+
+Re-capturing (with at least one scenario that scrolls), retraining and
+re-measuring is the next step and has not been done: `TECHNICAL_GUIDE.md` §20.

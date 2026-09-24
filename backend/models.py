@@ -253,7 +253,9 @@ class CustomerProfile(Base):
     # Per-profile challenge budget (profiles.PROFILE_MAX_ESCALATIONS per
     # PROFILE_BUDGET_WINDOW_DAYS). A hard ceiling bounds the discrimination risk
     # -- inferred tremor, assistive input, a shared device -- far more reliably
-    # than a statistic does.
+    # than a statistic does. Despite the column name it counts challenges the
+    # customer PASSED in the window, not challenges issued: an unanswered
+    # challenge must never be able to spend it (main._learn_and_audit).
     escalation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     escalation_window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Drives self-healing: challenges that the customer PASSED, in a row. Three
@@ -372,9 +374,11 @@ class DecisionAudit(Base):
     action: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The INTERNAL reason, which the scored client is never told.
     reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # What the client was actually told: four internal reasons collapse to one
-    # "step_up", because naming the check that convicted a caller is a tuning
-    # signal -- submit, read the reason, adjust, repeat.
+    # What the client was actually told: six internal reasons (cluster,
+    # conformal, ambiguous, sequential, profile_deviation,
+    # profile_rate_limited -- main.PUBLIC_REASONS) collapse to one "step_up",
+    # because naming the check that convicted a caller is a tuning signal --
+    # submit, read the reason, adjust, repeat. All fit String(32).
     public_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     risk_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
@@ -385,7 +389,9 @@ class DecisionAudit(Base):
     # replay looks like. Recorded, not enforced -- enforcing it needs the lab
     # replay measurement that does not exist yet.
     p_value_low: Mapped[float | None] = mapped_column(Float, nullable=True)
-    top_features: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # none_as_null for the same reason as candidate_vec below: this is None on
+    # every decision the layer had no opinion on, which is most of them.
+    top_features: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     modality: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The references the statistic was computed over -- probation vectors
     # excluded -- and, separately, the probation vectors stored for the same
@@ -395,6 +401,30 @@ class DecisionAudit(Base):
     reference_n: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     probation_n: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     feature_schema_version: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    # The session vector this decision compared, stored ONLY when the
+    # comparison found a deviation (acted on, shadow, or suppressed by the
+    # budget or the breaker) -- the decisions a customer can contest. The
+    # human review needs to see what was compared, and for the case it exists
+    # for -- challenged, did not pass, complains days later -- nothing else
+    # keeps it: the flushes are deleted at 24h and a deviation that step-up did
+    # not rescue is never learned. Twelve medians, kept with the row for
+    # DECISION_AUDIT_RETENTION_DAYS, and NULLed together with profile_id by an
+    # erasure, an objection and the idle-profile sweep: behavioural data of
+    # the erased customer, not an accountability record.
+    #
+    # none_as_null: without it SQLAlchemy serialises Python None as the JSON
+    # value `null`, not as SQL NULL, so every row ever written carried a
+    # vector as far as SQL was concerned. Measured on Postgres 16 with the
+    # previous declaration: after 10 decisions of which 2 deviated, all 10
+    # rows answered `candidate_vec IS NOT NULL` true, and jsonb_typeof was
+    # 'object' for 2 and 'null' for 8. The clearing UPDATEs on erasure and on
+    # the idle sweep wrote the same JSON null, so an erased row could not be
+    # told apart from one that never held a vector. Nothing in the app read it
+    # wrongly -- both call sites test truthiness and asyncpg decodes JSON null
+    # back to None -- but `WHERE candidate_vec IS NOT NULL` is how an
+    # operator, a reviewer or an auditor asks the question, and it answered
+    # every decision ever made.
+    candidate_vec: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     # True when the layer had an opinion but PROFILE_ESCALATION was off, so the
     # decision was not affected. This is how the layer gets measured before it
     # is allowed to act.

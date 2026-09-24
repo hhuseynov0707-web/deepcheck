@@ -259,7 +259,10 @@ def test_attestation_is_solved_the_way_the_sdk_solves_it(api):
         return response.status_code, response.json()
 
     session_id, token = demo_seed.attest(post)
-    assert token == api.main.sign_session(session_id)
+    # Valid for this session -- not equal to a freshly signed token: tokens
+    # carry their issue second, so an equality check flakes whenever a second
+    # boundary falls between the two calls.
+    api.main._require_session_token(session_id, token)  # raises HTTPException(401) unless valid
 
 
 def test_mark_simulated_flags_the_session_without_moving_its_clock(api):
@@ -286,6 +289,39 @@ def test_mark_simulated_flags_the_session_without_moving_its_clock(api):
     assert other["is_synthetic"] is False
     assert tables.committed["decision_audit"][0]["is_synthetic"] is True
     assert tables.committed["customer_profile_vectors"][0]["is_synthetic"] is True
+
+
+def test_the_contrast_case_never_calls_an_abstention_a_match():
+    """--simulate prints one line reading the outcome. "Not challenged" is
+    evidence of a match only when the layer compared the session; a charge
+    after an abstention (a keyboard history too thin to compare, say) must
+    say the layer was silent, not that the identity matched."""
+    charged = {"status": "charged", "decision": {"action": "allow", "reason": "score"}}
+    declined = {"status": "declined", "decision": {"action": "verify", "reason": "step_up"}}
+
+    def audit(state, reason="score"):
+        return {"profile_state": state, "reason": reason}
+
+    matched = demo_seed.simulation_verdict(charged, audit("evaluated"))
+    assert "ek doğrulama istenmedi" in matched and "karşılaştırıldı" in matched
+
+    for state in ("immature", "too_few_features", "thin_session", "budget_exhausted", "breaker"):
+        silent = demo_seed.simulation_verdict(charged, audit(state))
+        assert "KARŞILAŞTIRMA YAPMADI" in silent and state in silent
+        assert "beklenen" not in silent
+    assert "KARŞILAŞTIRMA YAPMADI" in demo_seed.simulation_verdict(charged, None)
+
+    challenged = demo_seed.simulation_verdict(declined, audit("evaluated", "profile_deviation"))
+    assert "ek doğrulama istedi" in challenged and demo_seed.SAME_PERSON_CHALLENGE_RATE in challenged
+
+    other = demo_seed.simulation_verdict(
+        {"status": "declined", "decision": {"reason": "insufficient_evidence"}}, None
+    )
+    assert "profil katmanı değil" in other and "insufficient_evidence" in other
+
+    # The per-customer decision limit is the layer too, but not a comparison.
+    limited = demo_seed.simulation_verdict(declined, audit("rate_limited", "profile_rate_limited"))
+    assert "karar sınırı aşıldı" in limited and "profil katmanı değil" not in limited
 
 
 # --- the history goes through the served path (needs the model bundle) ------------------
@@ -457,11 +493,6 @@ def test_record_session_still_records_a_real_session():
     assert record is not None and len(record["flushes"]) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="record_session.py (not owned by the demo step) still files a simulated session; "
-    "see open issue: _load() must return None when sessions.is_synthetic is true",
-)
 def test_record_session_refuses_a_simulated_session():
     """record_session.py is the one gate between the served database and the
     evaluation set (data/real/ and, with --to-training, lab/real_telemetry.json).
@@ -473,14 +504,55 @@ def test_record_session_refuses_a_simulated_session():
     assert record is None
 
 
+def test_a_since_sweep_never_proposes_a_simulated_session(monkeypatch):
+    """--since is how a batch of sessions is labelled by hand, and a window
+    that contains a --simulate run would otherwise list it for filing."""
+    import record_session
+    from sqlalchemy.dialects import postgresql
+
+    statements = []
+
+    class _DB:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, statement):
+            statements.append(statement)
+            return SimpleNamespace(all=lambda: [])
+
+    monkeypatch.setattr(record_session, "get_sessionmaker", lambda: _DB)
+    assert _run(record_session.resolve_since("2h")) == []
+    [statement] = statements
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert "sessions.is_synthetic IS false" in sql
+
+
 # --- the SOC panel labels synthetic data (server change pending) -------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="main.py (not owned by the demo step) does not expose the synthetic flags yet; "
-    "see open issue: DecisionAudit.is_synthetic, profile.synthetic and is_synthetic on /api/score and /api/sessions",
-)
+def test_a_simulated_session_is_synthetic_in_its_decision_row_when_written(api):
+    """demo_seed.py --simulate flags its session after the first flush and
+    re-marks the audit rows after the charge -- but a --simulate killed in
+    between never reaches the re-marking, so the decision itself must write
+    the flag. Paid as a REAL demo customer here (not seeded, so not synthetic),
+    so only the session's own flag can set it; the control run shows the flag
+    is not simply always on."""
+    api.configure(escalation=True)
+    for simulated in (True, False):
+        tables = _ProfileTables()
+        session_id = str(uuid.uuid4())
+        db = _customer_session(api, tables, session_id, value=_MATCHING)
+        db.session.is_synthetic = simulated
+        response = _post_charge(api, db, session_id, ref="demo-musteri-1")
+        assert response.status_code == 200, response.text
+        [audit] = _audit_rows(tables, session_id)
+        assert audit["profile_state"] == "immature"
+        assert audit["is_synthetic"] is simulated
+
+
 def test_the_soc_panel_is_told_what_is_synthetic(api):
     """The SOC card and session list show "Sentetik demo verisi" from these
     fields (frontend ProfilePanel / SessionTable). A juror is a real person,
@@ -509,11 +581,6 @@ def test_the_soc_panel_is_told_what_is_synthetic(api):
     assert rows[0]["is_synthetic"] is True
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="main.py (not owned by the demo step) still learns real sessions into a synthetic profile; "
-    "see open issue: skip learning when the profile is_synthetic",
-)
 def test_a_synthetic_profile_is_never_taught(api):
     """A synthetic customer is an exhibit: compared against, never taught. A
     juror's approved session must not become one of the "synthetic" profile's

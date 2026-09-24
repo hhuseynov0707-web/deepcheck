@@ -109,6 +109,94 @@ async function profileCard() {
   return within(heading.closest("section"));
 }
 
+describe("Dashboard simulated sessions", () => {
+  // backend/demo_seed.py --simulate drives a session of a synthetic identity
+  // through the real API; /api/sessions and /api/score mark it is_synthetic.
+  const simulated = {
+    session_id: "sim-0001-bbbbbb",
+    risk_score: 90,
+    label: "Bot Tespit Edildi",
+    last_seen_at: "2026-09-16T10:01:00Z",
+    response_time_ms: 900,
+    is_synthetic: true,
+  };
+  const real = {
+    session_id: "oturum-0001-aaaa",
+    risk_score: 12.4,
+    label: "Gerçek Kullanıcı",
+    last_seen_at: "2026-09-16T10:00:00Z",
+    response_time_ms: 21,
+    is_synthetic: false,
+  };
+
+  function openWith(sessions) {
+    window.sessionStorage.setItem("deepcheck.dashboardKey", "gizli-anahtar");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url) => {
+        if (url.endsWith("/api/sessions")) return { ok: true, status: 200, json: async () => sessions };
+        const session = sessions.find((s) => url.endsWith(`/api/score/${s.session_id}`));
+        if (session) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ ...session, confidence: 0.9, history: [], shap_explanation: [], profile: PROFILE_OFF }),
+          };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+      }),
+    );
+    render(<Dashboard />);
+  }
+
+  const metric = (label) => screen.getByText(label).nextElementSibling.textContent;
+
+  it("badges a simulated session in the list and in the selected-session card", async () => {
+    openWith([simulated, real]);
+
+    const heading = await screen.findByRole("heading", { name: "Seçili Session" });
+    const selected = within(heading.parentElement);
+    await waitFor(() => expect(selected.getByText("Sentetik demo verisi")).toBeInTheDocument());
+    expect(selected.getByText(/Simüle edilmiş oturum — gerçek bir kişi değil/)).toBeInTheDocument();
+
+    // One badge in the list: on the simulated card, not the real one.
+    const cards = screen.getAllByRole("button");
+    const simCard = cards.find((c) => c.textContent.includes("sim-0001-bbbb"));
+    const realCard = cards.find((c) => c.textContent.includes("oturum-0001-a"));
+    expect(within(simCard).getByText("Sentetik demo verisi")).toBeInTheDocument();
+    expect(within(realCard).queryByText("Sentetik demo verisi")).not.toBeInTheDocument();
+  });
+
+  it("keeps simulated sessions out of every metric and says how many were left out", async () => {
+    openWith([simulated, real]);
+
+    expect(await screen.findByText(/Metrikler 1 sentetik demo oturumunu/)).toBeInTheDocument();
+    // Only the final, synthetic-free state shows all four at once: counted in,
+    // the simulated bot would make it 2 sessions, 1 bot, an average risk of
+    // 51.2 and an average response time of 460.5 ms.
+    await waitFor(
+      () => {
+        expect(metric("Toplam Oturum")).toBe("1");
+        expect(metric("Tespit Edilen Bot")).toBe("0");
+        expect(metric("Ortalama Risk Skoru")).toBe("12.4");
+        expect(metric("Ortalama Yanıt Süresi")).toBe("21.0 ms");
+      },
+      { timeout: 8000 },
+    );
+    // The metric cards count up to their values, which under a loaded test
+    // run took longer than vitest's default 5 s test timeout -- shorter than
+    // the 8 s this waitFor allows. The test gets room for its own wait.
+  }, 15000);
+
+  it("counts everything and shows no note when nothing is synthetic", async () => {
+    openWith([real]);
+
+    await waitFor(() => expect(metric("Toplam Oturum")).toBe("1"), { timeout: 8000 });
+    expect(screen.queryByText(/sentetik demo oturumunu/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Sentetik demo verisi")).not.toBeInTheDocument();
+  }, 15000);
+});
+
 describe("Dashboard customer profile card", () => {
   it("shows a profile being built as n / 19 for the session's input type", async () => {
     // Maturity cannot be reached on stage (19 sessions per input type), so
@@ -174,6 +262,19 @@ describe("Dashboard customer profile card", () => {
 
     expect(card.getByText("Ek doğrulama istendi")).toBeInTheDocument();
     expect(card.queryByText("Gölge modu — karar etkilenmedi")).not.toBeInTheDocument();
+  });
+
+  it("says when too many decisions named the customer and the profile was not read", async () => {
+    // The per-customer decision bucket ran out: the backend read nothing and,
+    // enforcing, asked for step-up instead of approving. No count, no p-value:
+    // nothing was compared.
+    openDashboardWith({ ...PROFILE_OFF, state: "rate_limited", escalated: true });
+    const card = await profileCard();
+
+    expect(card.getByText("Bu müşteri için karar sınırı aşıldı — profil okunmadı")).toBeInTheDocument();
+    expect(card.getByText("Ek doğrulama istendi")).toBeInTheDocument();
+    expect(card.getByText("Sapma p-değeri").nextElementSibling).toHaveTextContent("—");
+    expect(card.queryByText(/\/ 19/)).not.toBeInTheDocument();
   });
 
   it("counts sessions awaiting confirmation apart from the references", async () => {
@@ -267,6 +368,50 @@ describe("Dashboard customer profile card", () => {
     expect(card.getByText("Profil yok")).toBeInTheDocument();
     expect(card.getByText(/son ödeme kararından okunur/)).toHaveTextContent(/“Profil yok” görünür/);
     expect(card.queryByText(/\/ 19/)).not.toBeInTheDocument();
+  });
+
+  it("labels a decision made against a synthetic demo customer, with its maturity and deviating features", async () => {
+    // The jury demo: a real person pays as a seeded synthetic customer. The
+    // card must say, in the badge and in words, that the history compared
+    // against was simulated -- and still show what the jury came to see.
+    openDashboardWith({
+      ...PROFILE_OFF,
+      state: "evaluated",
+      modality: "mouse",
+      reference_n: 20,
+      deviation: 5.9,
+      p_value: 0.0476,
+      top_features: [
+        { feature: "hiz_otokorelasyonu", z: 6.4 },
+        { feature: "tereddut_skoru", z: 4.1 },
+        { feature: "yon_tutarliligi", z: 3.3 },
+      ],
+      escalated: true,
+      synthetic: true,
+    });
+    const card = await profileCard();
+
+    expect(card.getByText("Sentetik demo verisi")).toBeInTheDocument();
+    expect(card.getByText(/sentetik demo verisi katıldı/)).toHaveTextContent(/gerçek bir kişiye ait değil/);
+    expect(card.getByText(/mekanizmayı gösterir, gerçek kişilerdeki doğruluğu değil/)).toBeInTheDocument();
+    expect(card.getByText("Fare: 20 / 19")).toBeInTheDocument();
+    expect(card.getByText("Olgun")).toBeInTheDocument();
+    expect(card.getByText("hiz_otokorelasyonu: z 6.4")).toBeInTheDocument();
+    expect(card.getByText("Ek doğrulama istendi")).toBeInTheDocument();
+  });
+
+  it("says nothing synthetic about a real profile, or when the server does not send the flag", async () => {
+    openDashboardWith({ ...PROFILE_OFF, state: "evaluated", modality: "mouse", reference_n: 20, synthetic: false });
+    let card = await profileCard();
+    expect(card.queryByText(/[Ss]entetik demo/)).not.toBeInTheDocument();
+    cleanup();
+    vi.unstubAllGlobals();
+
+    // A backend without the field: no badge rather than a guess.
+    openDashboardWith({ ...PROFILE_OFF, state: "evaluated", modality: "mouse", reference_n: 20 });
+    card = await profileCard();
+    expect(card.queryByText(/[Ss]entetik demo/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Sentetik demo verisi")).not.toBeInTheDocument();
   });
 
   it("has a Turkish label for every state and input type and never shows the raw key", () => {

@@ -482,7 +482,7 @@ PROFILE_BUFFER_MAX = 20
 # rescued session counted as a reference. Like every rate measured on
 # synthetic people these describe the generator, not real grandchildren; they
 # give the size of the cost, and PROFILE_MAX_ESCALATIONS caps it at three
-# challenges a month.
+# passed challenges a month.
 PROFILE_PROBATION_MAX = 4
 
 # Per profile per Europe/Istanbul day. Bounds how fast a profile can be taught,
@@ -511,17 +511,29 @@ PROFILE_HEAL_AFTER = 3
 # most PROFILE_PROBATION_MAX long, so it always survives the cut.
 PROFILE_HEAL_KEEP = 10
 
-# Per-profile challenge budget. Even with self-healing, no single person may be
-# challenged by this layer more than three times a month. A per-modality
-# discrimination risk (inferred disability, tremor, assistive input) is bounded
-# by a hard ceiling far more reliably than by a statistic.
+# Per-profile challenge budget, counted in PASSED challenges. Even with
+# self-healing, a person who keeps proving it is them -- the grandchild paying
+# once a week between grandmother's own purchases, which resets the healing
+# counter every time -- is challenged by this layer at most three times a
+# month. A per-modality discrimination risk (inferred disability, tremor,
+# assistive input) is bounded by a hard ceiling far more reliably than by a
+# statistic.
+#
+# Passed, not issued (main._learn_and_audit spends it). A budget spent by
+# issuing a challenge is an off switch for the attacker this layer exists for:
+# without the OTP he could not pass a single challenge, but he could press pay
+# again, and the fourth unanswered challenge used to be an approval. The cost
+# is stated there: DeepCheck hears of a pass only where it records the step-up
+# (the demo), so outside it the bound is not reached.
 PROFILE_BUDGET_WINDOW_DAYS = 30
 PROFILE_MAX_ESCALATIONS = 3
 
-# Population circuit breaker: an ABSOLUTE ceiling on enforced profile
-# escalations deployment-wide per hour. Absolute rather than a ratio because a
-# ratio needs a denominator that is itself unreliable at low traffic, and 50
-# challenges an hour from one control is already far past the point where
+# Population circuit breaker: an ABSOLUTE ceiling on the number of different
+# customers given an enforced profile challenge deployment-wide per hour
+# (main._profile_breaker_count counts distinct profiles, so one account that
+# retries cannot trip it). Absolute rather than a ratio because a ratio needs a
+# denominator that is itself unreliable at low traffic, and 50 customers
+# challenged in an hour by one control is already far past the point where
 # someone should be looking at it. The thresholds in this file were calibrated
 # on synthetic identities and WILL be wrong on first contact with real traffic;
 # the only question is whether that is discovered by a metric or by a merchant
@@ -541,6 +553,9 @@ STATE_THIN_SESSION = "thin_session"
 STATE_TOO_FEW_FEATURES = "too_few_features"
 STATE_BUDGET_EXHAUSTED = "budget_exhausted"
 STATE_BREAKER = "breaker"
+# Too many decisions named this customer within the hour: the profile was not
+# read at all (main._load_profile_context, RATE_LIMITS["profile"]).
+STATE_RATE_LIMITED = "rate_limited"
 STATE_EVALUATED = "evaluated"
 
 PROFILE_STATES = (
@@ -552,6 +567,7 @@ PROFILE_STATES = (
     STATE_TOO_FEW_FEATURES,
     STATE_BUDGET_EXHAUSTED,
     STATE_BREAKER,
+    STATE_RATE_LIMITED,
     STATE_EVALUATED,
 )
 

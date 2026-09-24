@@ -4,7 +4,8 @@ import MetricCard from "../components/MetricCard.jsx";
 import ProfilePanel from "../components/ProfilePanel.jsx";
 import RiskBadge from "../components/RiskBadge.jsx";
 import RiskChart, { ShapBarChart } from "../components/RiskChart.jsx";
-import SessionTable from "../components/SessionTable.jsx";
+import SessionTable, { SIMULATED_SESSION_TITLE } from "../components/SessionTable.jsx";
+import SyntheticBadge from "../components/SyntheticBadge.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const REFRESH_MS = 3000;
@@ -147,15 +148,22 @@ export default function Dashboard() {
     };
   }, [selectedId, dashboardKey]);
 
+  // The four cards are figures a jury reads as "what the system saw", so a
+  // simulated session (backend/demo_seed.py --simulate) is left out of all of
+  // them: synthetic data may be SHOWN, labelled, but never counted into a
+  // number. The list below still shows those sessions, with their badge, and
+  // the note under the cards says how many were left out.
   const metrics = useMemo(() => {
-    const total = sessions.length;
-    const avgRisk = total ? sessions.reduce((sum, s) => sum + (s.risk_score || 0), 0) / total : 0;
-    const botCount = sessions.filter((s) => s.label === "Bot Tespit Edildi").length;
-    const responseValues = sessions.filter((s) => typeof s.response_time_ms === "number");
+    const counted = sessions.filter((s) => s.is_synthetic !== true);
+    const syntheticCount = sessions.length - counted.length;
+    const total = counted.length;
+    const avgRisk = total ? counted.reduce((sum, s) => sum + (s.risk_score || 0), 0) / total : 0;
+    const botCount = counted.filter((s) => s.label === "Bot Tespit Edildi").length;
+    const responseValues = counted.filter((s) => typeof s.response_time_ms === "number");
     const avgResponse = responseValues.length
       ? responseValues.reduce((sum, s) => sum + s.response_time_ms, 0) / responseValues.length
       : 0;
-    return { total, avgRisk, botCount, avgResponse };
+    return { total, avgRisk, botCount, avgResponse, syntheticCount };
   }, [sessions]);
 
   if (!dashboardKey) {
@@ -243,6 +251,11 @@ export default function Dashboard() {
         <MetricCard label="Tespit Edilen Bot" value={metrics.botCount} decimals={0} accent="text-rose-400" />
         <MetricCard label="Ortalama Yanıt Süresi" value={metrics.avgResponse} decimals={1} suffix=" ms" />
       </div>
+      {metrics.syntheticCount > 0 && (
+        <p className="-mt-5 text-xs text-violet-300">
+          Metrikler {metrics.syntheticCount} sentetik demo oturumunu (simüle edilmiş, gerçek kişi değil) içermez.
+        </p>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-3">
@@ -258,6 +271,12 @@ export default function Dashboard() {
                 <p className="font-mono text-xs text-zinc-500 break-all">
                   {selectedDetail.session_id}
                 </p>
+                {selectedDetail.is_synthetic === true && (
+                  <div className="space-y-1">
+                    <SyntheticBadge title={SIMULATED_SESSION_TITLE} />
+                    <p className="text-xs text-violet-300">{SIMULATED_SESSION_TITLE}</p>
+                  </div>
+                )}
                 <RiskBadge riskScore={selectedDetail.risk_score} size="lg" />
                 {/* `confidence` is max(p, 1-p) of the session's latest flush:
                     the forest's certainty in whichever class it picked, not a

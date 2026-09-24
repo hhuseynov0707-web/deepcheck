@@ -1,6 +1,13 @@
 import { useState } from "react";
 
+import SyntheticBadge from "./SyntheticBadge.jsx";
+
 const DEFAULT_VISIBLE = 5;
+
+// GET /api/sessions marks a session driven by backend/demo_seed.py --simulate
+// with is_synthetic: true. Strictly true, so a server that does not send the
+// field yet shows no badge rather than a wrong one.
+export const SIMULATED_SESSION_TITLE = "Simüle edilmiş oturum — gerçek bir kişi değil; hiçbir ölçüme katılmaz.";
 
 // Highest risk first: operators/judges need to see the dangerous sessions
 // immediately, not scroll past a pile of clean ones to find them.
@@ -31,6 +38,11 @@ function SessionCard({ session, accent, isSelected, onSelect }) {
           <span className="font-mono text-xs text-zinc-500 truncate">{session.session_id.slice(0, 13)}…</span>
           <span className="font-mono text-xs text-zinc-400">{formatTime(session.last_seen_at)}</span>
         </div>
+        {session.is_synthetic === true && (
+          <div className="mb-1.5">
+            <SyntheticBadge size="sm" title={SIMULATED_SESSION_TITLE} />
+          </div>
+        )}
         <div className="flex items-end justify-between">
           <span className="text-sm text-zinc-300">{session.label}</span>
           <span className={`text-xl font-semibold font-mono tabular-nums ${accent.text}`}>
