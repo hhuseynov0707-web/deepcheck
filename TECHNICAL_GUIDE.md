@@ -1468,8 +1468,53 @@ auditable and free.
 
 **Why Docker Compose and not the cloud?**
 The jury and any bank evaluator can run the whole system on one machine
-with one command, offline. The same images move unchanged to Kubernetes
-or any cloud later.
+with one command, offline. The same images move unchanged to Kubernetes —
+including the institution's own, which is where a bank's data has to stay.
+
+**Would AWS Lambda / serverless fix performance under high load?**
+Not for this workload, and it is not used; the pre-evaluation report's Lambda
+claim is corrected in `docs/rapor-duzeltmeleri.md` §4. There are four reasons:
+- The load is a steady stream of short CPU-bound calls, not spikes.
+- A cold start costs seconds against a 50 ms budget.
+- Autoscaled functions move the bottleneck to Postgres connections.
+- Customer data has to stay in the country.
+
+Stateless containers autoscaled on the institution's own orchestrator give the
+same elasticity (§17.8). Overload is survivable today because every failure
+resolves to `verify` (§17.5).
+
+**If a fraud gets through, does the system learn it?**
+The bot model never does: it is trained offline only, on synthetic data and
+hand-labelled recordings.
+
+The per-customer profile does learn it, because an unflagged `allow` is stored
+as a reference at once. One such reference took an attacker's escalation rate
+from 47.5 % to 25.5 % on synthetic identities. The bounds are:
+- 3 learns a day and 20 references;
+- `warn`, `verify` and `block` sessions never teach;
+- a step-up-rescued session is only probation;
+- a disputed payment deletes the vector;
+- the layer can only ask for verification.
+
+The open gap is how late a dispute arrives (§19.4).
+
+**With a million customers, won't the profiles blur into one another? How sensitive is it?**
+No. Each customer is compared only with their own twenty past sessions, and no
+population model exists to converge. Two people who behave alike are a
+detection-power problem, and it is measured: 47.5 %, and 18.4 % after the
+frame-clock retrain.
+
+The threshold is per customer — deviation beyond every one of their own
+references — and α = 0.05 is a measured trade-off: 4.9 % false challenges for
+47.5 % detection, against 9.9 % for 61.5 % at α = 0.1. All of it was set on
+synthetic identities, and it is re-derived before the layer is enabled
+(§19.10).
+
+**Can you afford a personal model for every customer?**
+Today there is no model to train, only a 1.70 ms statistic. For the Faz 2
+per-customer Isolation Forest we measured 106 ms to fit and 6.7 ms to score on a
+laptop. That makes a nightly refit of 50,000 customers about 38 minutes on
+4 vCPU, and +0.9 % CPU per checkout (§19.11).
 
 **What was the hardest bug?**
 Hesitation was measured over a 2 s window in production but about 10 s in
@@ -1731,6 +1776,53 @@ the tree today.
 
 The honest order of work is 5, then 1 and 2, then a load test — and only then
 does this section get replaced with measurements.
+
+### 17.8 Why not serverless (AWS Lambda)
+
+The pre-evaluation report said "AWS Lambda tabanlı serverless mimari" and
+"event-driven asenkron veri işleme". Neither exists in this code
+(`docs/rapor-duzeltmeleri.md` §4), and the unused Lambda adapter that once sat
+in the tree was removed rather than left looking supported. The question "would
+serverless fix performance under high load?" was worked through on 2026-09-26.
+**Nothing below was measured on Lambda** — there is no Lambda build to measure.
+It is a design decision, and the reasons are specific to this workload:
+
+1. **Load shape.** One open checkout is a steady 0.5 requests per second of
+   ~23 ms of CPU-bound work (§17.1 – §17.3). That is a stream, not a spike: the
+   case a pool of warm containers with horizontal autoscaling is built for.
+   Serverless pays off on rare, bursty events.
+2. **Cold start against the 50 ms budget.** Every new instance must import
+   Python, NumPy, scikit-learn and SHAP and unpickle the model bundle; in the
+   container one worker holds ~300–400 MB for exactly this (§17.5). A cold start
+   costs seconds, not milliseconds, and it lands on a customer's payment. The
+   remedy, provisioned concurrency, is always-on capacity again, paid for while
+   idle.
+3. **The bottleneck moves to Postgres.** Every flush writes a row. Hundreds of
+   function instances each opening database connections is the connection
+   queue §17.6 already describes at 15 per worker, multiplied; it needs a
+   connection proxy in front of the database. Serverless scales the part that
+   is not the constraint.
+4. **State that lives in memory.** The rate limiters and the profile breaker's
+   cache are per process (§15.3, §17.6). A function instance's memory is neither
+   shared nor kept, so both would first need the shared store of §17.7 item 4.
+5. **Data residency, and the product's own claim.** Behavioural telemetry and
+   profiles are personal data under KVKK, whose Article 9 governs transfer
+   abroad, and banks are subject to BDDK's information-systems regulation,
+   which requires their primary and secondary systems to be located in Turkey.
+   The ÇÖZÜM slide names "data leaves the country" as the weakness of foreign
+   cloud services; running on a foreign cloud region would be that weakness.
+   This is an engineering reading, not legal advice — the integrating
+   institution's compliance team decides.
+
+**What gives the same benefit here.** The containers already hold no session
+state (Postgres is the only shared state), so autoscaling is more containers
+behind a load balancer on the institution's own orchestrator — Lambda's
+elasticity, inside the institution — together with the load shedding, SDK
+back-off, shared limit store and pool limits of §17.7. The one useful part of
+"event-driven" is to move writes the current answer does not need (the profile
+learning insert, audit rows) onto a queue; the specification already permits
+the learning insert to leave the response path (§19.8). **None of this is
+implemented.**
 
 ---
 
@@ -2024,6 +2116,58 @@ counting passes is that DeepCheck only hears of a pass where it runs the step-up
 itself (`/api/demo/verify`), so outside the demo neither the budget nor
 self-healing is ever reached (§15.12).
 
+**Which decisions teach.** Checked against `main._learn_and_audit` on
+2026-09-26 (`backend/main.py`, the learn condition around line 3035). A session
+is learned in exactly two cases:
+
+| case | stored as |
+|---|---|
+| final action `allow` with reason `score`, and the profile verdict did **not** flag a deviation — this includes immature and too-few-features profiles, which is how a profile matures, and excludes a deviation that shadow mode, an exhausted budget or the breaker suppressed | a **reference**, immediately |
+| the ladder said `allow` or `warn`, the profile escalated it to `verify` (`profile_deviation`), and a fresh step-up lifted it to `allow` (`verified`) | **probation** (§19.3) |
+
+`warn` never teaches. `block` never teaches. No other `verify` teaches, including
+one rescued by a step-up for a reason other than the profile. Both cases also
+need the layer enabled, an active, non-synthetic profile whose schema and key
+versions match, a session vector that is not thin, a session not learned
+before, and room under the daily cap. The cap counts vectors created since
+Istanbul midnight that still exist, across modalities and including probation.
+
+**What an undetected fraud does to the profile.** The first row means a
+fraudulent session that the layer did not flag is learned as a reference at
+authorisation time, not at settlement. The measured cost of attacker references
+(`docs/profile-evaluation.md` §7, the promoted table, mouse, synthetic):
+
+| attacker references | attacker's sessions escalated |
+|---|---|
+| 0 | 47.5 % |
+| 1 | 25.5 % |
+| 4 | 13.7 % |
+
+That table promotes arbitrary attacker sessions, including ones the layer would
+have flagged. A session that was *not* flagged is by construction no more
+extreme than the references it was ranked against, so its shielding effect is
+expected to be smaller. That is expected, **not measured**.
+
+What bounds it:
+- 3 learns per day and 20 references.
+- `POST /api/outcome` `disputed` deletes the vector, whether it is a reference or
+  on probation.
+- The layer can only escalate, so poisoning makes it quieter; it cannot approve
+  anything the score or the sequential test stops.
+
+The **global Random Forest never learns from live decisions**. The only `.fit`
+calls are offline, in `train_model.py` and `model_selection.py`, on synthetic
+data plus recordings an operator labels by hand (`record_session.py --label`).
+There is no `partial_fit`, `warm_start` or refit in `main.py` or `scorer.py`,
+and `./lab` and `./data` are mounted read-only in the container.
+
+The gap is **dispute latency**: a chargeback arrives weeks later, and until
+then the fraudulent reference stays.
+
+*Design, not implemented:* delayed learning. A rule-one vector would be held on
+probation until the merchant settles the payment or N days pass without a
+dispute. The cost is maturity later than seven days.
+
 ### 19.5 What the client is told
 
 Six internal reasons collapse to one public `step_up` (`PUBLIC_REASONS`):
@@ -2181,6 +2325,119 @@ anything. That is how it is meant to be measured before it is allowed to act.
 
 A malformed `DEEPCHECK_MERCHANT_KEYS` entry stops the boot, in every mode, and
 the error names the entry's position rather than its text.
+
+### 19.10 At scale: do profiles converge, and how sensitive is the layer?
+
+**Profiles do not converge as the customer base grows.** This is true by
+construction and was checked against the code on 2026-09-26.
+- References are loaded `WHERE profile_id = <this profile> AND modality = <this
+  session's> AND feature_schema_version = <current>` (`main._read_profile_context`).
+- Centre and scale are the median and 1.4826 × MAD of **that customer's own**
+  references (`profiles.feature_stats`).
+- There is no population model, no cross-customer comparison and no pooled
+  fallback.
+
+A million customers are a million independent statistics of at most twenty
+vectors each. Adding a customer changes nothing about any existing profile.
+
+Three things are shared, and none of them mixes profiles:
+1. **The coordinate system.** Features are normalised with scaling fitted at
+   training time (`scorer.normalize_feature`), so every customer is measured
+   with the same frozen ruler. A retrain moves the ruler for everyone at once,
+   which is why `FEATURE_SCHEMA_VERSION` is bumped by hand and old vectors
+   retire (§7, `lstm_model.py`).
+2. **The global constants:** α, K, `PROFILE_MIN_FEATURE_OBS` and
+   `PROFILE_SCALE_FLOOR`.
+3. **The breaker.** 50 or more distinct customers challenged in an hour
+   suppresses enforcement for everyone. It is the only live coupling between
+   customers, and it acts on whether a verdict is enforced, not on the statistic.
+
+**What the question is really about is two people who behave alike.** That is
+detection power, and it is measured (synthetic identities, α 0.05, 20
+references):
+
+| served bundle | different person escalated: mouse | keyboard | AUC of the p-value: mouse | keyboard |
+|---|---|---|---|---|
+| before 2026-09-25 | 47.5 % | 26.4 % | 0.841 | 0.735 |
+| after the frame-clock retrain, constants (8, 0.02, 3) | 18.4 % | 11.6 % | | |
+
+The drop is **consistent with**, not measured to be caused by, the frame clock:
+the clock is a property of the machine, it is shared between people, and it
+narrows exactly the between-person spread this layer lives on. This is why the
+layer is a second line that can only ask for verification.
+
+**How sensitive it is, and who set that.** There is no global threshold. A
+session is flagged when its deviation exceeds that of **every** one of the
+customer's own references, each scored against the other points (full
+conformal, p = 1/21 ≤ α). A customer whose behaviour varies gets a wide
+envelope; a consistent one gets a narrow one. Ahmet is compared with Ahmet's
+past, never with Mehmet.
+
+α is a stated trade-off. Measured on mouse, synthetic, K = 3
+(`docs/profile-evaluation.md` §6):
+
+| α | references needed | false challenge | different person escalated |
+|---|---|---|---|
+| 0.02 | 49: never fires in the 20-vector buffer (with a 50-vector buffer: 1.9 % / 40.4 %) | — | — |
+| **0.05** (shipped) | 19 | **4.9 %** | **47.5 %** |
+| 0.10 | 9 | 9.9 % | 61.5 % |
+
+K, `PROFILE_MIN_FEATURE_OBS` and `PROFILE_SCALE_FLOOR` were set by rules
+written before the data was looked at (`docs/profile-evaluation.md` §2 –
+§6). All of it was measured on 200 synthetic identities. The 2026-09-25 re-run
+derives (8, 0.02, 12) instead of the shipped (8, 0.0062, 3), and nothing was
+changed (the warning at the top of that page).
+
+On top of the statistic sit two hard ceilings: 3 passed challenges per customer
+per 30 days, and 50 customers per hour deployment-wide (§19.4).
+
+### 19.11 A personal model per customer (Faz 2): measured cost
+
+Today no per-customer model is trained. The "profile" is recomputed at decision
+time from at most twenty vectors: `evaluate_profile` takes 1.70 ms p50 (§19.8).
+The Faz 2 target is a per-customer anomaly model — for example an Isolation
+Forest per customer and input type. Its cost was **measured on 2026-09-26 on
+the development laptop** (Windows, Python 3.13.2, scikit-learn 1.8.0, 8
+logical CPUs, `n_jobs=1`), on uniform random 20 × 12 data standing in for one
+customer's twenty 12-feature vectors:
+
+| step | measured |
+|---|---|
+| fit, 100 trees, `max_samples=20`, 20 × 12 | p50 **106.3 ms**, p95 180.7 ms (n = 200) |
+| score one session | p50 **6.70 ms**, p95 8.70 ms |
+| pickled model | median 286 KB raw, **51 KB** zlib (n = 20) |
+
+```python
+import time, numpy as np
+from sklearn.ensemble import IsolationForest
+X = np.random.default_rng(0).random((20, 12))
+t = time.perf_counter()
+m = IsolationForest(n_estimators=100, max_samples=20, n_jobs=1).fit(X)
+print((time.perf_counter() - t) * 1000, "ms")
+```
+
+Arithmetic from those numbers:
+
+- **Training stays off the request path.** A model is refit only when its buffer
+  changed, which means after a learn (at most 3 per customer per day), in a
+  nightly or queued job.
+- **Refitting 50,000 customers** takes 50,000 × 0.181 s ≈ 2.5 CPU-hours at p95,
+  about **38 minutes on 4 vCPU**, or about 22 minutes at p50.
+- **Refitting 1,000,000 customers** takes 1,000,000 × 0.106 s ≈ 29.5
+  CPU-hours, about **3.7 hours on 8 vCPU**.
+- **Decision path.** Scoring adds 6.7 ms p50 to one decision per checkout, about
+  +0.9 % on the 0.71 CPU-seconds of §17.3, and it stays inside the 50 ms budget.
+- **Storage.** 51 KB per model per input type: about 2.5 GB for 50,000
+  customers and 51 GB for a million, on top of §17.4's 32.7 kB of vectors.
+- **Calibration.** A trained model makes full conformal expensive: refitting
+  n + 1 = 21 times per decision is ≈ 2.2 s. The design is therefore split
+  conformal: fit on one set of sessions, calibrate on 19 others. That is 39
+  sessions, **at least 13 Istanbul days** at 3 learns a day. The ≤ α
+  false-challenge property holds for any score function under exchangeability,
+  so changing the model changes detection power, not the false-challenge bound.
+
+The caveats are real. This is a laptop timing, not the served container, and
+random data, not behaviour. **Nothing in this section is implemented.**
 
 ---
 
