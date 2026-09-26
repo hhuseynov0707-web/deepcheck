@@ -152,7 +152,7 @@ hiçbir alan karar için kullanılmamalıdır.
 | `reason` | Anlamı | Arayüzde |
 |---|---|---|
 | `score` | Skorun kendisi | Aksiyon mesajı yeterli |
-| `insufficient_evidence` | Henüz 3 akıştan az davranış var | "Birkaç saniye sonra tekrar deneyin" — **OTP istemeyin** |
+| `insufficient_evidence` | Henüz 3 akıştan az davranış var, **ya da** son 10 akışın 3'ten azında davranışın yapısı (6 yapısal özellikten en az biri) ölçülebildi | "Birkaç saniye sonra tekrar deneyin" — **OTP istemeyin**. Gerçek bir ödeme (kart yazmak ya da kayıtlı kartı seçip düğmeye gitmek) başladıktan sonra yaklaşık 5 akış boyunca gözlenir; bekleme ~2 saniyedir |
 | `stale` | Son akış 30 saniyeden eski | Sayfayı canlandırın ya da ek doğrulama |
 | `unknown_session` | Oturum kaydı yok | Sayfayı yenileyin |
 | `verified` | Ek doğrulama sunucuda kayıtlı, `verify` → `allow` yükseltildi | Ödeme geçer |
@@ -568,6 +568,7 @@ tablosunda büyüme terimi yoktur; tampon zaten tahliye eder.
 - [ ] `action` dışındaki hiçbir alan karar için kullanılmıyor.
 - [ ] Karar çağrısı başarısız olduğunda kod `verify` yoluna giriyor (kapalı devre).
 - [ ] `insufficient_evidence` için OTP değil "birkaç saniye sonra" mesajı gösteriliyor.
+- [ ] Bir ek doğrulama **tek bir** onay verir: doğrulama, ürettiği onayla harcanır. Aynı oturumda ikinci bir ödeme yeniden doğrulama ister (3-D Secure'ün tek işlemi kapsaması gibi). Karar isteğini aynı ödeme için tekrarlamayın; ilk `allow` doğrulamayı harcar.
 - [ ] Ek doğrulama sonucu sunucuda tutuluyor.
 - [ ] Profil katmanı kullanılacaksa: satıcı anahtarı yalnızca sunucuda, rıza
       uç noktası bağlı, silme/itiraz yolu müşteri hizmetlerine açık,

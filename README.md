@@ -498,7 +498,7 @@ cd backend && DEEPCHECK_SECRET=... DASHBOARD_KEY=... DEBUG=0 python -m pytest -q
 cd frontend && npm test && npm run build
 ```
 
-**169 backend tests** (54 scoring and API, 97 profile layer, 18 synthetic demo) and **59 frontend tests**, all passing as of 2026-09-20. Most of them are a bug that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, a checkout approved because the score never arrived, a step-up that could be turned into an approval by pressing pay again. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+**186 backend tests** (71 scoring and API, 97 profile layer, 18 synthetic demo) and **60 frontend tests**, all passing as of 2026-09-26. Most of them are a bug that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, a checkout approved because the score never arrived, a step-up that could be turned into an approval by pressing pay again. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
 
 The profile layer's central property is asserted directly rather than argued: one test sweeps 1,320 combinations over HTTP and checks that the layer never blocks and never moves the score or the label.
 
@@ -527,7 +527,7 @@ deepcheck/
 │   ├── benchmark.py          Form-fill generator, latency and score benchmarks
 │   ├── record_session.py     Record a labelled real session to data/real/
 │   ├── evaluate.py           Score those recordings → docs/evaluation.md
-│   ├── test_scorer.py        54 tests — scoring, auth, enforcement, tokens
+│   ├── test_scorer.py        71 tests — scoring, auth, enforcement, tokens
 │   ├── test_profiles.py      97 tests — the profile layer end to end
 │   ├── test_demo.py          18 tests — synthetic demo labelling
 │   └── models.py             SQLAlchemy schema (+ 4 profile tables)

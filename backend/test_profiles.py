@@ -793,6 +793,16 @@ def test_feature_names_change_requires_a_schema_bump():
     digest = hashlib.sha256("|".join(FEATURE_NAMES).encode("utf-8")).hexdigest()
     known = {
         1: "e43f3a0fc865d4e002ba71db4dcc45123d107c2590e919e29fe7c7e4a39fc7e7",
+        # 2 carries the same feature list: the bump is a RESCALE, not a rename
+        # (the frame-clock retrain moved three log-percentile endpoints by up
+        # to 0.40 on a 0-1 range -- see the note on FEATURE_SCHEMA_VERSION).
+        # Identical digests across two versions are therefore expected here,
+        # and are the case this dict exists to record.
+        2: "e43f3a0fc865d4e002ba71db4dcc45123d107c2590e919e29fe7c7e4a39fc7e7",
+        # 3 likewise: the lab re-capture let real raw values into the scaling
+        # pool for the first time, which moved two log-percentile endpoints.
+        # Same twelve names, same order.
+        3: "e43f3a0fc865d4e002ba71db4dcc45123d107c2590e919e29fe7c7e4a39fc7e7",
     }
     assert profiles.FEATURE_SCHEMA_VERSION in known, (
         "FEATURE_SCHEMA_VERSION was bumped without pinning the feature list it "
@@ -829,16 +839,33 @@ def _rounded(obj):
 
 
 # sha256 of the flush payloads, and of compute_feature_scaling's output, that the
-# generator produced at SEED for 40 sessions BEFORE synthetic identities were
-# added to train_model.py. Measured with that code on Windows (numpy 2.3.3) and
-# in the backend image (numpy 1.26.4, Linux): identical on both, and identical
-# again on both after the change. The payloads are rounded to 6 decimals so the
-# pin is a statement about the random draws, not about a platform's last ulp:
-# the extracted-feature arrays themselves differed between the two numpy builds
+# generator produces at SEED for 40 sessions WITHOUT any identity. The payloads
+# are rounded to 6 decimals so the pin is a statement about the random draws,
+# not about a platform's last ulp: the extracted-feature arrays themselves
+# differed between numpy 2.3.3 on Windows and numpy 1.26.4 in the backend image
 # (np.log10 / variance rounding), so they are deliberately not pinned here.
-_PRE_IDENTITY_PAYLOAD_SHA256 = "33ca0282792e4f7828e40cf97272b61dc3e007248d00d6ef1c15e43de581f1de"
-_PRE_IDENTITY_SCALING_SHA256 = "1df2250c9363b8e75553acbf2459732d53043e8382ca5fac86217d0456e80aa5"
-_PRE_IDENTITY_TAIL_DRAW = 0.6346661405957013
+#
+# WHAT THIS PIN IS AND IS NOT. It says "an identity changes nothing about what
+# training generates". It is NOT a claim that the training distribution never
+# changes: when the simulator is deliberately corrected, these values are
+# re-taken in the same commit, and the test still earns its keep because it
+# would fail if identity support had leaked into the no-identity path.
+#
+# Re-taken 2026-09-25 (frame clock + minimum-jerk pointer path + the
+# human_autofill persona -- train_model.py's REFRESH_RATES_HZ block explains
+# why). Verified identical across two runs on Windows / numpy 2.3.3; the draw
+# order below is load-bearing, since base_t is drawn before _pick_persona.
+#
+# Only the PAYLOAD digest moved in the re-take. The scaling digest and the
+# tail draw are the same values they had before the frame clock existed, and
+# that is a fact worth keeping rather than a coincidence: the last correction
+# in the set (stamping focus_changes as int, since a frame interval is
+# 16.667 ms and a float cursor had started leaking into the payload) changed
+# what the generator WRITES without changing which draws it makes or where the
+# rounded scaling endpoints land.
+_PRE_IDENTITY_PAYLOAD_SHA256 = "2e47b4f13ff707d4b65f1d5e829b0881d0669faa30aecd39cfe4e8b4f21fd0bc"
+_PRE_IDENTITY_SCALING_SHA256 = "e9387302b521220d87139cb39e906e012d04d49d9d916e3f6111cdb68349a550"
+_PRE_IDENTITY_TAIL_DRAW = 0.20898665200680722
 
 
 def test_identity_support_does_not_change_the_training_dataset():
@@ -864,8 +891,14 @@ def test_identity_support_does_not_change_the_training_dataset():
         after_explicit = float(train_model.rng.random())
         assert plain == explicit
         assert after_plain == after_explicit
-        # No identity key leaks into a training session's traits.
-        assert set(plain) == {"zero_clicks", "sparse_mouse", "headless", "vx", "vy"}
+        # No identity key leaks into a training session's traits. frame_hz and
+        # real_browser_clock are session-level CLIENT properties, not person
+        # properties -- a monitor's refresh rate is not a behavioural trait --
+        # so they belong here and not in IDENTITY_PARAMETERS.
+        assert set(plain) == {
+            "zero_clicks", "sparse_mouse", "headless", "vx", "vy",
+            "frame_hz", "real_browser_clock",
+        }
 
         # And the whole generator is pinned to its pre-identity output: the
         # same loop generate_synthetic_dataset() runs (feature extraction
@@ -882,7 +915,9 @@ def test_identity_support_does_not_change_the_training_dataset():
         digest = hashlib.sha256(json.dumps(_rounded(payloads), sort_keys=True).encode()).hexdigest()
         assert digest == _PRE_IDENTITY_PAYLOAD_SHA256, (
             "the synthetic training payloads changed: identity support must leave "
-            "generate_synthetic_dataset() bit-identical (spec 10.1)"
+            "generate_synthetic_dataset() bit-identical (spec 10.1). If the "
+            "simulator was corrected on purpose, re-take the three pins above "
+            "in the same commit and say what was corrected."
         )
         scaling = train_model.compute_feature_scaling(n_sessions=n)
         assert hashlib.sha256(json.dumps(scaling, sort_keys=True).encode()).hexdigest() == _PRE_IDENTITY_SCALING_SHA256
@@ -1736,8 +1771,13 @@ class _ProfileTables:
         if isinstance(statement, dml.UpdateBase):
             name = statement.table.name
             # sessions only for UPDATE: the profile link column. The session
-            # upsert in /api/analyze stays with _StubDB.
-            return name in _PROFILE_TABLES or (name == "sessions" and isinstance(statement, dml.Update))
+            # upsert in /api/analyze stays with _StubDB -- and so does spending
+            # a verification (main._consume_step_up), because the session
+            # under test, verified_at included, is _StubDB's session object.
+            if name == "sessions" and isinstance(statement, dml.Update):
+                assigned = {getattr(k, "name", k) for k in statement._values}
+                return "verified_at" not in assigned
+            return name in _PROFILE_TABLES
         if isinstance(statement, selectable.Select):
             froms = statement.get_final_froms()
             return len(froms) == 1 and getattr(froms[0], "name", None) in _PROFILE_TABLES
@@ -3060,8 +3100,15 @@ def test_step_up_rescued_deviation_is_learned_on_probation(api):
     assert _profile_row(tables, pid)["is_demo"] is True
     assert [r["reason"] for r in _audit_rows(tables, session_id)] == ["profile_deviation", "verified"]
 
-    # Again for the same session: charged, still exactly one vector, and the
-    # pass is not counted twice.
+    # Again for the same session. The verification was SPENT by the charge it
+    # authorised (main._consume_step_up): one step-up, one approval, the way a
+    # 3-D Secure authentication covers one transaction. Reusing it used to
+    # approve every checkout on the session for five minutes.
+    reused = _post_charge(api, db, session_id).json()
+    assert reused["status"] == "declined", "harcanmis dogrulama ikinci odemeyi onayladi"
+    # A second verification finishes it -- and the session still teaches the
+    # profile at most once: one vector, and the pass not counted twice.
+    assert _post_verify(api, db, session_id).status_code == 200
     assert _post_charge(api, db, session_id).json()["status"] == "charged"
     assert len(_vectors(tables, pid, session_id=session_id)) == 1
     assert _profile_row(tables, pid)["escalation_count"] == 1
@@ -3536,8 +3583,14 @@ def test_layer_is_off_by_default(api):
 
     main = api.main
     ts = _scorer_tests()
+    # measured_mask is part of the sequential read itself (main._observed_a_generator
+    # decides which flushes the statistic may use), not a profile-layer column.
     sprt_read = str(
-        select(main.BehaviorData.risk_score, main.BehaviorData.behavior_bucket)
+        select(
+            main.BehaviorData.risk_score,
+            main.BehaviorData.behavior_bucket,
+            main.BehaviorData.measured_mask,
+        )
         .where(main.BehaviorData.session_id == "x")
         .order_by(main.BehaviorData.created_at.desc())
         .limit(main.SPRT_MAX_FLUSHES)

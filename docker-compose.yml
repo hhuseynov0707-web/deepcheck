@@ -97,6 +97,19 @@ services:
       # backend/, trains on the real rows. The two then disagree about what
       # the model has learned, and the deployed one is the weaker.
       - ./lab:/lab:ro
+      # The recorded-session archive, for the same reason and with the same
+      # failure mode as the line above. train_model.py reads
+      # data/real/{human,bot}/*.json as a second source of real rows; without
+      # this mount the container resolves that to /data/real, finds nothing,
+      # and trains on the browser lab plus synthetic data only -- while the
+      # host, where data/ sits next to backend/, trains on the recordings too.
+      # A cold container retrains on its own (entrypoint.sh), so this is not a
+      # hypothetical path: delete the bundle and the deployed model quietly
+      # becomes the weaker one.
+      #
+      # Read-only. Nothing in the container writes here: record_session.py
+      # runs on the host, against the database's loopback port.
+      - ./data:/data:ro
     depends_on:
       db:
         condition: service_healthy

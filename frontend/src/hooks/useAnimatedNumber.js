@@ -4,6 +4,22 @@ function easeOutCubic(t) {
   return 1 - Math.pow(1 - t, 3);
 }
 
+// The count-up exists to say "this figure just changed". Someone who has asked
+// their system for less motion still needs the new figure -- they get it at
+// once instead of over 600ms. matchMedia is missing in jsdom and can throw in
+// hardened browsers, so its absence means "no preference expressed".
+function prefersReducedMotion() {
+  try {
+    return (
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default function useAnimatedNumber(target, duration = 500) {
   const [value, setValue] = useState(target);
   const frameRef = useRef(null);
@@ -18,10 +34,24 @@ export default function useAnimatedNumber(target, duration = 500) {
     const delta = target - from;
     if (delta === 0) return undefined;
 
+    // duration 0 is a caller asking for no animation at all (a figure driven by
+    // a pointer, not by a poll). Without this the progress below is 0/0 = NaN
+    // on the first frame and the figure renders as NaN.
+    if (duration <= 0 || prefersReducedMotion()) {
+      currentRef.current = target;
+      setValue(target);
+      return undefined;
+    }
+
     const start = performance.now();
 
     function tick(now) {
-      const progress = Math.min((now - start) / duration, 1);
+      // Clamped at both ends. A frame whose clock reads earlier than the
+      // frame that started the animation (fake timers in tests, a suspended
+      // tab in a browser) gave a negative progress, and easeOutCubic turns
+      // that into a large negative number: the card briefly showed -68 for a
+      // value of 1. The figure may never leave the range it is travelling.
+      const progress = Math.min(Math.max((now - start) / duration, 0), 1);
       const next = from + delta * easeOutCubic(progress);
       currentRef.current = next;
       setValue(next);

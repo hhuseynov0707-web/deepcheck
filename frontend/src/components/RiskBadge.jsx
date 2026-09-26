@@ -1,33 +1,45 @@
+import { riskLevelFor } from "./riskLevels.js";
 import useAnimatedNumber from "../hooks/useAnimatedNumber.js";
 
-const LEVELS = [
-  { max: 40, label: "Gerçek Kullanıcı", classes: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20", dot: "bg-emerald-400" },
-  { max: 60, label: "Şüpheli", classes: "bg-amber-500/10 text-amber-400 border-amber-500/20", dot: "bg-amber-400" },
-  { max: 80, label: "Yüksek Risk", classes: "bg-orange-500/10 text-orange-400 border-orange-500/20", dot: "bg-orange-400" },
-  { max: 101, label: "Bot Tespit Edildi", classes: "bg-rose-500/10 text-rose-400 border-rose-500/20", dot: "bg-rose-400" },
-];
-
-function getLevel(score) {
-  return LEVELS.find((l) => score < l.max) ?? LEVELS[LEVELS.length - 1];
-}
-
-export default function RiskBadge({ riskScore = 0, size = "md", live = true }) {
-  const level = getLevel(riskScore);
-  const animatedScore = useAnimatedNumber(riskScore, 500);
-  const sizeClasses = size === "lg" ? "px-4 py-2 text-sm" : "px-2.5 py-1 text-xs";
+// The score, its band and the band's glyph in one pill.
+//
+// Display only. The same number is what POST /api/decision acts on, but the
+// acting happens on the server; this badge changes nothing about the payment.
+//
+// Three channels say the same thing -- the Turkish label, the glyph and the
+// colour -- so the badge still reads correctly in greyscale and to someone who
+// cannot separate the 60-80 orange from the 80-100 rose.
+// `animate` off for a badge whose number is driven by a pointer rather than by
+// a poll: the count-up says "this figure just changed by itself", and sweeping
+// the risk-history chart would leave it perpetually tweening a value the
+// reader is trying to read.
+export default function RiskBadge({ riskScore = 0, size = "md", live = true, animate = true }) {
+  const level = riskLevelFor(riskScore);
+  const animatedScore = useAnimatedNumber(riskScore, animate ? 500 : 0);
+  const large = size === "lg";
 
   return (
-    <div
-      className={`inline-flex items-center gap-2 rounded-full border font-mono font-bold transition-colors duration-200 ease-out ${level.classes} ${sizeClasses}`}
+    <span
+      className={`inline-flex items-center rounded-full border transition-colors ${level.tint} ${level.border} ${
+        level.text
+      } ${large ? "gap-2.5 px-3.5 py-1.5" : "gap-2 px-2.5 py-1"}`}
     >
       {live && (
-        <span className="relative flex h-1.5 w-1.5">
-          <span className={`absolute inline-flex h-full w-full animate-ping rounded-full ${level.dot} opacity-75`} />
-          <span className={`relative inline-flex h-1.5 w-1.5 rounded-full ${level.dot}`} />
+        <span className={`relative flex shrink-0 ${large ? "h-2 w-2" : "h-1.5 w-1.5"}`} aria-hidden="true">
+          <span className="absolute inline-flex h-full w-full animate-pulse-ring rounded-full bg-current" />
+          <span className="relative inline-flex h-full w-full rounded-full bg-current" />
         </span>
       )}
-      <span className="uppercase tracking-wide">{level.label}</span>
-      <span className="tabular-nums">{animatedScore.toFixed(1)}</span>
-    </div>
+      <level.Icon className={`shrink-0 ${large ? "h-4 w-4" : "h-3.5 w-3.5"}`} />
+      <span
+        className={`font-semibold uppercase tracking-[0.07em] ${large ? "text-caption" : "text-eyebrow"}`}
+      >
+        {level.label}
+      </span>
+      <span aria-hidden="true" className="h-3.5 w-px shrink-0 bg-current opacity-30" />
+      <span className={`num font-bold leading-none ${large ? "text-lead" : "text-caption"}`}>
+        {animatedScore.toFixed(1)}
+      </span>
+    </span>
   );
 }

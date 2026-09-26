@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import logging
+import functools
 import math
 import os
 import re
@@ -268,6 +269,101 @@ SPRT_EVIDENCE_FACTOR = 1.0
 # demand has defeated the per-flush model itself, which no rule layered on top
 # of it can repair.
 SPRT_MAX_FLUSHES = 10
+
+# Which flushes a decision is allowed to rest on.
+#
+# A flush that measured none of the six STRUCTURAL features (scorer.
+# BUCKET_FEATURES -- the ones that describe the generator rather than the
+# sample) is not evidence in either direction. Its score is the forest reading
+# neutral fallbacks plus whatever marginal features happened to be computable,
+# and it was wrong both ways:
+#
+#   * Upward. An empty window scores 99.1, and one such flush contributes
+#     log(0.991/0.009) = 4.70 > SPRT_UPPER on its own: the opening two seconds
+#     of a checkout could force a step-up on a customer who had done nothing.
+#   * Downward. The marginal features and the client-supplied
+#     hesitation_intervals can be steered: 3000 crafted unobserved payloads
+#     scored a median of 29.7, and hill-climbed ones 3.5. A session made only
+#     of such flushes was charged before this gate existed -- 1600 of 1600
+#     decision points (S2), and 547 of 2030 for an SDK-faithful burst script.
+#
+# So: the sequential statistic reads only observed flushes, and a decision
+# with fewer than MIN_FLUSHES_FOR_DECISION of them is held at
+# verify("insufficient_evidence") -- neither approved nor blocked (the branch
+# in _decide_on_evidence says why each of those is wrong).
+#
+# Measured through this exact function (scratchpad gate_verify/, two rounds of
+# adversarial review, 2026-09-26; OLD = every flush counted, as before this
+# gate). Passing = allow or warn, i.e. charged.
+#
+#   SDK-faithful scripts (an emulation of deepcheck.js's buffer), passing points
+#     trickle: pointer move + scroll every 2-6 s, 1 click   0/2340 ->    0/2340
+#     burst: <=5 events per channel per 10 s, 1 click     547/2030 ->    0/2030
+#     pointer move every 2-6 s, 1 click, 300 schedules   0 at the click -> 0
+#     pointer + keydown every 2-6 s, 300 schedules       0/2331 ->    1/2331
+#   composed from pre-scored payloads, passing points
+#     S1 all unobserved, crafted, random knobs             883/1600 ->    0/1600
+#     S2 all unobserved, crafted, hill-climbed            1600/1600 ->    0/1600
+#     S6 2 observed human + unobserved automation          111/1360 ->    0/1360
+#   (S1 and S2 are hand-built payloads: sendable over HTTP, not what the SDK
+#   emits. The trickle and burst rows are what the SDK emits.)
+#   simulator personas, 64 sessions each, prefixes 3..10: bot_sophisticated,
+#   drift_to_bot and drift_to_human unchanged (0 of 640 windows unobserved);
+#   bot has 60 of 640 unobserved windows, and 22 of 512 decision points go
+#   from block to verify -- never to a charge.
+#
+#   legitimate, benchmark.py slices, synthetic, 60 seeds x prefixes 3..10:
+#     no thin opening flushes                          identical in every slice
+#     2-4 thin openings, blocks per 480                3-8 -> 0
+#     prefix-3 checkout, 2 thin + 1 real flush: the ladder blocked 69 of 3000
+#     under OLD, 75 when the gate merely skipped the test; 0 under this rule.
+#     cost: a checkout decided before three flushes have observed anything
+#     gets "a few more seconds" instead of a charge -- in these slices one
+#     decision point per thin opening, 60 per 480 per opening, because each
+#     slice body is observed from its first flush. The SDK ships a 10 s
+#     rolling window, so real activity is observed for ~5 flushes once it
+#     starts; the hint costs about two seconds.
+#
+# What this does NOT close, stated rather than engineered around: unobserved
+# automation followed by, or interleaved with, THREE OR MORE human-looking
+# observed flushes (S4: OLD 1333 -> 1920 of 2560 passing; S5a, alternating:
+# 1 -> 300 of 800). It is not a new
+# capability: the same attacker, emitting nothing during the automated part
+# (the SDK sends no flush for an empty window, so there is no row), passes the
+# old rule 40 of 40 at every M >= 3. Producing human-looking observed flushes
+# on demand is defeating the per-flush model itself, which no rule layered on
+# top of it can repair -- the same limit stated at SPRT_MAX_FLUSHES.
+#
+# And the cheapest way to do exactly that is not motor mimicry. Typing the card
+# with randomised gaps between keydowns (time.sleep(random.uniform(...)), no
+# pointer at all) produces observed flushes -- the two key-channel structural
+# features -- that the forest scores as human: a 23-keydown card entry was
+# charged 119 of 120 times, under OLD and under this rule alike (constant
+# timing is caught, 0 of 120). That is a hole in the model, not in this gate,
+# and requiring observed flushes does not raise its price. Documented in
+# docs/evaluation.md; nothing here claims to close it.
+@functools.cache
+def _structural_bits() -> int:
+    """measured_mask bits of the structural features, computed on first use.
+
+    Not a module constant: main's import-time surface from scorer is kept to
+    SMOOTHING_WINDOW, which is what the boot tests stub (test_profiles
+    _BOOT_SCRIPT) so that configuration can be exercised without loading a
+    model bundle.
+    """
+    return sum(1 << FEATURE_NAMES.index(name) for name in scorer.BUCKET_FEATURES)
+
+
+def _observed_a_generator(measured_mask: int | None) -> bool:
+    """Did this flush measure at least one structural feature?
+
+    A NULL mask is a row written before the column existed. It is kept: "we
+    do not know what this flush measured" must not silently become "it
+    measured nothing", which would quietly drop old evidence.
+    """
+    if measured_mask is None:
+        return True
+    return bool(measured_mask & _structural_bits())
 
 # --- Cross-session clustering -----------------------------------------------
 #
@@ -1100,6 +1196,12 @@ REASON_MESSAGES = {
     "sequential": "Oturum boyunca biriken davranis kaniti otomasyona isaret ediyor, guncel skor dusuk olsa da ek dogrulama gerekli",
     "conformal": "Skor yuksek olsa da gercek kullanici dagilimina uyuyor, ek dogrulama uygulaniyor",
     "verified": "Ek dogrulama basariyla tamamlandi, islem onaylandi",
+    # Internal: the decision would have rested on windows in which none of the
+    # six structural features was measurable -- fewer than three observed
+    # flushes in the window, or a block whose smoothed score is carried by
+    # unobserved flushes. See _structural_bits. Told to the client as
+    # "insufficient_evidence" (PUBLIC_REASONS), which is also what it is.
+    "unobserved": "Karar icin gozlenmis davranis kaniti yetersiz (yapisal ozellikleri olculemeyen pencereler), ek davranis bekleniyor",
     # Internal, for the audit table and the SOC panel only: see PUBLIC_REASONS.
     "profile_deviation": "Bu oturumun davranisi musterinin kendi gecmisinden belirgin sekilde ayriliyor",
     # Internal, likewise: too many decisions named this customer within the
@@ -1138,6 +1240,14 @@ PUBLIC_REASONS = {
     # Saying "too many decisions for this customer" would confirm that the
     # probing is being counted per customer, and when its window resets.
     "profile_rate_limited": "step_up",
+    # Not collapsed to step_up: the page must be able to say "a few more
+    # seconds" to a customer whose first flushes were thin, instead of opening
+    # an OTP box in the opening seconds of every checkout. What it reveals --
+    # "fewer than three of your flushes were observed" -- is a one-bit signal
+    # an adversarial review judged low-value: acting on it means producing
+    # observed flushes, which is exactly what puts a session in front of the
+    # model. Accepted, and stated here rather than left implicit.
+    "unobserved": "insufficient_evidence",
 }
 
 
@@ -2028,7 +2138,9 @@ async def analyze(
     # Oldest first. Non-finite rows (which can only pre-date the boundary
     # validation, but may exist in a running database) are skipped inside.
     smoothed_score = scorer.smooth_session_score(
-        [row.risk_score for row in reversed(recent_rows)], result["risk_score"]
+        [row.risk_score for row in reversed(recent_rows)],
+        result["risk_score"],
+        result["observed_structure"],
     )
     smoothed_label = scorer.get_label(smoothed_score)
 
@@ -2198,9 +2310,47 @@ async def _decide(
     # channel (GET /api/profile/review), not by the API response -- which is
     # why this is not concealment.
     pre_step_up_reason = verdict.reason
+    unlifted = verdict
     verdict = _apply_step_up(session, verdict)
+    if verdict is not unlifted and not await _consume_step_up(db, session, session_id):
+        # Another decision spent this verification first (two concurrent
+        # checkouts on one step-up). The verdict stays what the evidence said.
+        verdict = unlifted
     await _learn_and_audit(db, session, session_id, verdict, pre_step_up_reason, profile_ctx, merchant_id, risk_context)
     return verdict
+
+
+async def _consume_step_up(db: AsyncSession, session: Session, session_id: str) -> bool:
+    """Spend a verification: one step-up authorises ONE approval.
+
+    It used to authorise every checkout on the session for VERIFICATION_VALID_S
+    -- verified_at was written once and never cleared, so after a single
+    step-up every decision that came back "verify" was upgraded to "allow" for
+    five minutes. An adversarial review measured five consecutive charges on an
+    all-unobserved session after one verification, all approved, and bounded
+    it only by the decision rate limit (~400 per step-up). A step-up is proof
+    that someone completed ONE challenge, the way a 3-D Secure authentication
+    covers one transaction.
+
+    Compare-and-set on the timestamp that was read, so two concurrent
+    decisions cannot both spend the same verification: exactly one UPDATE
+    matches, and the other gets rowcount 0 and keeps its unlifted verdict.
+    """
+    seen = session.verified_at
+    # last_seen_at is assigned to itself to suppress its onupdate=now(): it is
+    # the freshness clock DECISION_MAX_AGE_S reads, and spending a verification
+    # is not behaviour (see _unlink_sessions_from_profiles).
+    result = await db.execute(
+        update(Session)
+        .where(Session.id == session_id, Session.verified_at == seen)
+        .values(verified_at=None, last_seen_at=Session.last_seen_at)
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    spent = (result.rowcount or 0) == 1
+    if spent:
+        session.verified_at = None
+    return spent
 
 
 def _step_up_is_fresh(session: Session) -> bool:
@@ -2259,7 +2409,11 @@ async def _decide_on_evidence(
     # windows before any score is trusted.
     rows = (
         await db.execute(
-            select(BehaviorData.risk_score, BehaviorData.behavior_bucket)
+            select(
+                BehaviorData.risk_score,
+                BehaviorData.behavior_bucket,
+                BehaviorData.measured_mask,
+            )
             .where(BehaviorData.session_id == session_id)
             .order_by(BehaviorData.created_at.desc())
             .limit(SPRT_MAX_FLUSHES)
@@ -2273,9 +2427,51 @@ async def _decide_on_evidence(
     if last_seen is None or now - last_seen > timedelta(seconds=DECISION_MAX_AGE_S):
         return _verify_response("stale", session.risk_score, session.label or "Degerlendirilemedi")
 
-    # Sequential test over the per-flush scores. Between the bounds there is
-    # not yet enough evidence to act on, which is step-up rather than approval.
-    per_flush = [r[0] for r in rows if r[0] is not None and math.isfinite(r[0])]
+    # Sequential test over the per-flush scores -- but only over the flushes
+    # that actually observed a generator (see _structural_bits). A window in
+    # which nothing was measurable scores 99.1 on neutral fallbacks alone, and
+    # one such flush outweighs the upper bound by itself.
+    per_flush = [
+        r[0]
+        for r in rows
+        if r[0] is not None and math.isfinite(r[0]) and _observed_a_generator(r[2])
+    ]
+    # Fewer than MIN_FLUSHES_FOR_DECISION flushes observed a generator: there is
+    # no behavioural evidence to decide on in EITHER direction, so the answer is
+    # step-up -- never an approval, and never a block.
+    #
+    # Not "skip the test and let the ladder decide", which is what this briefly
+    # was, and an adversarial review measured why that is wrong (scratchpad
+    # gate_verify/attack, SDK-faithful emulation of deepcheck.js's buffer):
+    # a script that sends only unobserved flushes -- a pointer move every few
+    # seconds, fields set by value, one click -- produces per-flush scores that
+    # swing between ~30 and ~100, because the six MARGINAL features are still
+    # partly measured and the client supplies hesitation_intervals itself. The
+    # ladder's five-flush median then lands in allow or warn. At the flush
+    # holding the click that was 88 of 300 random schedules charged, against 0
+    # of 300 when those flushes were still summed into the statistic;
+    # re-checked independently at 17 of 60 against 0 of 60.
+    #
+    # Nor a block: the ladder's median blocks a legitimate customer whose
+    # window holds two thin opening flushes and one real one -- 75 of 3000
+    # synthetic prefix-3 checkouts when this branch deferred to the ladder, 69
+    # under the rule before any gate -- and _apply_step_up never lifts a
+    # block. A verdict this severe has to rest on something that was observed
+    # (see also the guard before the conformal check, for sessions that do
+    # have three observed flushes).
+    #
+    # "insufficient_evidence" is a telemetry-state reason, returned as is: the
+    # page tells the customer "a few more seconds", and a second hint becomes a
+    # step-up (Demo.jsx). A real checkout -- typing a card, or moving the
+    # pointer to a stored card and the button -- is observed for about five
+    # flushes once it starts (the SDK ships a 10 s rolling window).
+    if len(per_flush) < MIN_FLUSHES_FOR_DECISION:
+        logger.info(
+            "observed-flush gate held session %s at verify: %d of %d flushes observed a generator",
+            session_id, len(per_flush), len(rows),
+        )
+        return _verify_response("unobserved", session.risk_score, session.label or "Degerlendirilemedi")
+
     statistic = _sprt_statistic(per_flush)
     if SPRT_LOWER < statistic < SPRT_UPPER:
         # Inconclusive, and it stays inconclusive: the flush cap changes what
@@ -2286,7 +2482,10 @@ async def _decide_on_evidence(
         # had produced ten flushes. Twenty seconds of deliberately ambiguous
         # behaviour was therefore a way to be approved. Ambiguity at a payment
         # gate is a reason to ask for more proof, not a reason to accept.
-        reason = "insufficient_evidence" if len(per_flush) < SPRT_MAX_FLUSHES else "ambiguous"
+        # Counted on ROWS, not on observed flushes: "ambiguous" means the whole
+        # window has been watched and is still inconclusive. Counting observed
+        # flushes made it unreachable whenever one thin flush was in the window.
+        reason = "insufficient_evidence" if len(rows) < SPRT_MAX_FLUSHES else "ambiguous"
         return _verify_response(reason, session.risk_score, session.label or "Degerlendirilemedi")
 
     risk_score = session.risk_score
@@ -2346,11 +2545,40 @@ async def _decide_on_evidence(
     # Conformal guard. De-escalation only: if this score is unremarkable among
     # the bundle's held-out calibration humans, refuse to block on it and ask
     # for verification instead. Costs a challenge rather than a customer --
-    # WHEN it fires, and with the served bundles it never does: their 36
+    # WHEN it fires, and with the served bundles it never does: their 28
     # calibration values come from the lab's scripted Playwright personas and
-    # peak at 27.71, so every score >= 80 gets p = 1/37 < CONFORMAL_ALPHA. It
+    # peak at 33.2, so every score >= 80 gets p = 1/29 < CONFORMAL_ALPHA. It
     # protects no real user until it is calibrated on real ones (scorer.py's
     # conformal section; ModelBundle logs the current state at load).
+    # A block is irreversible -- _apply_step_up never lifts it -- so it has to
+    # rest on observed behaviour. The gate above guarantees three observed
+    # flushes in the window, but the ladder reads the SMOOTHED score, the
+    # median of the newest five per-flush scores, and that median still counts
+    # unobserved flushes. Three thin, high flushes at the end of a session
+    # therefore decided the block on their own: measured on synthetic sessions
+    # (benchmark.py slice bodies with thin tails, 60 seeds x 5 bodies, prefixes
+    # 3..10), four- and five-flush thin tails were blocked 10 and 15 times in
+    # 2400 where the rule before any gate blocked 7 and 9. When fewer than
+    # three of the flushes that median reads were observed, the block is held
+    # at step-up instead. This only ever turns a block into a verify, so it
+    # cannot approve anything; a real-bot session keeps its block as long as
+    # the automation is what was observed.
+    if action == "block":
+        newest = rows[: scorer.SMOOTHING_WINDOW]
+        observed_newest = sum(1 for r in newest if _observed_a_generator(r[2]))
+        if observed_newest < MIN_FLUSHES_FOR_DECISION:
+            logger.info(
+                "block for session %s held at verify: its smoothed score rests on %d of %d observed flushes",
+                session_id, observed_newest, len(newest),
+            )
+            return DecisionResponse(
+                action="verify",
+                risk_score=risk_score,
+                label=label,
+                message=REASON_MESSAGES["unobserved"],
+                reason="unobserved",
+            )
+
     if action == "block":
         p_value = scorer.conformal_p_value(risk_score, scorer.get_human_calibration())
         if p_value is not None and p_value > scorer.CONFORMAL_ALPHA:

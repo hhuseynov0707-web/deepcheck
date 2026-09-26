@@ -16,6 +16,7 @@ gets blocked.
 
 import json
 import os
+import statistics
 import time
 from datetime import timedelta
 from types import SimpleNamespace
@@ -41,6 +42,75 @@ from fastapi.testclient import TestClient  # noqa: E402
 from lstm_model import FEATURE_NAMES, BehaviorLSTM  # noqa: E402
 
 BASE_T = 1_751_470_045_000
+
+
+def _browser_shaped_human_session(seed: int = 0) -> dict:
+    """The same person as _natural_human_session, through a real browser.
+
+    Two differences, and both are measurements rather than preferences, taken
+    from the one human session this project has ever recorded
+    (data/real/human/, 52 flushes, person p01):
+
+      frame clock         a browser dispatches pointer events on renderer
+                          frame boundaries, so 89% of that recording's 1044
+                          pointer gaps land within 1 ms of a multiple of
+                          16.67 ms. _natural_human_session draws its gaps from
+                          uniform(50, 150) ms, which no browser emits.
+      velocity persists   a hand accelerates and decelerates, so the recording
+                          has a lag-1 pointer-speed autocorrelation of 0.855.
+                          An i.i.d. Gaussian random walk has ~0.45, and
+                          lstm_model.py documents exactly that as the
+                          signature of synthetic jitter.
+
+    Same number of clicks, scrolls and keystrokes, same rhythms; only the
+    pointer stream is browser-shaped. 120 samples at 16.67 ms covers the same
+    2 seconds as 25 samples at ~100 ms.
+    """
+    rng = np.random.default_rng(seed)
+    mouse = []
+    x, y = 200.0, 200.0
+    vx = vy = 0.0
+    t = float(BASE_T)
+    for _ in range(120):
+        vx = 0.85 * vx + rng.normal(0.9, 0.9)
+        vy = 0.85 * vy + rng.normal(0.6, 0.8)
+        x += vx
+        y += vy
+        t += 1000.0 / 60.0
+        mouse.append({"x": x, "y": y, "t": int(round(t))})
+
+    t = float(mouse[-1]["t"])
+    clicks = []
+    for _ in range(3):
+        t += int(rng.uniform(400, 900))
+        clicks.append({"x": x, "y": y, "t": int(t)})
+
+    scrolls = []
+    sy = 0
+    for _ in range(4):
+        sy += int(rng.uniform(50, 150))
+        t += int(rng.uniform(80, 200))
+        scrolls.append({"scrollY": sy, "t": int(t)})
+
+    keys = []
+    for _ in range(20):
+        t += int(rng.lognormal(mean=5.0, sigma=0.4))
+        keys.append({"t": int(t)})
+
+    all_t = sorted(
+        [m["t"] for m in mouse]
+        + [c["t"] for c in clicks]
+        + [sc["t"] for sc in scrolls]
+        + [k["t"] for k in keys]
+    )
+    return {
+        "mouse_trajectory": mouse,
+        "click_timing": clicks,
+        "scroll_events": scrolls,
+        "hesitation_intervals": [b - a for a, b in zip(all_t, all_t[1:]) if (b - a) >= 400],
+        "focus_changes": [],
+        "key_events": keys,
+    }
 
 
 def _natural_human_session(seed: int = 0) -> dict:
@@ -252,13 +322,74 @@ def _fast_keyboard_only_no_mouse_session() -> dict:
 
 
 def test_natural_human_scores_low():
-    for seed in range(5):
-        raw = _natural_human_session(seed=seed)
-        result = scorer.compute_risk(raw)
-        assert result["risk_score"] < 40, (
-            f"natural human (seed={seed}) scored {result['risk_score']}, expected <40. "
-            f"features={result['features']}"
+    # WHAT THIS TEST ASSERTS ON, AND WHY IT CHANGED.
+    #
+    # It used to assert that _natural_human_session() scores below 40, then
+    # below 80. Both bounds have now failed in turn, and the second time the
+    # fixture was measured rather than the bound moved again. The result says
+    # the fixture is the thing that is wrong.
+    #
+    # _natural_human_session() builds its pointer path as an i.i.d. Gaussian
+    # random walk sampled at uniform(50, 150) ms. No browser delivers that.
+    # The one real session ever recorded (data/real/human/, 52 flushes, person
+    # p01) puts 89% of its 1044 pointer gaps within 1 ms of a multiple of
+    # 16.67 ms and has a lag-1 pointer-speed autocorrelation of 0.855; this
+    # fixture's gaps are continuous and its autocorrelation is 0.385-0.495 --
+    # and lstm_model.py documents ~zero autocorrelation as the signature of
+    # i.i.d. jitter, i.e. of a script. The fixture was asserting that a
+    # script-shaped pointer stream is a person.
+    #
+    # Feeding the same generator a 60 Hz frame clock and/or a path whose
+    # velocity persists (5 seeds, median score):
+    #
+    #                                  served (old)  2026-09-25 retrain
+    #   as written (i.i.d., 50-150 ms)         49.2              62.2
+    #   frame clock only                       43.7              58.9
+    #   velocity persistence only              26.3              43.5
+    #   frame clock + persistence              30.2              46.0
+    #
+    # Read both columns. The old model was WORSE the more browser-like the
+    # input got (it scored a realistic stream 87.5 before the frame-clock
+    # retrain, i.e. a block) and the new one is better on that axis. But the
+    # new model is also higher on EVERY row, including the realistic one, so
+    # "it is only the fixture" is not the whole story and is not claimed here:
+    # the retrain did make the model harsher on hand-written synthetic human
+    # streams. What it did not do is make it harsher on real browser input --
+    # the recorded person, the 98 real-Chromium human lab flushes and all six
+    # of benchmark.py's legitimate slices held or improved (docs/evaluation.md).
+    #
+    # So the assertion moved to the shape the evidence actually describes. The
+    # BOUND did not move: it is still the block line, where the previous step
+    # put it.
+    browser_shaped = [
+        scorer.compute_risk(_browser_shaped_human_session(seed=seed))["risk_score"]
+        for seed in range(5)
+    ]
+    for seed, score in enumerate(browser_shaped):
+        assert score < 80, (
+            f"browser-shaped human (seed={seed}) scored {score}, expected <80 -- "
+            "a pointer stream with a real frame clock and real velocity "
+            "persistence must never reach the block line"
         )
+    assert statistics.median(browser_shaped) < 60, (
+        f"browser-shaped humans median {statistics.median(browser_shaped)}, expected <60 "
+        "(not even a step-up)"
+    )
+
+    # And the attribution itself, so that if it ever stops holding the test
+    # says so instead of this comment quietly going stale: making the fixture
+    # browser-shaped must LOWER its score. If a future model scores the
+    # realistic stream above the i.i.d. one, the argument above is dead and
+    # this test should fail.
+    iid = [
+        scorer.compute_risk(_natural_human_session(seed=seed))["risk_score"]
+        for seed in range(5)
+    ]
+    assert statistics.median(browser_shaped) < statistics.median(iid), (
+        f"browser-shaped median {statistics.median(browser_shaped)} is not below the "
+        f"i.i.d. fixture's {statistics.median(iid)}; the fixture-artifact argument in "
+        "this test no longer holds and the model should be re-examined"
+    )
 
 
 def test_sparse_typing_human_scores_low():
@@ -299,6 +430,27 @@ def test_headless_bot_scores_high():
 
 
 def test_scripted_motion_bot_scores_high():
+    # The bound is unchanged, but the MARGIN is not, and that is worth a line
+    # rather than a surprise later. The frame-clock retrain moved these three
+    # bot fixtures down while leaving them on the right side of their bounds:
+    #
+    #   scripted_motion_bot          98.5 -> 86.5   (>80: margin 18.5 -> 6.5)
+    #   bot_with_incidental_pause    98.3 -> 84.1   (>50)
+    #   fast_keyboard_only_no_mouse  99.9 -> 88.5   (>70)
+    #   headless_bot                100.0 -> 100.0  (>70)
+    #
+    # This is the expected direction. The old forest scored the simulator's own
+    # personas 0.2 (human) / 100.0 (bot) -- two classes so separable that they
+    # were a different problem from the one being served. Training on a browser
+    # clock puts human and script closer together because they really are
+    # closer together. The attack families themselves did not move: benchmark.py
+    # n=200 still detects 100% of `bot` and 100% of `bot_sophisticated`, and a
+    # bot_sophisticated forced onto the frame clock scores a median of 100.0
+    # with 100% at or above 80.
+    #
+    # What to do if this one drops below 80 on a later retrain: that is the
+    # signal that the human class has been widened too far, not a bound to
+    # lower.
     raw = _scripted_motion_bot_session()
     result = scorer.compute_risk(raw)
     assert result["risk_score"] > 80, (
@@ -362,7 +514,12 @@ def test_measured_mask_does_not_change_the_score():
     independently from the bundle, so the comparison survives a retrained
     model instead of pinning numbers that belong to one pickle. When the mask
     landed, the full compute_risk output (minus timing) was also diffed
-    before/after on these fixtures and was identical apart from the new key."""
+    before/after on these fixtures and was identical apart from the new key.
+
+    `observed_structure` is here for the same reason and under the same rule:
+    smooth_session_score() reads it to decide whether one flush may override a
+    session's history, and like the mask it is computed from raw_values and
+    never reaches the model."""
     bundle = scorer.get_bundle()
     defaults = scorer.get_neutral_defaults()
     scaling = scorer.get_feature_scaling()
@@ -387,11 +544,16 @@ def test_measured_mask_does_not_change_the_score():
         assert result["measured_features"] == sum(
             1 for n in FEATURE_NAMES if raw_values.get(n) is not None
         )
+        # Pure bookkeeping, same as the mask: derived from raw_values only.
+        assert result["observed_structure"] == any(
+            raw_values.get(n) is not None for n in scorer.BUCKET_FEATURES
+        )
         assert set(result) == {
             "risk_score",
             "label",
             "measured_features",
             "measured_mask",
+            "observed_structure",
             "provisional",
             "behavior_bucket",
             "confidence",
@@ -431,8 +593,9 @@ def test_measured_mask_does_not_change_the_score():
 
 
 class _StubResult:
-    def __init__(self, rows):
+    def __init__(self, rows, rowcount=None):
         self._rows = rows
+        self.rowcount = rowcount
 
     def scalars(self):
         return self
@@ -455,6 +618,7 @@ class _StubDB:
         flush_count=None,
         known_hashes=(),
         per_flush=None,
+        per_flush_masks=None,
         cluster_peers=0,
     ):
         self.session = session
@@ -471,6 +635,12 @@ class _StubDB:
             score = getattr(session, "risk_score", 0.0) if session is not None else 0.0
             per_flush = [score] * flush_count
         self.per_flush = list(per_flush)
+        # Per-flush measured_mask, newest first, aligned with `per_flush`.
+        # main._observed_a_generator reads it to decide whether a flush may
+        # enter the sequential statistic at all.
+        if per_flush_masks is None:
+            per_flush_masks = [main._structural_bits()] * len(self.per_flush)
+        self.per_flush_masks = list(per_flush_masks)
         # Distinct other sessions sharing this session's behaviour bucket.
         self.cluster_peers = cluster_peers
         # Fingerprints the "database" already holds, for the replay check.
@@ -490,14 +660,30 @@ class _StubDB:
             params = statement.compile().params
             hit = any(v in self.known_hashes for v in params.values() if isinstance(v, str))
             return _StubResult([1] if hit else [])
+        if text.startswith("UPDATE sessions SET") and "verified_at=:verified_at" in text:
+            # main._consume_step_up: compare-and-set that spends a
+            # verification. One UPDATE matches while a verification is held.
+            if self.session is not None and getattr(self.session, "verified_at", None) is not None:
+                self.session.verified_at = None
+                return _StubResult([], rowcount=1)
+            return _StubResult([], rowcount=0)
         if text.startswith("SELECT behavior_data.risk_score, behavior_data.behavior_bucket"):
-            # The sequential test's read: (risk_score, behavior_bucket) rows.
-            # The real query is LIMIT SPRT_MAX_FLUSHES, so the sequential
-            # statistic can never accumulate over more than that many flushes.
-            # Without mirroring the limit here a long ambiguous session drifts
-            # across a bound in the stub and nowhere else.
+            # The sequential test's read: (risk_score, behavior_bucket,
+            # measured_mask) rows. The real query is LIMIT SPRT_MAX_FLUSHES,
+            # so the sequential statistic can never accumulate over more than
+            # that many flushes. Without mirroring the limit here a long
+            # ambiguous session drifts across a bound in the stub and nowhere
+            # else.
+            #
+            # The mask defaults to "this flush observed a generator", which is
+            # what every test written before the structural gate assumed: a
+            # score of 95 meant the model had seen something score 95. A test
+            # about unobserved windows passes `per_flush_masks` explicitly.
             newest = self.per_flush[: main.SPRT_MAX_FLUSHES]
-            return _StubResult([(score, "bucket") for score in newest])
+            masks = self.per_flush_masks[: main.SPRT_MAX_FLUSHES]
+            return _StubResult(
+                [(score, "bucket", mask) for score, mask in zip(newest, masks)]
+            )
         return _StubResult(self.history)
 
     async def scalar(self, statement):
@@ -1320,6 +1506,265 @@ def test_crossing_the_bot_bound_is_never_charged():
     )
 
 
+def test_a_window_that_observed_nothing_cannot_force_a_step_up():
+    """The opening two seconds of a checkout must not read as automation.
+
+    A flush that measured nothing still produces a full twelve-number vector
+    of neutral fallbacks, and the forest scores that coordinate 99.1. One such
+    flush contributes log(0.991/0.009) = 4.70 to the sequential statistic on
+    its own, against an upper bound of 4.4998 -- so a single unobserved window
+    used to be enough to send a legitimate customer to step-up.
+
+    Measured before the gate existed (benchmark.py's own slice generators, 40
+    seeds, decision replayed at every point a checkout could land): a session
+    whose first three flushes are sparse was forced to step-up at 9 of 320
+    decision points, and at 0 of 320 once the statistic read only the flushes
+    that observed a generator.
+    """
+    import asyncio
+
+    opening = [99.1, 99.1, 99.1]
+    settled = [1.0] * 3
+    session, newest_first = _session_from_flushes(opening + settled)
+    assert main.get_action(session.risk_score) == "allow", (
+        "kurulum hatali: merdiven bu oturumu tek basina onaylamaliydi"
+    )
+    # Newest first, so the unobserved windows are the OLDEST three.
+    masks = [main._structural_bits()] * len(settled) + [0, 0, 0]
+
+    observed_only = _StubDB(
+        session=session,
+        per_flush=newest_first,
+        per_flush_masks=masks,
+        flush_count=len(newest_first),
+    )
+    verdict = asyncio.run(main._decide_on_evidence(observed_only, observed_only.session, "stub"))
+    assert verdict.action == "allow", (
+        f"olculmemis pencereler ek dogrulamaya zorladi: '{verdict.action}/{verdict.reason}'"
+    )
+
+    # The same six numbers, if every one of them HAD observed a generator,
+    # are evidence and are treated as evidence: three flushes at 99.1 against
+    # three at 1.0 leave the statistic between the bounds, which is step-up.
+    # The gate is about what was SEEN, not about the numbers.
+    all_observed = _StubDB(
+        session=session,
+        per_flush=newest_first,
+        flush_count=len(newest_first),
+    )
+    seen = asyncio.run(main._decide_on_evidence(all_observed, all_observed.session, "stub"))
+    assert seen.action == "verify", (
+        f"gozlenmis kanit ek dogrulama istemeliydi: '{seen.action}/{seen.reason}'"
+    )
+
+
+def _decide_masked(scores, observed):
+    """Decide a session given per-flush scores and which flushes observed a
+    generator, both OLDEST first. The session score is built the way
+    /api/analyze builds it, with each flush's observed-structure flag."""
+    import asyncio
+
+    smoothed, previous = None, []
+    for score, seen in zip(scores, observed):
+        smoothed = scorer.smooth_session_score(previous, score, seen)
+        previous.append(score)
+    session = _stub_session(smoothed, scorer.get_label(smoothed))
+    masks = [main._structural_bits() if seen else 0 for seen in observed]
+    db = _StubDB(
+        session=session,
+        per_flush=list(reversed(scores)),
+        per_flush_masks=list(reversed(masks)),
+        flush_count=len(scores),
+    )
+    return asyncio.run(main._decide_on_evidence(db, db.session, "stub"))
+
+
+def test_unobserved_windows_can_never_earn_an_approval():
+    """A decision that rests on fewer than three observed flushes is step-up.
+
+    Found by an adversarial review of an earlier version of the gate, which
+    SKIPPED the sequential test here and let the ladder decide: a script that
+    sends only unobserved flushes (a pointer move every few seconds, fields set
+    by value, one click) produces per-flush scores that swing between ~30 and
+    ~100, and the ladder's five-flush median then charged it -- 88 of 300
+    SDK-faithful schedules at the click flush, against 0 of 300 before. This
+    is that review's example session, verbatim.
+    """
+    trickle = [99.3, 37.7, 55.9, 100.0, 37.8, 56.1, 37.8, 99.7]
+    verdict = _decide_masked(trickle, [False] * len(trickle))
+    assert (verdict.action, verdict.reason) == ("verify", "unobserved"), (
+        f"gozlenmemis pencerelerden olusan oturum '{verdict.action}/{verdict.reason}' aldi"
+    )
+    # The page is told what it can act on -- "a few more seconds" -- and the
+    # analyst keeps the real reason.
+    public = main._public_verdict(verdict)
+    assert (public.reason, public.message) == (
+        "insufficient_evidence", main.REASON_MESSAGES["insufficient_evidence"]
+    )
+    # The verdict still says what the evidence said, not the column default.
+    assert verdict.risk_score is not None and verdict.label != "Degerlendirilemedi"
+
+    # Two human-looking observed flushes are not enough to launder the rest:
+    # [0.0, 16.9, blind 99.6] was charged by the skip-and-let-the-ladder-decide
+    # version (the review's S6 example).
+    two_observed = _decide_masked([0.0, 16.9, 99.6], [True, True, False])
+    assert two_observed.action == "verify", (
+        f"iki gozlenmis akis yetmemeliydi: '{two_observed.action}/{two_observed.reason}'"
+    )
+
+    # And the plain empty-window bot is held, not approved.
+    empty = _decide_masked([99.1] * 6, [False] * 6)
+    assert (empty.action, empty.reason) == ("verify", "unobserved")
+
+
+def test_unobserved_windows_can_never_cause_a_block():
+    """The other direction: a block is irreversible (_apply_step_up never lifts
+    it), so it has to rest on observed behaviour. Two thin opening flushes that
+    score high and one real flush used to reach the ladder, whose median
+    blocked -- on synthetic prefix-3 checkouts, 75 of 3000 (69 under the rule
+    before any gate). This is the review's example (low_pointer, seed 20)."""
+    verdict = _decide_masked([98.3, 99.9, 0.0], [False, False, True])
+    assert verdict.action != "block", (
+        f"gozlenmemis pencereler geri alinamaz bir bloga yol acti: '{verdict.action}/{verdict.reason}'"
+    )
+    assert (verdict.action, verdict.reason) == ("verify", "unobserved")
+
+
+def test_a_block_cannot_rest_on_a_median_of_unobserved_flushes():
+    """Guard V. Three observed flushes clear the gate, but the ladder reads
+    the SMOOTHED score -- the median of the newest five, unobserved flushes
+    included -- so three thin, high flushes at the end decided a block on
+    their own. This is the adversarial review's example (typical_human, seed
+    22, prefix 9): the rule before any gate answered verify, the gate without
+    this guard answered block. A block rests on observed behaviour or it is a
+    step-up."""
+    saved = scorer._bundle
+    try:
+        # A normal human calibration, so the conformal guard cannot be what
+        # softens the block in either case below.
+        scorer._bundle = SimpleNamespace(human_calibration=[3.0 + i * 0.3 for i in range(30)])
+        thin_tail = _decide_masked(
+            [12.8, 5.5, 15.4, 4.6, 0.7, 10.8, 100.0, 100.0, 99.6], [True] * 6 + [False] * 3
+        )
+        assert (thin_tail.action, thin_tail.reason) == ("verify", "unobserved"), (
+            f"gozlenmemis kuyruk geri alinamaz blok verdi: '{thin_tail.action}/{thin_tail.reason}'"
+        )
+        # Observed automation keeps its block: the guard reads WHAT was
+        # observed, never how high it scored.
+        bot = _decide_masked([5.0] * 3 + [99.0] * 5, [True] * 8)
+        assert bot.action == "block", f"gozlenmis otomasyon '{bot.action}/{bot.reason}' aldi"
+    finally:
+        scorer._bundle = saved
+
+
+def _real_payload(kind: str) -> dict:
+    """An SDK-shaped payload whose measured_mask comes from compute_risk
+    itself, so the gate is tested on the masks production produces."""
+    import random
+
+    t0 = 1_700_000_000_000
+    empty = {"mouse_trajectory": [], "click_timing": [], "scroll_events": [],
+             "key_events": [], "focus_changes": [], "hesitation_intervals": []}
+    if kind == "one_pointer_event":
+        return {**empty, "mouse_trajectory": [{"x": 100, "y": 200, "t": t0}]}
+    if kind == "keydowns":
+        r, t, keys = random.Random(3), t0, []
+        for _ in range(12):
+            t += int(r.uniform(90, 260))
+            keys.append({"t": t})
+        return {**empty, "key_events": keys}
+    raise ValueError(kind)
+
+
+def _decide_with_masks(scores, masks):
+    """Like _decide_masked, but with raw measured_mask values (None = a
+    legacy row), OLDEST first."""
+    import asyncio
+
+    smoothed, previous = None, []
+    for score, mask in zip(scores, masks):
+        smoothed = scorer.smooth_session_score(previous, score, main._observed_a_generator(mask))
+        previous.append(score)
+    session = _stub_session(smoothed, scorer.get_label(smoothed))
+    db = _StubDB(
+        session=session,
+        per_flush=list(reversed(scores)),
+        per_flush_masks=list(reversed(masks)),
+        flush_count=len(scores),
+    )
+    return asyncio.run(main._decide_on_evidence(db, db.session, "stub"))
+
+
+def test_the_observed_gate_is_pinned_to_real_measured_masks():
+    """Which bits count as 'observed', fixed against masks compute_risk
+    actually produces. Every other test builds its masks from
+    main._structural_bits() or uses 0 -- and a real mask is never 0, because
+    click density and focus changes are always measured. A mutation-testing
+    review found that 'any bit set', 'all six structural bits required' and
+    'the first six bits' each passed the whole suite; in production the first
+    of those is the same as having no gate at all."""
+    thin = scorer.compute_risk(_real_payload("one_pointer_event"))
+    keys = scorer.compute_risk(_real_payload("keydowns"))
+    structural = main._structural_bits()
+
+    # The definition: exactly the positions of scorer.BUCKET_FEATURES.
+    expected = 0
+    for index, name in enumerate(FEATURE_NAMES):
+        if name in scorer.BUCKET_FEATURES:
+            expected |= 1 << index
+    assert structural == expected
+    for always_measured in ("tiklama_yogunlugu", "odak_degisimi"):
+        assert not structural & (1 << FEATURE_NAMES.index(always_measured))
+
+    # A thin window: bits set, none of them structural -> not observed.
+    assert thin["measured_mask"] != 0
+    assert not main._observed_a_generator(thin["measured_mask"])
+    # Typing alone measures two structural features, not six -> observed.
+    assert main._observed_a_generator(keys["measured_mask"])
+    assert keys["measured_mask"] & structural not in (0, structural)
+    # A row written before the column existed is not silently discarded.
+    assert main._observed_a_generator(None)
+
+    # And the decisions those real masks produce.
+    unobserved = _decide_with_masks([thin["risk_score"]] * 3, [thin["measured_mask"]] * 3)
+    assert (unobserved.action, unobserved.reason) == ("verify", "unobserved")
+    typed = _decide_with_masks([keys["risk_score"]] * 3, [keys["measured_mask"]] * 3)
+    assert typed.reason != "unobserved", f"gozlenmis yazma akislari gozlenmemis sayildi: {typed.reason}"
+    legacy = _decide_with_masks([1.0] * 3, [None] * 3)
+    assert (legacy.action, legacy.reason) == ("allow", "score")
+
+
+def test_the_gate_runs_after_the_rows_floor_and_the_staleness_check():
+    """Branch order, which the mutation review found unpinned: too few rows
+    and stale behaviour are answered by their own reasons, before the gate
+    looks at what was observed."""
+    import asyncio
+
+    few = _StubDB(session=_stub_session(99.1, "Bot Tespit Edildi"), per_flush=[99.1, 99.1],
+                  per_flush_masks=[0, 0], flush_count=2)
+    verdict = asyncio.run(main._decide_on_evidence(few, few.session, "stub"))
+    assert (verdict.action, verdict.reason, verdict.risk_score) == ("verify", "insufficient_evidence", None)
+
+    old = main.utcnow() - timedelta(seconds=main.DECISION_MAX_AGE_S + 60)
+    stale = _StubDB(session=_stub_session(99.1, "Bot Tespit Edildi", last_seen_at=old),
+                    per_flush=[99.1] * 4, per_flush_masks=[0] * 4, flush_count=4)
+    verdict = asyncio.run(main._decide_on_evidence(stale, stale.session, "stub"))
+    assert (verdict.action, verdict.reason) == ("verify", "stale")
+
+
+def test_a_full_inconclusive_window_is_ambiguous_even_with_a_thin_flush_in_it():
+    """'ambiguous' means the whole ten-flush window has been watched and is
+    still inconclusive. Counted on observed flushes it became unreachable as
+    soon as one thin flush sat in the window, and the customer got 'a few more
+    seconds' instead of step-up at the twentieth second."""
+    scores = [99.1] + [50.0] * 9
+    observed = [False] + [True] * 9
+    verdict = _decide_masked(scores, observed)
+    assert (verdict.action, verdict.reason) == ("verify", "ambiguous"), (
+        f"dolu ve kararsiz pencere '{verdict.action}/{verdict.reason}' verdi"
+    )
+
+
 def test_automated_evidence_ages_out_only_with_the_window():
     """Where the rule stops, pinned so the comment above SPRT_MAX_FLUSHES
     stays true: seven flushes at 95, then k at 10.
@@ -1810,6 +2255,51 @@ def test_verification_ends_the_demo_modal_loop():
         _clear_overrides()
 
 
+def test_one_step_up_authorises_one_approval():
+    """A verification is spent by the approval it produces. It used to
+    upgrade every verify on the session for VERIFICATION_VALID_S: an
+    adversarial review measured five consecutive charges after one step-up,
+    all approved, bounded only by the rate limit."""
+    session_id = "0c0c0c0c-0000-0000-0002-000000000004"
+    session = _stub_session(50.0, "Şüpheli", verified_at=main.utcnow())
+    db = _StubDB(session=session, flush_count=main.SPRT_MAX_FLUSHES)
+
+    first = _decide_over_http(db, session_id)
+    assert (first["action"], first["reason"]) == ("allow", "verified")
+    assert session.verified_at is None, "dogrulama harcanmadi"
+    # Spending a verification is not behaviour: the freshness clock the
+    # staleness rule reads is left alone (onupdate suppressed).
+    [spend] = [q for q in db.executed if q.startswith("UPDATE sessions SET")]
+    assert "last_seen_at=sessions.last_seen_at" in spend, spend
+
+    second = _decide_over_http(db, session_id)
+    assert (second["action"], second["reason"]) == ("verify", "step_up"), (
+        f"ayni dogrulama ikinci kez onay verdi: {second['action']}/{second['reason']}"
+    )
+
+
+def test_two_decisions_cannot_spend_one_step_up():
+    """The compare-and-set: if another decision spent the verification
+    between this one reading it and writing it, the UPDATE matches no row and
+    this verdict stays what the evidence said."""
+
+    class _LostRace(_StubDB):
+        async def execute(self, statement):
+            text = str(statement)
+            if text.startswith("UPDATE sessions SET") and "verified_at=:verified_at" in text:
+                self.executed.append(text)
+                return _StubResult([], rowcount=0)
+            return await super().execute(statement)
+
+    session_id = "0c0c0c0c-0000-0000-0002-000000000005"
+    db = _LostRace(session=_stub_session(50.0, "Şüpheli", verified_at=main.utcnow()),
+                   flush_count=main.SPRT_MAX_FLUSHES)
+    body = _decide_over_http(db, session_id)
+    assert (body["action"], body["reason"]) == ("verify", "step_up"), (
+        f"yarisi kaybeden karar onay verdi: {body['action']}/{body['reason']}"
+    )
+
+
 def test_verification_never_overrides_block_or_an_unknown_session():
     """Verification is for uncertainty. A confident bot verdict stays blocked
     however fresh the step-up, and a session with no row -- nothing was ever
@@ -2198,6 +2688,10 @@ def test_handover_is_not_smoothed_away():
     )
     assert scorer.smooth_session_score([], 42.0) == 42.0
     assert scorer.smooth_session_score([float("nan"), 10.0], 12.0) == 11.0, "NaN gecmis yumusatmayi bozdu"
+    # The bypass still fires for a flush that observed any structure, which is
+    # every handover a bot can actually perform: driving the page produces
+    # events, and events produce structure.
+    assert scorer.smooth_session_score(calm, 95.0, True) == 95.0
 
     # And through the API: four calm stored flushes, then a headless bot flush.
     session_id = "0d0d0d0d-0000-0000-0000-000000000001"
@@ -2343,6 +2837,89 @@ def test_a_driven_browser_is_not_filed_as_a_person():
     )
 
 
+def test_a_flush_that_observed_no_structure_cannot_set_the_session_score():
+    """The level-shift bypass claims the generator changed. It needs to have
+    seen a generator.
+
+    Every feature has a neutral fallback, so a window with no usable pointer,
+    click, scroll or key activity still yields a full twelve-number vector --
+    and the forest has an opinion about that coordinate like any other. In the
+    one recorded human session three windows were like this: 3 of 12 features
+    measured, 0 of the 6 structural ones, and the forest scored them 88.5,
+    97.3 and 88.4. The last was the final flush, the one "Onayla" is decided
+    on: against a session sitting at 0.0 it read as an 88-point level shift and
+    set the stored session score to 88.4, "Bot Tespit Edildi", for a person who
+    had stopped moving the mouse.
+
+    The median may still carry such a flush -- one of five cannot flip a
+    verdict. The bypass may not.
+    """
+    calm = [0.0, 0.0, 0.5, 0.0]
+
+    assert scorer.smooth_session_score(calm, 88.4, False) == 0.0, (
+        "yapi olculmemis bir akis oturum skorunu tek basina belirledi"
+    )
+    # Same numbers, a flush that did observe structure: unchanged.
+    assert scorer.smooth_session_score(calm, 88.4, True) == 88.4
+
+    # Not erased, only prevented from overriding: the median still sees them.
+    assert scorer.smooth_session_score([0.0, 88.0, 97.0], 88.0, False) == 88.0
+
+    # It is the observation that decides, not the value. A structureless flush
+    # scoring LOW gets no special treatment either -- the rule is upward-only
+    # to begin with, so this is simply the median.
+    assert scorer.smooth_session_score([90.0, 92.0, 91.0, 93.0], 2.0, False) == 91.0
+
+
+def test_the_structure_gate_does_not_excuse_a_naive_bot():
+    """The gate must not be `provisional`, and this is why.
+
+    A naive headless bot measures 4 of 12 features, so it IS provisional --
+    gating on that flag would let a handover to a form-fill script hide behind
+    the median for three flushes, which is the ten seconds the level-shift rule
+    was built to close. What separates it from a person who stopped moving is
+    that it still produced events: measured here rather than assumed.
+    """
+    structural = scorer.BUCKET_FEATURES
+    for name, payload in [
+        ("headless_bot", _headless_bot_session()),
+        ("fast_keyboard_only_no_mouse", _fast_keyboard_only_no_mouse_session()),
+        ("scripted_motion_bot", _scripted_motion_bot_session()),
+    ]:
+        raw_values = scorer.extract_raw(payload)
+        observed = [n for n in structural if raw_values.get(n) is not None]
+        assert observed, (
+            f"{name} hicbir yapisal ozellik olcmedi -- bu durumda seviye "
+            f"atlamasi kapisi bir devir teslimi gizler"
+        )
+        assert scorer.compute_risk(payload)["observed_structure"] is True
+
+    # And the flush shape that started this: no events at all.
+    idle = {"mouse_trajectory": [], "click_timing": [], "scroll_events": [],
+            "hesitation_intervals": [2100, 2050, 1980, 2200, 2010],
+            "focus_changes": [{"t": 1_700_000_000_000}], "key_events": []}
+    assert scorer.compute_risk(idle)["observed_structure"] is False
+
+
+def test_the_structure_flag_travels_with_the_score_into_the_session():
+    """/api/analyze must pass compute_risk's own verdict into the smoothing,
+    or the gate above is dead code in production."""
+    import inspect
+
+    import main
+
+    source = inspect.getsource(main.analyze)
+    assert "smooth_session_score" in source
+    # The arguments, not the whole function: the flag has to be in THIS call.
+    # A naive split on ")" lands inside the list comprehension that builds the
+    # history argument, so take a fixed window after the call instead.
+    call = source.split("smooth_session_score", 1)[1][:300]
+    assert "observed_structure" in call, (
+        "analyze, smooth_session_score cagrisina observed_structure bayragini "
+        "gecirmiyor -- yapi olculmemis akis yine oturum skorunu belirleyebilir"
+    )
+
+
 def test_real_holdout_splits_by_person_not_by_session():
     """Sessions from one person are not independent samples.
 
@@ -2370,7 +2947,10 @@ def test_real_holdout_splits_by_person_not_by_session():
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh)
     try:
-        loaded = train_model.load_real_telemetry(path)
+        # recorded_dir=None on purpose: with the real archive in the default
+        # the counts below would describe whatever the developer has recorded
+        # rather than this payload.
+        loaded = train_model.load_real_telemetry(path, recorded_dir=None)
     finally:
         os.remove(path)
 
@@ -2379,6 +2959,155 @@ def test_real_holdout_splits_by_person_not_by_session():
     # Four people, 30% holdout -> exactly one person held out, 10 of 40 rows.
     assert len(y_eval) == 10, f"kisi bazli ayirma yapilmamis (eval={len(y_eval)})"
     assert len(y_train) == 30
+
+
+def _recorded_archive(tmp, person, session_id, n_flushes=8, label="human"):
+    """One data/real/{label}/{id}.json, built from a payload that measures
+    enough features to clear the admission gate."""
+    import scorer as _scorer
+
+    directory = os.path.join(tmp, label)
+    os.makedirs(directory, exist_ok=True)
+    flushes = []
+    for i in range(n_flushes):
+        raw = _natural_human_session(seed=i)
+        flushes.append({
+            "raw": raw,
+            "features": _scorer.extract_features(raw),
+            "raw_purged": False,
+            "client_signals": {"webdriver": False, "untrusted_events": 0},
+        })
+    record = {"session_id": session_id, "label": label, "flushes": flushes}
+    if person is not None:
+        record["person_id"] = person
+    path = os.path.join(directory, f"{session_id}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(record, fh)
+    return path
+
+
+def test_recorded_sessions_reach_the_training_set():
+    """A session recorded from a person has to change the model.
+
+    It did not, for the whole life of the project. data/real/ was written by
+    record_session.py and read only by evaluate.py, so recording somebody
+    produced a file and nothing else; the one path that fed the model,
+    --to-training, copies into lab/real_telemetry.json, which .gitignore
+    deliberately does not cover the way it covers data/real/.
+    """
+    import tempfile
+
+    import train_model
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _recorded_archive(tmp, "p01", "s-1")
+        _recorded_archive(tmp, "p02", "s-2")
+        samples, stats = train_model.load_recorded_samples(tmp)
+
+    assert stats["files"] == 2
+    assert stats["persons"] == {"p01", "p02"}
+    assert samples, "kaydedilen oturumlar egitim yoluna hic ulasmadi"
+    assert all(sample["source"] == "recorded" for sample in samples)
+    assert all(sample["label"] == 0 for sample in samples)
+    assert all(sample["raw"] for sample in samples), (
+        "ham telemetri tasinmadi -- satirlar yeniden cikarilamaz ve eski "
+        "olcekte donar"
+    )
+
+
+def test_recorded_session_without_a_person_is_refused():
+    """No person, no row. Falling back to the session id looks like it works
+    and turns the person split into a session split, which is the one
+    substitution that makes a holdout number unreproducible."""
+    import tempfile
+
+    import train_model
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _recorded_archive(tmp, None, "s-nameless")
+        samples, stats = train_model.load_recorded_samples(tmp)
+
+    assert samples == [], "person_id olmayan kayit sessizce alindi"
+    assert stats["no_person"] == ["s-nameless.json"]
+
+
+def test_recorded_flush_that_measured_almost_nothing_is_dropped():
+    """Every feature has a neutral fallback, so an empty window still yields a
+    full twelve-number vector. Labelled "human" it teaches the model that an
+    empty window is a person -- which is exactly what a naive headless bot
+    sends."""
+    import tempfile
+
+    import scorer as _scorer
+    import train_model
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "human"))
+        empty = {"mouse_trajectory": [], "click_timing": [], "scroll_events": [],
+                 "hesitation_intervals": [], "focus_changes": [], "key_events": []}
+        record = {
+            "session_id": "s-thin",
+            "person_id": "p01",
+            "label": "human",
+            "flushes": [{"raw": empty, "features": _scorer.extract_features(empty),
+                         "raw_purged": False}],
+        }
+        with open(os.path.join(tmp, "human", "s-thin.json"), "w", encoding="utf-8") as fh:
+            json.dump(record, fh)
+        samples, stats = train_model.load_recorded_samples(tmp)
+
+    assert samples == [], "olculmemis akis egitim setine girdi"
+    assert stats["thin"] == 1
+
+
+def test_holdout_assignment_survives_a_new_recording():
+    """Recording one more session must not re-draw the existing holdout.
+
+    It used to: the split shuffled the whole group list with a fixed seed, so
+    adding a group permuted every assignment and the lab numbers from before
+    and after a capture were not comparable. A holdout whose membership moves
+    whenever the dataset grows is not a holdout.
+    """
+    import train_model
+
+    lab = [
+        {"features": {name: 0.5 for name in FEATURE_NAMES}, "label": i % 2,
+         "scenario": "H1_human", "run_id": f"run-{i}"}
+        for i in range(20)
+    ]
+    before = train_model._holdout_groups(lab)
+    after = train_model._holdout_groups(
+        lab + [{"features": {name: 0.5 for name in FEATURE_NAMES}, "label": 0,
+                "scenario": "R1_human_live", "run_id": "s-new",
+                "person_id": "p01", "source": "recorded"}]
+    )
+    lab_before = {g for g in before if g.startswith("run-")}
+    lab_after = {g for g in after if g.startswith("run-")}
+    assert lab_before == lab_after, (
+        f"yeni bir kayit lab holdout'unu yeniden dagitti: "
+        f"{sorted(lab_before ^ lab_after)}"
+    )
+
+
+def test_one_recorded_person_is_trained_on_not_held_out():
+    """With a single person, int(n * 0.3) == 0 holds nobody out.
+
+    Deliberate, and the reason is written on _holdout_groups: held out, the
+    model never sees a real person at all. The cost is that nothing measured
+    on that person is out-of-sample, which training itself has to say out
+    loud -- this test only pins the split behaviour.
+    """
+    import train_model
+
+    one = [{"features": {name: 0.5 for name in FEATURE_NAMES}, "label": 0,
+            "scenario": "R1_human_live", "run_id": "s-1", "person_id": "p01",
+            "source": "recorded"}]
+    assert train_model._holdout_groups(one) == set()
+
+    four = [{"features": {name: 0.5 for name in FEATURE_NAMES}, "label": 0,
+             "scenario": "R1_human_live", "run_id": f"s-{i}",
+             "person_id": f"p0{i}", "source": "recorded"} for i in range(4)]
+    assert len(train_model._holdout_groups(four)) == 1
 
 def _run_all():
     tests = [
@@ -2394,7 +3123,15 @@ def _run_all():
         test_handover_is_not_smoothed_away,
         test_isolation_forest_is_not_consulted_when_scoring,
         test_a_driven_browser_is_not_filed_as_a_person,
+        test_a_flush_that_observed_no_structure_cannot_set_the_session_score,
+        test_the_structure_gate_does_not_excuse_a_naive_bot,
+        test_the_structure_flag_travels_with_the_score_into_the_session,
         test_real_holdout_splits_by_person_not_by_session,
+        test_recorded_sessions_reach_the_training_set,
+        test_recorded_session_without_a_person_is_refused,
+        test_recorded_flush_that_measured_almost_nothing_is_dropped,
+        test_holdout_assignment_survives_a_new_recording,
+        test_one_recorded_person_is_trained_on_not_held_out,
         test_api_rejects_bad_token,
         test_session_token_expires,
         test_session_token_is_bound_to_its_session_and_issue_time,

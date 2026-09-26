@@ -2,6 +2,116 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-[#09090b] text-zinc-50;
+@layer base {
+  :root {
+    /* Mirrors of the Tailwind tokens for the few places that need raw CSS
+       (scrollbars, selection, the native form controls). designTokens.js is
+       still the source; these are generated from the same theme values. */
+    --canvas: theme("colors.canvas.DEFAULT");
+    --panel: theme("colors.panel.DEFAULT");
+    --panel-inset: theme("colors.panel.inset");
+    --panel-raised: theme("colors.panel.raised");
+    --line: theme("colors.line.DEFAULT");
+    --line-strong: theme("colors.line.strong");
+    --ink: theme("colors.ink.DEFAULT");
+    --ink-muted: theme("colors.ink.muted");
+    --accent: theme("colors.accent.DEFAULT");
+
+    /* Native widgets (the demo-customer <select>, date pickers, scrollbars)
+       draw themselves light unless the page declares otherwise. */
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans text-body antialiased;
+  }
+
+  /* One focus treatment everywhere, and it cannot be switched off.
+     !important is deliberate: Tailwind emits its utilities after this layer, so
+     a single stray `focus:outline-none` on an input wins on both order and
+     specificity and leaves a keyboard user with no visible focus at all -- which
+     is exactly what was happening on the checkout fields. There is one ring in
+     this system, so nothing legitimate needs to override it. */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent) !important;
+    outline-offset: 2px !important;
+  }
+
+  /* Firefox draws a dotted inner border on focused buttons on top of the
+     outline above. */
+  :where(button, input)::-moz-focus-inner {
+    border: 0;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    color: theme("colors.ink.DEFAULT");
+  }
+
+  /* The SOC list and the notice page scroll; the default light scrollbar cuts
+     a white stripe down a dark page. */
+  * {
+    scrollbar-color: var(--line-strong) transparent;
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: theme("colors.line.control");
+    background-clip: content-box;
+  }
+
+  /* Motion in this product exists to explain a change (a score moving, a panel
+     arriving, a state transition). Someone who has asked their system not to
+     animate still needs every one of those states -- they just get the end of
+     the animation instead of the animation. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Keyboard-only escape hatch out of the header. Visible the moment it takes
+     focus, off-screen otherwise -- never display:none, which would take it out
+     of the tab order entirely. */
+  .skip-link {
+    @apply absolute left-4 top-4 z-50 -translate-y-24 rounded-field bg-accent px-4 py-2 text-caption font-semibold text-accent-ink
+           transition-transform focus-visible:translate-y-0;
+  }
+}
+
+@layer utilities {
+  /* Figures that are read as data (scores, counts, money, latency) are lined
+     up column by column: tabular figures so digits do not jitter as a value
+     animates, and the mono stack so 1 and 7 are unmistakable. */
+  .num {
+    @apply font-mono tabular-nums;
+    font-feature-settings: "tnum" 1, "zero" 1;
+  }
+
+  .eyebrow {
+    @apply text-eyebrow font-semibold uppercase tracking-[0.09em] text-ink-faint;
+  }
 }

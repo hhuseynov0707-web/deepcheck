@@ -1,5 +1,8 @@
 import { useState } from "react";
 
+import EmptyState from "./EmptyState.jsx";
+import { PulseIcon } from "./icons.jsx";
+import { RISK_LEVELS } from "./riskLevels.js";
 import SyntheticBadge from "./SyntheticBadge.jsx";
 
 const DEFAULT_VISIBLE = 5;
@@ -9,69 +12,91 @@ const DEFAULT_VISIBLE = 5;
 // field yet shows no badge rather than a wrong one.
 export const SIMULATED_SESSION_TITLE = "Simüle edilmiş oturum — gerçek bir kişi değil; hiçbir ölçüme katılmaz.";
 
-// Highest risk first: operators/judges need to see the dangerous sessions
-// immediately, not scroll past a pile of clean ones to find them.
-const CATEGORIES = [
-  { key: "bot", label: "Bot Tespit Edildi", match: (s) => s.risk_score >= 80, bar: "bg-rose-500", text: "text-rose-400" },
-  { key: "yuksek", label: "Yüksek Risk", match: (s) => s.risk_score >= 60 && s.risk_score < 80, bar: "bg-orange-500", text: "text-orange-400" },
-  { key: "supheli", label: "Şüpheli", match: (s) => s.risk_score >= 40 && s.risk_score < 60, bar: "bg-amber-500", text: "text-amber-400" },
-  { key: "gercek", label: "Gerçek Kullanıcı", match: (s) => s.risk_score < 40, bar: "bg-emerald-500", text: "text-emerald-400" },
-];
+// Highest risk first: operators and judges need to see the dangerous sessions
+// immediately, not scroll past a pile of clean ones to find them. The bands,
+// their Turkish labels, their colours and their glyphs all come from
+// riskLevels.js, so this list cannot drift from the badge or the chart.
+const CATEGORIES = [...RISK_LEVELS].reverse().map((level, index, all) => {
+  const lower = index === all.length - 1 ? -Infinity : all[index + 1].upperBound;
+  return { ...level, match: (s) => s.risk_score >= lower && s.risk_score < level.upperBound };
+});
 
 function formatTime(iso) {
   if (!iso) return "-";
   return new Date(iso).toLocaleTimeString("tr-TR");
 }
 
-function SessionCard({ session, accent, isSelected, onSelect }) {
+function SessionCard({ session, level, isSelected, onSelect }) {
+  const Icon = level.Icon;
   return (
     <button
       aria-pressed={isSelected}
       onClick={() => onSelect?.(session.session_id)}
-      className={`text-left overflow-hidden bg-[#18181b] border rounded-lg transition-colors duration-200 ease-out ${
-        isSelected ? "border-zinc-600" : "border-zinc-800 hover:border-zinc-700"
-      }`}
+      className={`group relative flex w-full cursor-pointer items-stretch overflow-hidden rounded-field border text-left
+        transition-colors ${
+          isSelected
+            ? "border-accent/60 bg-panel-raised"
+            : "border-line bg-panel hover:border-line-strong hover:bg-panel-raised/60"
+        }`}
     >
-      <div className={`h-1 w-full ${accent.bar}`} />
-      <div className="p-3">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="font-mono text-xs text-zinc-500 truncate">{session.session_id.slice(0, 13)}…</span>
-          <span className="font-mono text-xs text-zinc-400">{formatTime(session.last_seen_at)}</span>
-        </div>
+      {/* Colour rail: the band, repeated for the eye. Never the only signal --
+          the glyph and the Turkish label below say the same thing. */}
+      <span aria-hidden="true" className={`w-1 shrink-0 ${level.fill}`} />
+      <span className="min-w-0 flex-1 px-3 py-2.5">
+        <span className="flex items-center justify-between gap-2">
+          <span className="num truncate text-caption text-ink-faint">{session.session_id.slice(0, 13)}…</span>
+          <span className="num shrink-0 text-caption text-ink-faint">{formatTime(session.last_seen_at)}</span>
+        </span>
         {session.is_synthetic === true && (
-          <div className="mb-1.5">
+          <span className="mt-1.5 flex">
             <SyntheticBadge size="sm" title={SIMULATED_SESSION_TITLE} />
-          </div>
+          </span>
         )}
-        <div className="flex items-end justify-between">
-          <span className="text-sm text-zinc-300">{session.label}</span>
-          <span className={`text-xl font-semibold font-mono tabular-nums ${accent.text}`}>
+        <span className="mt-1.5 flex items-end justify-between gap-2">
+          <span className={`flex min-w-0 items-center gap-1.5 ${level.text}`}>
+            <Icon className="h-3.5 w-3.5 shrink-0" />
+            <span className="truncate text-caption font-medium">{session.label}</span>
+          </span>
+          <span className={`num shrink-0 text-h2 font-bold leading-none ${level.text}`}>
             {session.risk_score?.toFixed(1)}
           </span>
-        </div>
-      </div>
+        </span>
+      </span>
     </button>
   );
 }
 
-function CategorySection({ category, items, selectedId, onSelect, expanded, onToggle }) {
+// How the cards flow. "rail" is the SOC dashboard's narrow left column, which
+// is one card wide on a large screen and two wide below xl, where the list
+// spans the page instead of sitting beside the detail view.
+const LAYOUTS = {
+  auto: "grid-cols-1 sm:grid-cols-2",
+  rail: "grid-cols-1 sm:grid-cols-2 xl:grid-cols-1",
+};
+
+function CategorySection({ category, items, selectedId, onSelect, expanded, onToggle, layout }) {
   const isExpanded = Boolean(expanded);
   const visible = isExpanded ? items : items.slice(0, DEFAULT_VISIBLE);
+  const Icon = category.Icon;
 
   return (
-    <div>
-      <div className="flex items-center gap-2 mb-2">
-        <span className={`h-2 w-2 rounded-full ${category.bar}`} />
-        <h3 className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
-          {category.label} ({items.length})
+    <section aria-label={`${category.label} (${items.length})`}>
+      <div className="mb-2 flex items-center gap-2">
+        <Icon className={`h-3.5 w-3.5 shrink-0 ${category.text}`} />
+        <h3 className={`text-eyebrow font-semibold uppercase tracking-[0.09em] ${category.text}`}>
+          {category.label}
         </h3>
+        <span className="num rounded-full border border-line bg-panel px-1.5 text-[0.625rem] leading-5 text-ink-faint">
+          {items.length}
+        </span>
+        <span aria-hidden="true" className="h-px flex-1 bg-line" />
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div className={`grid gap-2 ${LAYOUTS[layout] ?? LAYOUTS.auto}`}>
         {visible.map((s) => (
           <SessionCard
             key={s.session_id}
             session={s}
-            accent={category}
+            level={category}
             isSelected={selectedId === s.session_id}
             onSelect={onSelect}
           />
@@ -81,23 +106,26 @@ function CategorySection({ category, items, selectedId, onSelect, expanded, onTo
         <button
           onClick={onToggle}
           aria-expanded={isExpanded}
-          className="mt-3 w-full text-center bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-zinc-100 text-xs font-medium uppercase tracking-wider rounded-md py-2 transition-colors duration-200 ease-out"
+          className="mt-2 w-full cursor-pointer rounded-field border border-line bg-panel py-2 text-eyebrow font-semibold
+                     uppercase tracking-[0.09em] text-ink-muted transition-colors hover:border-line-strong hover:text-ink"
         >
           {isExpanded ? "Daralt" : `Tümünü Göster (${items.length})`}
         </button>
       )}
-    </div>
+    </section>
   );
 }
 
-export default function SessionTable({ sessions = [], selectedId, onSelect }) {
+export default function SessionTable({ sessions = [], selectedId, onSelect, layout = "auto" }) {
   const [expandedCategories, setExpandedCategories] = useState({});
 
   if (sessions.length === 0) {
     return (
-      <div className="rounded-lg border border-zinc-800 bg-[#18181b] px-4 py-10 text-center text-sm text-zinc-400">
-        Henüz session bulunmuyor.
-      </div>
+      <EmptyState
+        icon={PulseIcon}
+        title="Henüz oturum kaydı yok"
+        description="Ödeme demosu bir tarayıcıda açıldığında oturumlar birkaç saniye içinde burada listelenir."
+      />
     );
   }
 
@@ -117,6 +145,7 @@ export default function SessionTable({ sessions = [], selectedId, onSelect }) {
           items={items}
           selectedId={selectedId}
           onSelect={onSelect}
+          layout={layout}
           expanded={expandedCategories[category.key]}
           onToggle={() =>
             setExpandedCategories((prev) => ({ ...prev, [category.key]: !prev[category.key] }))

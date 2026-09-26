@@ -216,8 +216,7 @@ def measured_count(flush: dict) -> int | None:
     """
     if flush.get("raw_purged"):
         return None
-    raw_values = scorer.extract_raw(flush.get("raw") or {})
-    return sum(1 for name in FEATURE_NAMES if raw_values.get(name) is not None)
+    return scorer.measured_feature_count(scorer.extract_raw(flush.get("raw") or {}))
 
 
 def provenance_problems(record: dict) -> list[str]:
@@ -341,11 +340,22 @@ def merge_into_training_set(
     }
 
 
-def _write(record: dict, label: str, out_dir: str) -> str:
+def _write(record: dict, label: str, out_dir: str, person_id: str | None = None) -> str:
+    """Freezes one session under data/real/{label}/.
+
+    The person goes in the FILE, not only into the lab merge. The archive is
+    read back by evaluate.py and by train_model's recorded-session loader, and
+    both split by whoever produced the data; a file that does not name its
+    person can only be split by session, which is the split this whole module
+    refuses to make. It was written without one until the first real recording
+    was taken, and that recording then could not be person-split at all.
+    """
     target_dir = os.path.join(out_dir, label)
     os.makedirs(target_dir, exist_ok=True)
     path = os.path.join(target_dir, f"{record['session_id']}.json")
     record["label"] = label
+    if person_id:
+        record["person_id"] = person_id
     record["recorded_at"] = datetime.now(timezone.utc).isoformat()
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(record, fh, ensure_ascii=False, indent=2)
@@ -422,6 +432,7 @@ async def record(
     out_dir: str,
     collected: list | None = None,
     force: bool = False,
+    person_id: str | None = None,
 ) -> int:
     written = 0
     async with get_sessionmaker()() as db:
@@ -441,7 +452,7 @@ async def record(
                 continue
             if collected is not None:
                 collected.append(record_data)
-            path = _write(record_data, label, out_dir)
+            path = _write(record_data, label, out_dir, person_id)
             print(f"YAZILDI  {path}  ({len(record_data['flushes'])} akis)")
             written += 1
     return written
@@ -506,7 +517,13 @@ async def _gather(args, collected: list) -> tuple[int, bool]:
         return 1, True
     if args.preview:
         return await preview(session_ids, args.label), True
-    return await record(session_ids, args.label, args.out, collected, force=args.force), False
+    return (
+        await record(
+            session_ids, args.label, args.out, collected,
+            force=args.force, person_id=args.person,
+        ),
+        False,
+    )
 
 
 def main() -> int:

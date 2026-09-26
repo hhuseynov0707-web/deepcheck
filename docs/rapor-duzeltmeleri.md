@@ -245,8 +245,14 @@ bakınız."
 - **Isolation Forest skordan çıkarıldı (ağırlığı 0).** Kaynak: `backend/scorer.py`
   ve `TECHNICAL_GUIDE.md` §7.
   - Eğitimde görülmeyen 82 gerçek tarayıcı akışında tek başına ROC-AUC değeri
-    **0,340** çıktı. Bu rastgeleden bile kötü, yani model ters çalışıyor: yalnızca
-    insan satırlarıyla eğitildiği için insana benzeyen saldırıyı "normal" sayıyor.
+    **0,340** çıkmıştı ve "ters çalışıyor" denmişti. **Bu gerekçe geri
+    çekildi** (2026-09-25): o ölçüm, donmuş laboratuvar satırları üzerindeydi;
+    laboratuvar ham telemetriyle yeniden yakalanınca aynı model **0,657**
+    veriyor — ters değil. Bileşen yine de dışarıda, çünkü önemli olan yönde işe
+    yaramıyor: meşru akışların %38'ini, kaydedilmiş tek kişinin akışlarının
+    %76'sını ve görülmemiş insan senaryosunun %87'sini ek doğrulama çizgisinin
+    üstüne koyuyor. Yalnızca insan satırlarıyla eğitildiği için "normal" onun
+    gözünde insan dağılımıdır; bu üründe ise saldırı zaten insana benziyor.
   - Isolation Forest'lı karışımın AUC değeri 0,977, onsuz karışımınki 0,990.
   - Çıkarılması skorlama süresini de 31,7 ms'den 17,7 ms'ye indirdi.
   - Model hâlâ eğitilip pakette saklanıyor ama istek başına çağrılmıyor.
@@ -266,11 +272,20 @@ bakınız."
 - **Gradient boosting denendi ama benimsenmedi.** Kaynak: `backend/scorer.py` ve
   `docs/juri-cevaplari.md`.
   - LightGBM ve XGBoost, ROC-AUC'ta RF ile aynı düzeyde. Görülen senaryolarda
-    80 ve üzeri skorla daha çok bot yakaladılar (0,89'a karşı 0,63).
-  - Ancak H1 insan senaryosu eğitimden çıkarıldığında LightGBM bu görülmemiş
-    insanların %74'ünü blokladı. RF hiçbirini bloklamadı.
-- Çalışma yeniden üretilebilir: `cd backend && python model_selection.py` komutu 7
-  model ailesini 4 protokolle karşılaştırır (dizüstü bilgisayarda 6–8 dakika).
+    80 ve üzeri skorla daha çok bot yakalıyorlar (+0,11 ila +0,15; 47 gerçek
+    grubun bootstrap'ı sıfırı dışarıda bırakıyor).
+  - Görülmemiş insan senaryosunda RF, ek doğrulama çizgisinde %5 ile en düşük
+    orana sahip; LightGBM %30, ExtraTrees %63. Blok çizgisinde RF %0,
+    LightGBM %4.
+  - **2026-09-25 DÜZELTMESİ:** bu maddenin önceki sürümü "LightGBM görülmemiş
+    insanların %74'ünü blokladı" diyordu. **O sayı geri çekilmiştir**;
+    `lab/real_telemetry.json` yalnızca normalize vektör sakladığı ve aradaki
+    yeniden eğitim ölçeklemeyi değiştirdiği için, ölü bir koordinat sisteminde
+    ölçülmüştü. Laboratuvar ham telemetriyle yeniden yakalandıktan sonra aynı
+    protokol %4 veriyor. Sonuç (RF'de kalmak) değişmedi; gerekçe olarak
+    gösterilen sayı değişti.
+- Çalışma yeniden üretilebilir: `cd backend && python model_selection.py` komutu 8
+  model ailesini 6 protokolle karşılaştırır (dizüstü bilgisayarda ~20 dakika).
 
 **Önerilen metin (§3 Yöntem)**
 
@@ -279,12 +294,15 @@ bakınız."
 > skorudur; gerçek trafikte kalibre edilmiş bir olasılık olarak ölçülmemiştir.
 > Isolation Forest, LSTM ve
 > gradient boosting modelleri de denenmiş, ölçüm sonucunda skordan çıkarılmıştır.
-> Isolation Forest gerçek tarayıcı verisinde ters çalışmıştır (ROC-AUC 0,34).
-> Yalnızca simülatörle eğitilen LSTM, tarayıcı trafiğinde bot yakalamayı
-> düşürmüştür (60 ve üzeri skorda %90'dan %79'a). LightGBM ise eğitimde görmediği
-> betikli insan senaryosunun %74'ünü bloklamıştır. Zaman boyutu, oturumun son beş
-> akışının medyanı ve ani sıçramaları yumuşatmadan geçiren açık bir kuralla ele
-> alınır. Model seçimi çalışması depoda yeniden üretilebilir durumdadır.
+> Isolation Forest gerçek tarayıcı verisinde meşru akışların %38'ini ek
+> doğrulama çizgisinin üstüne koymuştur (ROC-AUC 0,657). LSTM, sunum yolunun
+> ürettiği biçimde eğitildiğinde bile (ROC-AUC 0,871) tek başına Random
+> Forest'ın altında kalmış (0,996) ve var olma sebebi olan devir-teslimde bir
+> akış geç tepki vermiştir. Gradient boosting daha çok bot yakalamakta, ancak
+> görülmemiş meşru senaryolarda Random Forest'tan daha çok müşteriyi ek
+> doğrulamaya düşürmektedir. Zaman boyutu, oturumun son beş akışının medyanı ve
+> ani sıçramaları yumuşatmadan geçiren açık bir kuralla ele alınır. Model seçimi
+> çalışması depoda yeniden üretilebilir durumdadır.
 
 **Rakip tablosu hücresi (AI Modeli, DeepCheck sütunu):** "Random Forest (tek model;
 LSTM, Isolation Forest ve gradient boosting ölçülüp elendi)".
@@ -872,10 +890,10 @@ sütunu raporda da sayının yanında yazılmalı.
 | 1 | Uçtan uca çalışan bir prototip var: tarayıcı SDK'sı, FastAPI, PostgreSQL ve SOC panosu tek komutla ayağa kalkıyor | `docker-compose up --build` | `docker-compose.yml`, `README.md` | Kod |
 | 2 | Karar sunucuda ve tek bir noktada veriliyor; skor yoksa hiçbir zaman onay verilmiyor | `/api/decision`; skor yoksa ya da sonlu değilse `get_action` sonucu `verify` | `backend/main.py`, `backend/test_scorer.py` | Kod ve test |
 | 3 | Oturum kimliği ve imzalı oturum anahtarı sunucudan geliyor, iş ispatı karşılığında veriliyor ve 30 dakikada sona eriyor; telemetri tekrar oynatması reddediliyor | HMAC-SHA256 oturum anahtarı, iş ispatı, yük özeti, zaman sırası ve saat ofseti kontrolleri | `backend/main.py`, `sdk/deepcheck.js` | Kod ve test. Sınırı ölçüldü: düz bir Python istemcisi 50/50 denemede anahtar aldı (medyan 16 ms); iş ispatı istemcinin tarayıcı olduğunu kanıtlamaz |
-| 4 | Betikli tarayıcı koşularında betikli insan akışlarında yanlış işaret %0, bot akışlarında yakalama %76,1 | Eğitimde görülmeyen koşular, 82 akış (2026-09-06) | `docs/evaluation.md` | Betikli Playwright koşuları. **Bu çalışmada yeniden ölçülmedi**; öznitelik doygunluğu (bölüm 1) nedeniyle yeniden kayıt ve yeniden eğitim yol haritasında (`TECHNICAL_GUIDE.md` §20) |
+| 4 | Betikli tarayıcı koşularında betikli insan akışlarında yanlış işaret %0, bot akışlarında yakalama **%93,0** | Eğitimde görülmeyen koşular, 71 akış (2026-09-25, yeniden yakalanmış laboratuvar) | `docs/evaluation.md` | Betikli Playwright koşuları. 2026-09-06'da aynı tablo %76,1 diyordu; aradaki fark laboratuvarın ham telemetriyle yeniden yakalanmasıdır, eşik değişikliği değil |
 | 5 | Bağımsız saldırgan düzeneğinde düz çizgi otomasyonu %100 bloklandı, insan persona %100 onaylandı; sınırı da ölçüldü: insanlaştırılmış bot durdurulamadı | Sınıf başına 12 oturum | `docs/evaluation.md` | Bağımsız yazılmış simülasyon |
-| 6 | Model seçimi ölçüme dayanıyor: RF, 6 başka model ailesiyle karşılaştırıldı; LightGBM görülmemiş insanların %74'ünü blokladı, RF %0 | 7 aile, 4 protokol | `backend/model_selection.py`, `backend/scorer.py`, `docs/juri-cevaplari.md` | Sentetik veri ve betikli tarayıcı verisi |
-| 7 | Isolation Forest ve LSTM ölçüm sonucunda skordan çıkarıldı | IF ROC-AUC 0,340; LSTM ile 60 ve üzeri bot oranı 0,90'dan 0,79'a düşüyordu | `backend/scorer.py` | Betikli tarayıcı verisi |
+| 6 | Model seçimi ölçüme dayanıyor: RF, 7 başka model ailesiyle karşılaştırıldı; görülmemiş insan senaryosunda ek doğrulama oranı RF %5, LightGBM %30, ExtraTrees %63 | 8 aile, 6 protokol (2026-09-25 yeniden yakalanmış laboratuvarla) | `backend/model_selection.py`, `backend/scorer.py`, `docs/juri-cevaplari.md` | Sentetik veri, betikli tarayıcı verisi ve tek bir gerçek kişi |
+| 7 | Isolation Forest ve LSTM ölçüm sonucunda skordan çıkarıldı; düzeltilmiş veride **yeniden yargılandı**, ikisi de dışarıda kaldı | IF: eski "0,340 / ters" gerekçesi **geri çekildi**, düzeltilmiş veride 0,657 — ama meşru akışların %38'ini ek doğrulamaya gönderiyor. LSTM: 0,871 (sunum biçimi), RF 0,996; devir-teslimde RF %100'ü ilk akışta, LSTM %63'ünü | `backend/model_selection.py`, `backend/scorer.py` | 301 gerçek satır: 252 betikli tarayıcı akışı + tek bir gerçek kişiden 49 akış |
 | 8 | Oturum ortasındaki devir-teslim ilk otomatik akışta yakalanıyor | 185 devir-teslimin 185'i yakalandı; 14.790 meşru akıştan en fazla 6'sı etkilendi | `backend/scorer.py` | Simülasyon |
 | 9 | Meşru kullanıcı bloklanmıyor: beş etkileşim stilinde (yalnızca klavye kullananlar dahil) bloklama %0; LSTM çıkarıldıktan sonra yavaş yazan simüle kullanıcıda doğrudan blok %5,2'den %0,2'ye indi | Beş stil: %95 güven aralığı 0–6,0, stil başına n=60 (skorda LSTM varken ölçüldü). Yavaş yazan: stil başına 500 oturum | `docs/evaluation.md`, `backend/benchmark.py`, `TECHNICAL_GUIDE.md` §7 | Sentetik. **Bu çalışmada yeniden ölçülmedi.** Sonradan gelen ardışık test kuralının bedeli ayrıca ölçüldü: yavaş yazan 300 sentetik oturumun %1,7'si onaydan ek doğrulamaya geçti (blok değil) |
 | 10 | Skorlama 17,7 ms; karar uç noktası konteynerde p95 7,4 ms (profil kapalı), en fazla 37,9 ms (profil açık) | Bkz. bölüm 4 | `backend/scorer.py`, `docs/profile-evaluation.md` §11 | Ağ hariç; geçici PostgreSQL, sentetik oturumlar |
@@ -904,13 +922,18 @@ karşılaştırılmalı:
   300 devir-teslim simülasyonunun tamamı ek doğrulamaya düştü, bedeli yavaş
   yazan 300 oturumun %1,7'si), (b) konformal korumanın sunulan modelde **atıl**
   olduğu yazıldı ve model paketi bu durumu yüklenirken günlüğe geçiriyor.
-  Modelin kendisi yeniden eğitilmedi. Laboratuvar verisindeki öznitelik
-  doygunluğu (bölüm 1) yüzünden tarayıcı verisinin yeniden kaydedilmesi ve
-  modelin yeniden eğitilmesi **yol haritasındadır** (`TECHNICAL_GUIDE.md` §20)
-  ve bu kapsamda yapılmadı. Kontrol edilecek sayılar:
-  - `docs/evaluation.md`: %76,1 ve %0;
-  - `backend/scorer.py`: 0,90 ve 0,63;
-  - `docs/juri-cevaplari.md`: ROC-AUC 0,988 ve %74.
+  Modelin kendisi o çalışmada yeniden eğitilmedi.
+
+  **2026-09-25 güncellemesi:** yol haritasındaki o iş yapıldı. Laboratuvar
+  `lab/capture.py` ile ham telemetriyle yeniden yakalandı (46 koşuda 252 akış),
+  model iki paket için de yeniden eğitildi ve model seçimi çalışması baştan
+  koşturuldu. Yukarıdaki üç satırın yerine geçen güncel sayılar:
+  - `docs/evaluation.md`: bot akışlarında %93,0, betikli insan akışlarında %0;
+  - `backend/scorer.py`: RF tpr@0.8 = 0,81, görülmemiş insan senaryosunda
+    ek doğrulama oranı 0,05 / blok oranı 0,00;
+  - `docs/juri-cevaplari.md`: ROC-AUC 0,996; **eski %74 sayısı geri çekildi**
+    (aynı protokol artık LightGBM için %4 veriyor — bkz. Dördüncü Soru'nun
+    başındaki düzeltme kutusu).
 - **Kapasite ve maliyet.** Kâğıt üzerindeki hesap yazıldı: `TECHNICAL_GUIDE.md`
   §17, `docs/entegrasyon.md` §9 ve `docs/juri-cevaplari.md` "Beşinci Soru".
   Yük testi hâlâ yapılmadı. Rapora girecek her kapasite sayısı "ölçümden

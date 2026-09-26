@@ -11,10 +11,18 @@ actually happened.
 Usage:
     python evaluate.py                       # reads ../data/real
     python evaluate.py --threshold 60        # decision boundary to score at
-    python evaluate.py --markdown ../docs/evaluation.md
+    python evaluate.py --markdown ../docs/recorded-sessions.md
 
 Reads data/real/human/*.json and data/real/bot/*.json. The directory name is
 the ground truth.
+
+--markdown OVERWRITES its target with this report and nothing else. It used to
+say ../docs/evaluation.md here, which is a 500-line hand-written page carrying
+the browser-lab and adversarial measurements; running the documented command
+replaced all of it with the ~25 lines below. With one recorded human and no
+recorded bot in the archive, what it replaced it with read "Accuracy 100.0%,
+False positive rate 0.0%" -- off a single session. Write somewhere else and
+link to it.
 """
 
 import argparse
@@ -23,6 +31,12 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+
+# Below this many sessions of a class, the report refuses to present its
+# percentages as rates. Not a statistical threshold -- there is no n at which
+# one person on one machine becomes a population. It is the point at which the
+# arithmetic stops being actively misleading on its face.
+MIN_PER_CLASS_FOR_A_RATE = 10
 
 import numpy as np
 
@@ -61,8 +75,14 @@ def replay(record: dict) -> float | None:
 
     for flush in record.get("flushes", []):
         raw = flush.get("raw") or {}
-        current = scorer.compute_risk(raw)["risk_score"]
-        session_score = scorer.smooth_session_score(per_flush, current)
+        scored = scorer.compute_risk(raw)
+        current = scored["risk_score"]
+        # The structural flag has to travel with the score, or this replay
+        # stops being "exactly as the API would have": /api/analyze passes it,
+        # and it decides whether a flush may take the level-shift bypass.
+        session_score = scorer.smooth_session_score(
+            per_flush, current, scored["observed_structure"]
+        )
         per_flush.append(current)
 
     return session_score
@@ -157,6 +177,29 @@ def render_text(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _small_sample_note(report: dict) -> list[str]:
+    """The banner that has to sit above the metrics table while the archive is
+    this small. Returns the lines to splice in, or nothing once there is
+    enough of both classes for the percentages to mean anything."""
+    missing = []
+    if report["humans"] < MIN_PER_CLASS_FOR_A_RATE:
+        missing.append(f"{report['humans']} human")
+    if report["bots"] < MIN_PER_CLASS_FOR_A_RATE:
+        missing.append(f"{report['bots']} bot")
+    if not missing:
+        return []
+    return [
+        f"> **Not a rate: {' and '.join(missing)} session(s) recorded.** The "
+        "percentages below are the arithmetic of a handful of sessions, and "
+        "every one of them is from the same person on the same machine. They "
+        "describe what this archive contains, not a false-positive rate and "
+        "not a detection rate. Nothing here should be quoted as either until "
+        f"the archive holds at least {MIN_PER_CLASS_FOR_A_RATE} sessions of "
+        "each class from different people.",
+        "",
+    ]
+
+
 def render_markdown(report: dict) -> str:
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines = [
@@ -169,6 +212,11 @@ def render_markdown(report: dict) -> str:
         f"**Sessions:** {report['total']} ({report['humans']} human, {report['bots']} bot)  ",
         f"**Decision threshold:** {report['threshold']:.0f}",
         "",
+        # A rate needs a denominator worth dividing by. The archive has held
+        # one human session and no bot for most of this project's life, and
+        # "Accuracy 100.0%" off n=1 is exactly the sentence a jury would
+        # quote back. Say what n is, in the same breath as the percentage.
+        *_small_sample_note(report),
         "| Metric | Value |",
         "|---|---|",
         f"| Accuracy | {_pct(report['accuracy'])} |",

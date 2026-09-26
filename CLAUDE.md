@@ -16,7 +16,7 @@ DeepCheck — istifadəçi davranışını real vaxtda analiz edərək bot və i
 |---|---|---|
 | Backend | FastAPI (Python 3.11) | Async, yüksək performanslı |
 | Database | PostgreSQL 16 | Session, davranış və müştəri profili cədvəlləri |
-| ML Model | Random Forest | sklearn. LSTM və Isolation Forest ölçmə nəticəsində skordan çıxarılıb (səbəbi scorer.py-də, təkrarlamaq üçün `backend/model_selection.py`) |
+| ML Model | Random Forest | sklearn. LSTM və Isolation Forest ölçmə nəticəsində skordan çıxarılıb, sonra düzəldilmiş data üzərində **yenidən mühakimə edilib** və yenə kənarda qalıb (səbəbi scorer.py-də, təkrarlamaq üçün `backend/model_selection.py`) |
 | Real-time | REST API polling (hər 2 saniyə) | Frontend fetch ilə |
 | Deploy | Docker Compose | `docker-compose up` ilə hər şey qalxır |
 | Frontend | React + Vite | Müasir, sürətli |
@@ -47,13 +47,13 @@ deepcheck-mvp/
 │   ├── lstm_model.py          # FEATURE_NAMES + FEATURE_SCHEMA_VERSION + LSTM tərifi
 │   ├── profiles.py            # Müştəri davranış profilinin statistikası (saf modul)
 │   ├── profile_lab.py         # Profil qatını sintetik kimliklərdə ölçür → docs/profile-evaluation.md
-│   ├── model_selection.py     # Model seçimi araşdırması (RF vs GBM vs LSTM)
+│   ├── model_selection.py     # Model seçimi araşdırması (8 ailə, 6 protokol)
 │   ├── train_model.py         # Sintetik data + identity latent-ləri + training
 │   ├── demo_seed.py           # Münsiflər üçün SENTETİK demo müştəriləri
 │   ├── benchmark.py           # Form-fill generatoru, latency və skor benchmark-ları
 │   ├── record_session.py      # Etiketlənmiş real sessionu data/real/-a yazır
 │   ├── evaluate.py            # O sessionları real scoring yolundan keçirir
-│   ├── test_scorer.py         # 54 test — skor, auth, ladder, token, ardıcıl qayda
+│   ├── test_scorer.py         # 71 test — skor, auth, ladder, token, ardıcıl qayda
 │   ├── test_profiles.py       # 97 test — profil statistikası, endpointlər, retention
 │   └── test_demo.py           # 18 test — sentetik demo müştəriləri və etiketlənməsi
 ├── frontend/
@@ -79,7 +79,7 @@ deepcheck-mvp/
 ├── lab/
 │   ├── capture.py             # Real Chromium-u real SDK ilə sürür, telemetri yazır
 │   └── bot_lab.py             # Adversarial ssenarilər
-├── data/real/                 # Real insan qeydləri — HAZIRDA BOŞDUR
+├── data/real/                 # Real insan qeydləri — 1 şəxs, 1 sessiya (p01, 2026-09-25)
 └── docs/
     ├── evaluation.md          # Brauzer laboratoriyası ölçmələri
     ├── profile-evaluation.md  # Profil qatı (profile_lab.py generasiya edir)
@@ -140,7 +140,10 @@ Endpointlər (cəmi 13):
 - `POST /api/demo/charge` → demo satıcı arxa ucu: qərarı işlədib ya tahsilat
   edir, ya rədd edir. Səhifədə heç bir şərt yoxdur
 - `POST /api/demo/verify` → demo step-up: kodu yoxlayıb serverdə
-  `sessions.verified_at` yazır
+  `sessions.verified_at` yazır. **Bir step-up = bir təsdiq:** doğrulama onun
+  verdiyi təsdiqlə xərclənir (`main._consume_step_up`, compare-and-set,
+  `last_seen_at`-a toxunmadan). Əvvəllər bir doğrulama sessiyadakı hər
+  `verify`-ı 5 dəqiqə ərzində `allow` edirdi
 - `POST /api/profile/consent` → **profil sətrini yaradan yeganə yol**; hüquqi
   əsas qeyd olunur. 409 = müştəri əvvəl etiraz edib
 - `POST /api/profile/erase` → `mode: erase | object`. Həmişə 204, profil olsun
@@ -186,20 +189,54 @@ Risk Skoru formulu: `Risk Score = 100 × (meşənin fraud sinfi üçün səs pay
 Bu **kalibrə edilmiş `P(fraud | behavior)` deyil** — heç nə onu bir baza
 nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real trafik yoxdur.
 
-> **Doyma xəbərdarlığı.** 234 laboratoriya sətrində `scroll_hizi_varyansi`
-> heç vaxt ölçülməyib (234/234 neytral default), `ivme_degisimi` 90/234-də
-> tavanda (1.0), `duraklama_dagilimi` 109/234-də tavanda. Ətraflı və yenidən
-> çəkim planı: TECHNICAL_GUIDE.md §20.
+> **Doyma xəbərdarlığı (2026-09-25-də yenidən ölçüldü).** Əvvəlki rəqəmlər
+> 234 laboratoriya sətrindən sayılmışdı; həmin sətirlər **artıq etibarlı
+> deyil** — fayl normallaşdırılmış vektorları saxlayır, xam hadisələri yox
+> (234-dən 0-ı), ona görə yenidən təlimdən sonra köhnə koordinat sistemində
+> donub qalırlar. Aşağıdakılar **bir real yazının** 52 axışında, xidmətdəki
+> bundle ilə yenidən çıxarılıb (arxiv xam hadisələri saxlayır):
+>
+> | feature | köhnə bundle | xidmətdəki bundle |
+> |---|---|---|
+> | `ivme_degisimi` tavanda | 48/52 | **3/52** |
+> | `scroll_hizi_varyansi` tavanda | 27/52 | **0/52** |
+> | `tereddut_skoru` tavanda | 9/52 | **4/52** |
+> | `duraklama_dagilimi` tavanda | 44/52 | **44/52 — dəyişməyib** |
+>
+> Endpoint-ləri **simulyator** tərpətdi, real data yox: log-persentil
+> uçları təlim paylanmasına fit edilir, kadr saatı isə həmin paylanmanı
+> dəyişdi. Real xam dəyərlərin havuza qarışdırılması **işə düşmədi** —
+> 49 real axış log-miqyaslı feature başına 46/47/48 dəyər verir,
+> `MIN_SCALING_VALUES = 50` həddinin altında. Hədd **endirilmədi**; ikinci
+> bir yazı onu keçir. `duraklama_dagilimi` ümumiyyətlə log-persentil
+> miqyaslı deyil (CV / `DISPERSION_DIVISOR` = 1.5), bu mexanizmin əli ona
+> çatmır və indi əsas qalıq tavandır.
+>
+> Real trafikdə hələ də ölçülə bilməyənlər: `kanal_gecis_gecikmesi`
+> 52 axışın yalnız **2**-də, `tiklama_oncesi_hareket` 19-da ölçülüb.
+> Ətraflı: `docs/evaluation.md`.
 
 ### backend/lstm_model.py
-- Kanonik `FEATURE_NAMES` siyahısı və `FEATURE_SCHEMA_VERSION` burada yaşayır.
-  Versiya **əl ilə** artırılır: ad/sıra dəyişikliyini sha256 pin tutur, amma bir
-  feature-in **hesablanma üsulunun** dəyişməsini yalnız nəzərdən keçirmə tutur.
-  Saxlanılan müştəri profilləri yalnız eyni versiya daxilində müqayisə olunur
-- LSTM tərifi qalıb, amma **skorda iştirak etmir**: yalnız simulyatorla təlim
-  edildiyi üçün brauzer trafikində çıxışı "insan"a çökürdü (bot ≥60: RF tək
-  0.90, qarışıq 0.79) və devir-təslimi RF-dən 4 axış gec tuturdu. Yenidən
-  ölçmək üçün `TRAIN_LSTM=1 python train_model.py`
+- Kanonik `FEATURE_NAMES` siyahısı və `FEATURE_SCHEMA_VERSION` (hazırda **3**)
+  burada yaşayır. Versiya **əl ilə** artırılır: ad/sıra dəyişikliyini sha256 pin tutur, amma bir
+  feature-in **hesablanma üsulunun və ya miqyasının** dəyişməsini yalnız
+  nəzərdən keçirmə tutur. Saxlanılan müştəri profilləri yalnız eyni versiya
+  daxilində müqayisə olunur
+- **Versiya indi 2-dir.** Kadr saatı ilə yenidən təlim
+  `scroll_hizi_varyansi`, `tereddut_skoru` və `ivme_degisimi` üçün
+  log-persentil uclarını tərpətdi, yəni **eyni xam telemetri artıq başqa
+  yerə düşür**. Real yazının 52 axışında ölçülüb (arxiv həm xam hadisələri,
+  həm də köhnə bundle-ın hesabladığı feature-ləri saxlayır): orta fərq
+  -0.197 / -0.177 / -0.185, maksimum |fərq| 0.263 / 0.340 / 0.401 — qalan
+  doqquzu bit-bit eyni. Heç bir ad dəyişmədiyi üçün sha256 pin bunu görə
+  bilməzdi. Bump saxlanılmış vektorları **təqaüdə göndərir**; demo
+  müştəriləri `demo_seed.py --reset` ilə yenidən toxumlanıb
+- LSTM tərifi qalıb, amma **skorda iştirak etmir**. 2026-09-25-də düzəldilmiş
+  data üzərində yenidən ölçüldü və yenə kənarda qaldı: köhnə formada ROC-AUC
+  0.848, sunum yolunun həqiqətən ürətdiyi formada (padded prefix) 0.871 —
+  meşənin 0.996-sının altında. Var olma səbəbi olan devir-təslimdə hələ də
+  bir axış (köhnə formada dörd axış) gec tutur. Yenidən ölçmək üçün
+  `TRAIN_LSTM=1 python train_model.py`; tam cədvəl `scorer.py`-dədir
 - Sessiya səviyyəli zaman məntiqi `scorer.smooth_session_score()`-dadır:
   5 axışın medianı + 35 bal sıçrayışda yumşaltma bypass
 
@@ -222,7 +259,20 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
 - Step-up ilə xilas olmuş sessiya `probation=true` ilə **saxlanılır, amma
   referans deyil** — yüksəldilənə qədər (satıcının `settled` bildirişi, yaxud
   ardıcıl 3 keçilmiş çağırış) statistikaya girmir
-- Ətraflı: TECHNICAL_GUIDE.md §19
+- **Qeyd (2026-09-25):** kadr saatı ilə yenidən təlimdən sonra bu qat öz işində
+  **zəiflədi**. Eyni sabitlərlə `(8, 0.02, 3)` müqayisə: mouse-da **fərqli
+  adamın** eskalasiyası 47.9% → **18.4%** (yəni hesab ələ keçirmənin yarıdan
+  çoxu itdi), eyni adamın yanlış çağırılması 5.0% → 3.8%. Klaviaturada fərqli
+  adam 3.2% → 11.6%, imtina 88.1% → 23.9%. Laboratoriya indi başqa sabitlər
+  çıxarır (`PROFILE_SCALE_FLOOR` 0.0062 → 0.02, `PROFILE_TOP_K` 3 → 12), amma
+  **heç nə dəyişdirilmədi**: sabiti yenidən çıxarmaq ölç → qoy → yenidən ölç
+  dövrüdür. Ətraflı və səbəb fərziyyəsi: `docs/profile-evaluation.md`
+  başlığındakı xəbərdarlıq. Qat susqun halda **sönülüdür** və skor ondan asılı
+  deyil — buna görə bu bloklayıcı deyil, ardıcıl işdir
+- Ətraflı: TECHNICAL_GUIDE.md §19. Fayl `2140efa` commit-i ilə **səhvən
+  silinmişdi** və 2026-09-25-də bərpa edilib (git-dəki 953 sətirlik versiya
+  köhnə idi; 2179 sətirlik yenidən yazılmış versiya Claude Code-un fayl
+  tarixçəsindən qaytarılıb). Hələ commit edilməyib
 
 ### backend/profile_lab.py
 - Profil qatını **sintetik kimliklər** üzərində ölçür və
@@ -238,16 +288,46 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
   (cəmi 250.000 feature sətri)
 - İnsan davranışı: təbii mouse variansı, scroll ritmi 0.3-0.8, hesitation 200-1500ms
 - Bot davranışı: piksel-mükəmməl kliklər, sıfır hesitation, sabit sürət
+- **Kadr saatı (2026-09-25).** Pointer və scroll vaxt damğaları indi növbəti
+  render kadrının sərhədində vurulur, niyyət anında yox. Sessiya başına
+  yeniləmə tezliyi 60/120/144 Hz, çəkilər 0.70/0.20/0.10 — yeganə ölçülmüş
+  maşın 60 Hz-dir, qarışıq isə **fərziyyədir**. Düşən kadr 3% (ölçülüb:
+  973 daxili aralıqdan 32-si bir kadrdan uzundur), birləşdirilmiş
+  (coalesced) kimi modelləşdirilir. Klik və keydown **kadra bağlanmır**:
+  yazıda onların aralıqları 16.67 ms-in misilinə yalnız 7.1% və 10.2%
+  hallarda düşür, yəni təsadüf səviyyəsində. Səbəbi və ölçməsi:
+  `docs/evaluation.md`
+- Pointer hərəkəti **minimum-jerk yolu üzərində partlayışdır** (əl sürətlənir,
+  zirvəyə çatır, yavaşıyır), hər nümunə üçün müstəqil təsadüfi gəzinti deyil.
+  Partlayış uzunluğu və istirahət yazıya fit edilib (median 10.5 nümunə,
+  417 ms istirahət). Skriptlər sabit sürətdə qalır (`minimum_jerk=False`)
+- `human_autofill` personası (insan sinfinin 17.6%-i): brauzerin yadda
+  saxladığı kartı seçir, çox vaxt yalnız 3 CVV rəqəmi yazır. Bundan əvvəl
+  təlimdəki hər insan pəncərəsi ≥15 klaviatura hadisəsi daşıyırdı, yəni
+  "heç yazmamaq" **yalnız botdan gələ bilərdi**
+- `BOT_REAL_CLOCK_RATE = 0.50` — `bot_sophisticated`-in yarısı real brauzeri
+  real input ilə sürür və eyni kadr saatını alır. Düzəlişin yeni bir
+  "bir-bitlik keçid"ə çevrilməsinə qəsdən imkan verilmir
 - Sessionların 12%-i orta yerdə **dəyişir** (insan → bot və əksi) — ardıcıl
   model üçün öyrəniləcək yeganə zaman siqnalı budur
+- `load_recorded_samples()` `data/real/{human,bot}/*.json`-u **yerində** oxuyur
+  (git-də izlənən `lab/real_telemetry.json`-a köçürmür: `.gitignore` real
+  adamların xam vaxtlarını tarixçəyə buraxmır). Bu sətirlər xam daşıdığı üçün
+  hər təlimdə cari miqyasla yenidən çıxarılır və köhnə koordinat sistemində
+  dona bilmir — 234 laboratoriya sətrindən fərqli olaraq
 - `simulate_identity_sessions()` — profil laboratoriyası üçün **kimlik latenti**.
   Təlim datasını **bit-bit dəyişmir** (T30 bunu yoxlayır)
 - RF + Isolation Forest final pəncərə üzərində train olunur (LSTM yalnız
   `TRAIN_LSTM=1` ilə). Isolation Forest hələ təlim edilir və
-  bundle-da saxlanılır, lakin **skorda çəkisi 0-dır**: real held-out
-  brauzer sətirlərində tək başına ROC-AUC 0.340 verdi — təsadüfdən də pis,
-  çünki yalnız insan sətirləri üzrə fit edilir və bu məhsulun hədəf aldığı
-  hücum məhz insana bənzəyən hücumdur. Ətraflı ölçmə: TECHNICAL_GUIDE.md §7
+  bundle-da saxlanılır, lakin **skorda çəkisi 0-dır**. Əvvəlki səbəb
+  («ROC-AUC 0.340, tərsdir») **geri çəkilib**: o rəqəm donmuş laboratoriya
+  sətirlərində ölçülmüşdü; yenidən çəkilmiş laboratoriya + real şəxs
+  (301 sətir) üzrə eyni model **0.657** verir — tərs deyil. Yenə də kənarda,
+  çünki işə yaramır: məşru axışların **38%**-ini və real şəxsin axışlarının
+  **76%**-ini addım-yuxarı xəttinin üstünə qaldırır, ona çəki verən hər
+  qarışıq uduzur. Səbəb struktur: yalnız insan sətirləri üzrə fit edilir,
+  bu məhsulun hədəf aldığı hücum isə məhz insana bənzəyən hücumdur.
+  Ətraflı ölçmə: TECHNICAL_GUIDE.md §7, `docs/evaluation.md`
 - `NEUTRAL_DEFAULTS` burada hesablanır və `model.pkl` içində saxlanılır
   (`scorer.py`-də əl ilə saxlanılmır)
 
@@ -267,7 +347,9 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
   simulyasiya edilmiş sessiyanı qəbul etmir
 - `evaluate.py` — həmin sessionları real scoring yolundan keçirib accuracy,
   false-positive nisbəti və ROC-AUC hesablayır → `docs/evaluation.md`
-- `data/real/` **hazırda boşdur**. Açıq qalan ən mühüm iş budur
+- `data/real/`-da **cəmi bir** real yazı var (p01, 52 axış, 2026-09-25) — bir
+  şəxs yanlış-müsbət nisbəti deyil. Daha çox adam (20-30 nəfər, hər biri bir
+  neçə sessiya, fərqli cihazlar) yazmaq açıq qalan ən mühüm işdir
 
 ### frontend/src/pages/Demo.jsx
 - Türkcə ödəmə formu (Kart Numarası, Tutar, Onayla)
@@ -319,6 +401,34 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
 > zəmanətləri deyil: axış skorları üst-üstə düşən pəncərələrdən gələn kalibrə
 > edilməmiş səs paylarıdır.
 
+> **Yalnız müşahidə edilmiş axışlar sübutdur (2026-09-26).** Altı struktur
+> feature-dan heç birini ölçməyən axış heç bir istiqamətdə sübut deyil: boş
+> pəncərə neytral fallback-larla **99.1** alır (tək bir axış müştərini addım-
+> yuxarıya məcbur etməyə kifayət edirdi), nazik pəncərə isə marjinal feature-lər
+> və müştərinin özü göndərdiyi `hesitation_intervals` vasitəsilə **aşağı
+> yönləndirilə** bilir (3000 hazırlanmış payload: median 29.7). Ona görə
+> ardıcıl statistika yalnız müşahidə edilmiş axışları oxuyur, və 10 ən yeni
+> axışdan 3-dən azı müşahidə edilibsə qərar `verify("insufficient_evidence")`
+> olur — nə təsdiq, nə geri dönməz blok. Qaydanın **ilk variantı** testi
+> sadəcə keçirib qərarı ladder-ə verirdi; adversarial yoxlama sadə, SDK-ya
+> sadiq bir skriptin 300-dən 88-də tahsil edildiyini ölçdü və o variant
+> dəyişdirildi. Bağlamadığı hal: avtomatlaşdırma **3+ insana bənzəyən
+> müşahidə edilmiş axış** arasında gizlədilərsə — yeni bacarıq deyil, çünki
+> eyni saldırgan avtomatlaşdırma zamanı səssiz qalaraq köhnə qaydadan da
+> keçir (40/40). Rəqəmlər: `main._structural_bits` üstündəki şərh,
+> `docs/evaluation.md`
+>
+> İkinci yoxlama raundu daha üç qüsur tapdı və hamısı düzəldilib: (1) ladder
+> blok qərarını hələ də müşahidə edilməmiş axışların medianına söykəyə
+> bilirdi — indi yeni 5 axışdan 3-dən azı müşahidə edilibsə blok `verify`
+> olur (sintetik nazik quyruqlarda blok 7/9 → 0); (2) bir step-up 5 dəqiqə
+> ərzində sonsuz təsdiq verirdi — indi xərclənir; (3) testlər "müşahidə
+> edilmiş"in tərifini sabitləmirdi — real `compute_risk` maskaları ilə test
+> əlavə edildi, mutasiya ilə yoxlanıb. **Qapının həll etmədiyi:** kartı
+> **təsadüfi aralıqlı** keydown-larla yazan, pointer-siz skript 120-dən
+> 119-da tahsil edilir — köhnə qaydada da eyni. Bu modelin boşluğudur, bu
+> layihə onu bağladığını iddia etmir
+
 > **Skorlanan tərəfə deyilən səbəb.** `cluster`, `sequential`, `conformal`,
 > `profile_deviation` və `profile_rate_limited` daxili səbəbləri müştəriyə
 > **tək bir `step_up`** olaraq gedir. Hansı yoxlamanın işlədiyini demək
@@ -352,8 +462,13 @@ yalnız canlı nümayiş üçündür.
 
 1. **Hər UI mətni türkcə olmalıdır** — demo, dashboard, xəta mesajları, etiketlər
 2. Response time hər zaman loglanmalıdır — 50ms altında saxla. `compute_risk`
-   17.7 ms ölçülüb; `/api/decision` konteyner topologiyasında p95 7.4 ms
-   (profil qatı sönülü) və 34.8 ms (yanılı) — `docs/profile-evaluation.md` §11
+   17.7 ms ölçülmüşdü; 2026-09-25 yenidən təlimdən sonra host-da n=400 ilə
+   median **18.3 ms**, p95 22.1 ms — yəni dəyişməyib. `benchmark.py`-nin öz
+   axış gecikməsi (n=1200) p95 67.6 ms-dən 19.2 ms-ə düşüb; bu ayrı bir
+   ölçüdür və səbəbi araşdırılmayıb. `/api/decision` konteyner
+   topologiyasında p95 7.4 ms (profil qatı sönülü) və 34.8 ms (yanılı) —
+   `docs/profile-evaluation.md` §11; həmin rəqəmlər yenidən təlimdən **əvvəl**
+   ölçülüb, latency bölməsi bu qaçışda yenidən işlədilməyib
 3. SHAP explanation hər `/api/analyze` cavabında **artıq qaytarılmır**. `/api/analyze` skorlanan tərəfə cavab verir və onu məhkum edən üç xüsusiyyəti adlandırmaq hücumçuya köklənmə siqnalı verir: göndər, səbəbi oxu, dəyiş, təkrarla. Bu, canlı detektora qarşı nəzarətli optimallaşdırma döngüsüdür və adversarial sınaqda məhz bundan istifadə edilib. İzah hər sətirdə saxlanılır və SOC panosu onu `GET /api/score/{id}`-dən (`X-Dashboard-Key` arxasında) oxuyur. Yalnız canlı nümayiş üçün `SHAP_IN_ANALYZE=1`
 4. Docker Compose ilə `docker-compose up --build` əmri ilə hər şey işləməlidir
 5. `train_model.py` ilk öncə run edilməlidir — `model.pkl` yaranır
@@ -390,7 +505,7 @@ cd backend && DEEPCHECK_SECRET=... DASHBOARD_KEY=... DEBUG=0 python -m pytest -q
 cd frontend && npm test && npm run build
 ```
 
-169 backend testi, 59 frontend testi (2026-09-20).
+186 backend testi, 60 frontend testi (2026-09-26).
 
 ### Münsiflər üçün sentetik demo
 

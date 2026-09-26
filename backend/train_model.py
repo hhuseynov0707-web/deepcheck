@@ -19,8 +19,18 @@ extraction formula could ever produce (see scorer.py's
 ACCELERATION_VARIANCE_DIVISOR comment). Any future change to a feature
 formula automatically flows into training data too, since both paths run the
 same code.
+
+The generator also owns the BROWSER, not just the person. Pointer and scroll
+events are delivered on the renderer's frame clock (REFRESH_RATES_HZ), a hand
+moves along a minimum-jerk path rather than an i.i.d. random walk, and one of
+the human personas pays with a card the browser fills in (human_autofill).
+Each of those three is there because its absence was measured: without them a
+real browser's ordinary checkout scored "Yüksek Risk". The constants carry
+the measurement that set them, and say so when it is an assumption instead.
 """
 
+import glob
+import hashlib
 import json
 import math
 import os
@@ -72,6 +82,94 @@ CONTAMINATION_RATE = 0.10
 # not already say.
 DRIFT_RATE = 0.12
 
+# Fraction of the human class that pays with a card the BROWSER fills in:
+# pointer motion and clicks, no bulk typing, sometimes three hand-typed CVV
+# digits. See _phase_human_autofill for why this persona has to exist at all.
+#
+# The SHARE is an ASSUMPTION, not a measurement -- this project has no traffic
+# to measure a stored-card rate on. It is set high enough that "a window with
+# no keystrokes" is an ordinary thing for the human class rather than a rare
+# one, and low enough that it cannot dominate the class. Applied after the
+# drift draw, so it is 0.20 * (1 - DRIFT_RATE) = 17.6% of human sessions.
+AUTOFILL_RATE = 0.20
+
+# Share of autofill sessions where the customer still types the CVV by hand.
+# Also an assumption: many gateways ask for it on a stored card, some do not.
+AUTOFILL_CVV_TYPED_RATE = 0.55
+
+# --- The browser's frame clock -------------------------------------------
+#
+# WHY THIS EXISTS. The first real human this project ever scored came out at
+# median 68.0 ("Yüksek Risk") and zaman_kuantasyonu was the top SHAP feature in
+# 52 of 52 flushes. Measured on that recording (M1/M2 diagnosis):
+#
+#   * 1044 deduplicated pointer gaps: 52.1% are exactly 17 ms and 30.0% are
+#     16 ms; 89.9% of gaps under 200 ms are a whole number of 16.667 ms frames.
+#     Scroll is the same (45.8% / 31.3%). Keydowns are NOT (modal share 4.1%,
+#     47 distinct values in 49 gaps), and neither are clicks.
+#   * The reason is the rendering pipeline, not the person: Chrome coalesces
+#     pointermove and scroll and dispatches them on the frame boundary, and
+#     sdk/deepcheck.js stamps them with Date.now() inside the handler. A real
+#     browser therefore repeats the same millisecond gap BY CONSTRUCTION.
+#   * This simulator drew every timestamp from a continuous distribution and
+#     rounded, so no simulated session ever repeated a gap: the human personas
+#     sat at zaman_kuantasyonu 0.087 and the bots at 0.191. The forest learned
+#     "repeated millisecond gap = script", and every real browser trips it.
+#
+# So the generator has to own a frame clock. Three numbers below, each taken
+# from that one recording:
+REFRESH_RATES_HZ = (60.0, 120.0, 144.0)
+# The one machine ever recorded is 60 Hz (89.9% of its pointer gaps are whole
+# 60 Hz frames, against 57.0% at 120 Hz and 0.8% at 144 Hz). The MIX is an
+# ASSUMPTION -- n=1 machine cannot measure a population of monitors -- weighted
+# toward 60 Hz because that is still the common desktop panel.
+REFRESH_RATE_WEIGHTS = (0.70, 0.20, 0.10)
+# Dropped frames: of the recorded human's 973 intra-burst pointer gaps, 941
+# span one frame, 26 two, 5 three and 1 four -- 3.3% span more than one. A
+# dropped frame COALESCES (one event, a two-frame gap), it does not deliver two
+# events a millisecond apart, so the generator skips the emission.
+FRAME_DROP_RATE = 0.03
+# Handler dispatch latency. A pure grid would put gaps only on 16 and 17 ms in
+# a 1:2 ratio; the recording also has 18 ms (4.2%) and 15 ms (2.2%). abs() of a
+# 0.5 ms gaussian reproduces that: 17 ms 55%, 16 ms 35%, 18 ms 4.5%, 15 ms 1.4%
+# against the recorded 55.8 / 32.1 / 4.2 / 2.2.
+DISPATCH_LATENCY_SD_MS = 0.5
+
+# Pointer motion is a BURST of frame-spaced samples with a pause after it, not
+# a handful of samples 100 ms apart. From the recording: 93.4% of pointer gaps
+# are intra-burst; 70 bursts of median 10.5 samples (p25 4, p75 19, p95 34);
+# pauses between them median 417 ms (p25 117, p75 1049, p95 4639). The
+# lognormals below have those medians and spreads. Fitted to ONE session by
+# ONE person -- a second recording will move them.
+POINTER_BURST_LOG_MEDIAN = 11.0
+POINTER_BURST_LOG_SIGMA = 0.8
+POINTER_PAUSE_MEDIAN_MS = 417.0
+POINTER_PAUSE_LOG_SIGMA = 1.35
+
+# Scroll, same recording: 455 events in 34 bursts of median 13 (p75 18, p95
+# 27), pauses median 831 ms, per-sample step median 4.8 px (mean 10.9, p95
+# 32.8 -- the lognormal sigma below is what turns that median into that mean).
+SCROLL_BURST_LOG_MEDIAN = 13.0
+SCROLL_BURST_LOG_SIGMA = 0.55
+SCROLL_PAUSE_MEDIAN_MS = 831.0
+SCROLL_STEP_MEDIAN_PX = 4.8
+SCROLL_STEP_LOG_SIGMA = 1.2
+
+# Share of bot_sophisticated sessions that drive a REAL browser through real
+# input (an OS-level injector, a hardware emulator) rather than through CDP.
+# Those get the frame clock too, because the clock belongs to the renderer, not
+# to whoever moves the mouse.
+#
+# This is a deliberate refusal to let the fix become a new single-bit pass.
+# Measured in lab/bot_lab.py: Playwright's page.mouse.move() dispatches through
+# CDP and lands at zaman_kuantasyonu ~0.099, so a purely CDP-driven bot is
+# genuinely unquantised -- but an attacker who wants the frame signature only
+# has to stop using CDP. If no bot in training ever had it, the forest would
+# read "frame-quantised" as proof of a human and hand that attacker the score.
+# The share is an ASSUMPTION; what is not an assumption is that it must not be
+# zero.
+BOT_REAL_CLOCK_RATE = 0.50
+
 SEED = 42
 rng = np.random.default_rng(SEED)
 
@@ -117,10 +215,19 @@ class _Stream:
     gaps in the merged event stream. Running every channel in parallel
     instead would fill the timeline with keystrokes and erase the pauses
     entirely, collapsing tereddut_skoru toward zero for humans.
+
+    `t` is the INTENT time: when the pointer physically was somewhere, when the
+    finger hit the key. What the SDK records is the time the handler ran, and
+    for pointermove and scroll those are not the same thing -- the renderer
+    coalesces them onto the frame boundary. frame_stamp() is that translation;
+    see the frame-clock block above. Clicks and keydowns are dispatched from
+    the input task and are not frame-aligned (measured: the recorded human's
+    click and keydown gaps land on a 16.67 ms multiple 7.1% and 10.2% of the
+    time, i.e. at chance), so those two channels stamp the intent time.
     """
 
-    def __init__(self, base_t: int):
-        self.t = base_t
+    def __init__(self, base_t: int, frame_ms: float = 1000.0 / 60.0, frame_clock: bool = False):
+        self.t = float(base_t)
         self.x = 200.0
         self.y = 200.0
         self.scroll_y = 0
@@ -128,24 +235,120 @@ class _Stream:
         self.clicks: list[dict] = []
         self.scrolls: list[dict] = []
         self.keys: list[dict] = []
-        self.focus: list[float] = []
+        self.focus: list[int] = []
         self.times: list[int] = []
+        # A renderer's frame boundaries have an arbitrary offset against the
+        # wall clock, and the offset is what decides whether a given session's
+        # gaps come out mostly 16 or mostly 17. Drawn per stream so the
+        # training set contains both.
+        self.frame_ms = frame_ms
+        self.frame_clock = frame_clock
+        self.frame_phase = float(rng.uniform(0.0, frame_ms))
 
-    def mouse_event(self, x: float, y: float, t: int) -> None:
-        self.mouse.append({"x": x, "y": y, "t": t})
-        self.times.append(t)
+    def frame_stamp(self, t: float) -> int:
+        """The timestamp Date.now() reads inside a pointermove/scroll handler
+        for an event whose intent time is `t`: the next frame boundary at or
+        after it, plus the handler's own dispatch latency."""
+        if not self.frame_clock:
+            return int(t)
+        k = math.ceil((t - self.frame_phase) / self.frame_ms)
+        return int(
+            round(
+                self.frame_phase
+                + k * self.frame_ms
+                + abs(rng.normal(0.0, DISPATCH_LATENCY_SD_MS))
+            )
+        )
 
-    def click_event(self, x: float, y: float, t: int) -> None:
-        self.clicks.append({"x": x, "y": y, "t": t})
-        self.times.append(t)
+    def mouse_event(self, x: float, y: float, t: float) -> None:
+        stamped = self.frame_stamp(t)
+        self.mouse.append({"x": x, "y": y, "t": stamped})
+        self.times.append(stamped)
 
-    def scroll_event(self, scroll_y: float, t: int) -> None:
-        self.scrolls.append({"scrollY": scroll_y, "t": t})
-        self.times.append(t)
+    def click_event(self, x: float, y: float, t: float) -> None:
+        self.clicks.append({"x": x, "y": y, "t": int(t)})
+        self.times.append(int(t))
 
-    def key_event(self, t: int) -> None:
-        self.keys.append({"t": t})
-        self.times.append(t)
+    def scroll_event(self, scroll_y: float, t: float) -> None:
+        stamped = self.frame_stamp(t)
+        self.scrolls.append({"scrollY": scroll_y, "t": stamped})
+        self.times.append(stamped)
+
+    def key_event(self, t: float) -> None:
+        self.keys.append({"t": int(t)})
+        self.times.append(int(t))
+
+    def focus_event(self, t: float) -> None:
+        # int, like every other channel. `t` is a float cursor now that a frame
+        # interval is 16.667 ms, and a float leaking into a payload made
+        # demo_seed.rebase_window() land a millisecond short of its target.
+        self.focus.append(int(t))
+
+
+def _pointer_burst(s: _Stream, n_frames: int, step: tuple[float, float],
+                   tremor: tuple[float, float], minimum_jerk: bool = True) -> None:
+    """One continuous movement: a pointer sample on every frame the renderer
+    paints, which is what a browser actually delivers (93.4% of the recorded
+    human's pointer gaps are one frame).
+
+    `step` is the mean PER-FRAME displacement (x, y), not per arbitrary
+    interval. The recorded human's per-frame step has median 6.8 px and median
+    speed 0.41 px/ms; the human persona's existing 6 px / 4 px draw, read per
+    frame instead of per ~100 ms, gives 0.43 px/ms. The old cadence made the
+    same numbers mean 0.077 px/ms -- five times slower than any pointer
+    measured here.
+
+    `minimum_jerk` shapes the speed over the movement. A hand accelerates,
+    peaks and decelerates, and two of the twelve features exist to measure
+    exactly that: an i.i.d. per-frame step (what this used to be) has NO
+    temporal structure, and it showed -- simulated hiz_otokorelasyonu 0.482
+    against the recording's 0.855, yon_tutarliligi 0.730 against 0.952. With
+    the profile and the tremor below the simulator reaches 0.850 and 0.863.
+    Scripts get minimum_jerk=False: constant velocity is their character, and
+    it leaves them at autocorrelation ~0.35 -- straight but structureless,
+    which is a signature, not a miss.
+
+    A dropped frame is a SKIPPED emission, not a delayed one: the renderer
+    coalesces the two moves into the next frame's event.
+    """
+    if n_frames <= 0:
+        return
+    x0, y0 = s.x, s.y
+    travel_x, travel_y = step[0] * n_frames, step[1] * n_frames
+    for k in range(1, n_frames + 1):
+        s.t += s.frame_ms
+        u = k / n_frames
+        profile = 10 * u**3 - 15 * u**4 + 6 * u**5 if minimum_jerk else u
+        s.x = x0 + travel_x * profile + rng.normal(0.0, tremor[0])
+        s.y = y0 + travel_y * profile + rng.normal(0.0, tremor[1])
+        if s.frame_clock and rng.random() < FRAME_DROP_RATE:
+            continue
+        s.mouse_event(s.x, s.y, s.t)
+
+
+def _scroll_burst(s: _Stream, n_samples: int) -> None:
+    """One wheel movement. Same frame clock as the pointer -- measured: the
+    recorded human's scroll gaps are 17 ms 45.8% and 16 ms 31.3%, the pointer's
+    own distribution -- and a per-sample step drawn to the measured median
+    (4.8 px) and mean (10.9 px)."""
+    emitted = 0
+    while emitted < n_samples:
+        s.scroll_y += float(
+            rng.lognormal(mean=math.log(SCROLL_STEP_MEDIAN_PX), sigma=SCROLL_STEP_LOG_SIGMA)
+        )
+        s.t += s.frame_ms
+        if s.frame_clock and rng.random() < FRAME_DROP_RATE:
+            continue
+        s.scroll_event(s.scroll_y, s.t)
+        emitted += 1
+
+
+def _burst_length(median: float, sigma: float) -> int:
+    return max(2, int(rng.lognormal(mean=math.log(median), sigma=sigma)))
+
+
+def _pause(median_ms: float, sigma: float) -> float:
+    return float(rng.lognormal(mean=math.log(median_ms), sigma=sigma))
 
 
 # --- Synthetic identities ------------------------------------------------------
@@ -175,15 +378,30 @@ WITHIN_IDENTITY_SD_RATIO = 0.6
 # apart two synthetic people are, which is what every impostor number in
 # docs/profile-evaluation.md depends on.
 IDENTITY_PARAMETERS = {
-    # Pointer step size and its jitter (px per sample): rng.normal(6, 6), (4, 5).
+    # Mean pointer displacement PER FRAME (px). Unchanged numbers, read per
+    # frame now: 6 px every 16.7 ms is 0.36 px/ms against the recorded human's
+    # median 0.41 px/ms.
     "step_x_mean": (6.0, 2.0, 0.5, 15.0),
-    "step_x_sd": (6.0, 2.0, 1.0, 15.0),
     "step_y_mean": (4.0, 1.5, 0.5, 10.0),
-    "step_y_sd": (5.0, 1.5, 1.0, 12.0),
-    # Centre of the pointer sampling interval, uniform(50, 150) today (+-50 ms).
-    "move_dt_centre": (100.0, 25.0, 60.0, 200.0),
-    # How often a movement is interrupted by a pause.
-    "move_pause_prob": (0.05, 0.02, 0.0, 0.2),
+    # Hand tremor around the movement's path, px. These two replace the old
+    # "step_x_sd"/"step_y_sd", which were the sd of an i.i.d. per-sample step
+    # -- a random walk, not a movement. The centre is CALIBRATED to the
+    # recording: at 1.0 px the simulated pointer-speed autocorrelation is
+    # 0.850 against the recorded 0.855 (6.0 px gives 0.482). The x/y split is
+    # isotropic by assumption; nothing measured says a hand shakes more in one
+    # axis.
+    "tremor_x_px": (1.0, 0.4, 0.3, 4.0),
+    "tremor_y_px": (1.0, 0.4, 0.3, 4.0),
+    # The two entries below replace "move_dt_centre" and "move_pause_prob".
+    # Those described a pointer sampling interval the person supposedly chose
+    # (uniform(50, 150) ms) and a chance of stalling mid-movement. Neither is a
+    # property of a person: the sampling interval belongs to the renderer's
+    # frame clock (see REFRESH_RATES_HZ). What IS per-person is how long one
+    # movement lasts and how long the rest between movements is, so those are
+    # the traits now. Centres are the recorded human's medians (10.5 samples,
+    # 417 ms); the between-person spreads are assumptions like the rest here.
+    "burst_len_centre": (POINTER_BURST_LOG_MEDIAN, 4.0, 3.0, 30.0),
+    "move_pause_centre": (POINTER_PAUSE_MEDIAN_MS, 150.0, 100.0, 1200.0),
     # Centre of the pause before a click, uniform(300, 900) today (+-300 ms).
     "click_pause_centre": (600.0, 150.0, 350.0, 1200.0),
     # Typing rhythm: lognormal(mean=5.0, sigma=0.5) today.
@@ -229,14 +447,13 @@ def _session_traits(identity: dict | None = None) -> dict:
 
     HARD CONSTRAINT: called with no identity -- which is every call training
     makes -- this consumes exactly the rng draws, in exactly the order, and
-    returns exactly the dict it did before identities existed, and the phase
-    functions read no identity key they are not given. So
-    generate_synthetic_dataset() is bit-identical and the served model does not
-    change. test_profiles.py (T30) pins it.
+    returns exactly the dict it did with no identity, and the phase functions
+    read no identity key they are not given. So an identity cannot change what
+    generate_synthetic_dataset() produces. test_profiles.py (T30) pins it.
 
-    With an identity, the five draws above still happen first (so a bot and a
-    person consume the stream the same way), and the identity's parameters are
-    added AFTER them, each with its own per-session noise.
+    With an identity, the session-level draws above still happen first (so a
+    bot and a person consume the stream the same way), and the identity's
+    parameters are added AFTER them, each with its own per-session noise.
     """
     traits = {
         # Sometimes zero clicks for the entire session: a script that calls
@@ -255,6 +472,16 @@ def _session_traits(identity: dict | None = None) -> dict:
         # bot_sophisticated's near-constant velocity, fixed per session.
         "vx": float(rng.uniform(2, 5)),
         "vy": float(rng.uniform(1, 3)),
+        # The machine's refresh rate. Session-level because a monitor does not
+        # change rate halfway through a checkout, and every window of a session
+        # has to carry the same frame signature or the session would look like
+        # two different clients. Drawn for every persona; only a frame-clocked
+        # stream uses it (see _frame_clocked).
+        "frame_hz": float(rng.choice(REFRESH_RATES_HZ, p=REFRESH_RATE_WEIGHTS)),
+        # Whether a bot_sophisticated session drives a real browser through
+        # real input (frame-clocked) or through CDP (not). See
+        # BOT_REAL_CLOCK_RATE.
+        "real_browser_clock": bool(rng.random() < BOT_REAL_CLOCK_RATE),
     }
     if identity is None:
         return traits
@@ -268,18 +495,33 @@ def _phase_human(s: _Stream, traits: dict) -> None:
     # Every traits.get() default below is the literal this persona used before
     # identities existed, so a training session (no identity keys) makes the
     # identical draws. Only an identity session supplies the keys.
+    # Pointer motion is a handful of MOVEMENTS, each a burst of frame-spaced
+    # samples, with a rest between them. Measured on the one recorded human:
+    # 92 pointer events in the median 10 s flush, 93.4% of gaps intra-burst,
+    # bursts of median 10.5 samples, rests of median 417 ms. The old shape --
+    # 10 to 40 samples spread 50-150 ms apart -- is not something a browser
+    # emits at all, and it is what left zaman_kuantasyonu at 0.087 in training
+    # against 0.500 in the recording.
+    step = (traits.get("step_x_mean", 6.0), traits.get("step_y_mean", 4.0))
+    tremor = (traits.get("tremor_x_px", 1.0), traits.get("tremor_y_px", 1.0))
     if traits.get("no_pointer"):
-        n_points = 0
+        n_bursts = 0
+    elif traits["sparse_mouse"]:
+        n_bursts = 1
     else:
-        n_points = int(rng.integers(0, 3)) if traits["sparse_mouse"] else int(rng.integers(10, 40))
-    dt_lo, dt_hi = _between(traits, "move_dt_centre", 50, 150)
-    for _ in range(n_points):
-        s.x += rng.normal(traits.get("step_x_mean", 6), traits.get("step_x_sd", 6))
-        s.y += rng.normal(traits.get("step_y_mean", 4), traits.get("step_y_sd", 5))
-        s.t += int(rng.uniform(dt_lo, dt_hi))
-        s.mouse_event(s.x, s.y, s.t)
-        if rng.random() < traits.get("move_pause_prob", 0.05):  # natural pause while moving the mouse
-            s.t += int(rng.uniform(400, 1200))
+        # 2-6 movements per window against the recorded 4.3 bursts per 10 s.
+        n_bursts = int(rng.integers(2, 7))
+    for i in range(n_bursts):
+        length = (
+            int(rng.integers(0, 3))
+            if traits["sparse_mouse"]
+            else _burst_length(traits.get("burst_len_centre", POINTER_BURST_LOG_MEDIAN),
+                               POINTER_BURST_LOG_SIGMA)
+        )
+        _pointer_burst(s, length, step, tremor)
+        if i < n_bursts - 1:
+            s.t += _pause(traits.get("move_pause_centre", POINTER_PAUSE_MEDIAN_MS),
+                          POINTER_PAUSE_LOG_SIGMA)
 
     n_clicks = 0 if traits["zero_clicks"] else int(rng.integers(1, 5))
     click_lo, click_hi = _between(traits, "click_pause_centre", 300, 900)
@@ -293,29 +535,50 @@ def _phase_human(s: _Stream, traits: dict) -> None:
         s.t += int(rng.lognormal(mean=traits.get("key_log_mean", 5.0), sigma=traits.get("key_log_sigma", 0.5)))
         s.key_event(s.t)
 
+    # Wheel scrolling has the same shape as pointer motion and the same frame
+    # clock: the recording has 47 scroll events in the median flush, in bursts
+    # of median 13. The old two-to-five samples 60-180 ms apart left
+    # scroll_hizi_varyansi measurable in only 13.4% of simulated human windows,
+    # so the feature was the neutral default almost everywhere in training
+    # while the recorded human had it measured -- and clipped at 1.000 -- in
+    # every flush.
     if rng.random() < traits.get("scroll_prob", 0.35):
-        for _ in range(int(rng.integers(2, 6))):
-            s.scroll_y += int(rng.uniform(40, 150))
-            s.t += int(rng.uniform(60, 180))
-            s.scroll_event(s.scroll_y, s.t)
+        for i in range(int(rng.integers(1, 4))):
+            _scroll_burst(s, _burst_length(SCROLL_BURST_LOG_MEDIAN, SCROLL_BURST_LOG_SIGMA))
+            if i < 2:
+                s.t += _pause(SCROLL_PAUSE_MEDIAN_MS, POINTER_PAUSE_LOG_SIGMA)
 
     if rng.random() < traits.get("focus_prob", 0.15):
-        s.focus.append(s.t + int(rng.uniform(500, 3000)))
+        s.focus_event(s.t + rng.uniform(500, 3000))
 
 
 def _phase_human_rushed(s: _Stream, traits: dict) -> None:
-    # NOTE: with tighter dt (faster movement) but similar jitter magnitude to
-    # "human", this persona's acceleration variance came out HIGHER than plain
-    # "human" (median hit the 1.0 clip ceiling) when first tuned -- dt shrinks
-    # the denominator twice (speed, then acceleration), amplifying rather than
-    # smoothing. Slightly wider dt and slightly smaller jitter brings it to a
-    # believable "efficient but still human" range.
-    n_points = int(rng.integers(0, 3)) if traits["sparse_mouse"] else int(rng.integers(6, 15))
-    for _ in range(n_points):
-        s.x += rng.normal(6, 4)
-        s.y += rng.normal(4, 3)
-        s.t += int(rng.uniform(60, 120))
-        s.mouse_event(s.x, s.y, s.t)
+    # An efficient person in the SAME browser: same frame clock, fewer and
+    # shorter movements (one or two direct reaches instead of four or five
+    # hesitant ones) and a slightly straighter path than "human".
+    #
+    # NOTE, kept because it explains the step sizes: this persona's tighter dt
+    # used to push its acceleration variance ABOVE plain "human" and onto the
+    # 1.0 clip ceiling, because dt shrinks the denominator twice (speed, then
+    # acceleration). Under the frame clock dt is now identical for both
+    # personas -- the renderer's, not the persona's -- so only the smaller
+    # jitter below separates them, and that regression cannot recur.
+    if traits["sparse_mouse"]:
+        n_bursts = 1
+    else:
+        n_bursts = int(rng.integers(1, 4))
+    for i in range(n_bursts):
+        length = (
+            int(rng.integers(0, 3))
+            if traits["sparse_mouse"]
+            else _burst_length(0.7 * POINTER_BURST_LOG_MEDIAN, POINTER_BURST_LOG_SIGMA)
+        )
+        # A faster, straighter reach than "human": a larger per-frame step
+        # (0.54 px/ms at 60 Hz, well inside the recorded human's own p95 of
+        # 2.68 px/ms) and less tremor. Still a hand, so still minimum-jerk.
+        _pointer_burst(s, length, (9.0, 6.0), (0.7, 0.7))
+        if i < n_bursts - 1:
+            s.t += _pause(0.5 * POINTER_PAUSE_MEDIAN_MS, POINTER_PAUSE_LOG_SIGMA)
 
     # NOTE: this used to be uniform(150, 400) -- numpy's upper bound is
     # exclusive, so it could NEVER reach HESITATION_THRESHOLD_MS (400),
@@ -334,11 +597,16 @@ def _phase_human_rushed(s: _Stream, traits: dict) -> None:
 
     if rng.random() < 0.15:
         s.t += int(rng.uniform(50, 200))
-        s.scroll_y += int(rng.uniform(50, 300))
-        s.scroll_event(s.scroll_y, s.t)
+        _scroll_burst(s, _burst_length(0.6 * SCROLL_BURST_LOG_MEDIAN, SCROLL_BURST_LOG_SIGMA))
 
 
 def _phase_bot(s: _Stream, traits: dict) -> None:
+    # No frame clock here and none in _background_motion: this is the
+    # CDP-dispatched persona (Selenium, Puppeteer, Playwright), whose
+    # Input.dispatchMouseEvent goes straight into the renderer's event queue
+    # and skips the compositor's frame-aligned coalescing. Measured, not
+    # assumed: lab/bot_lab.py drives Chromium exactly this way and its rows sit
+    # at zaman_kuantasyonu ~0.099.
     headless = traits["headless"]
 
     if traits["zero_clicks"]:
@@ -366,14 +634,38 @@ def _phase_bot(s: _Stream, traits: dict) -> None:
 
 def _phase_bot_sophisticated(s: _Stream, traits: dict) -> None:
     n_points = int(rng.integers(15, 30))
-    for _ in range(n_points):
-        # More jitter than the plain "bot" variant -- this persona is the
-        # hard-to-detect, human-mimicking bot, so its acceleration profile
-        # should land closer to human territory.
-        s.x += traits["vx"] * 10 + rng.normal(0, 2.5)
-        s.y += traits["vy"] * 10 + rng.normal(0, 1.8)
-        s.t += max(80 + int(rng.normal(0, 7)), 1)  # mostly regular interval
-        s.mouse_event(s.x, s.y, s.t)
+    if s.frame_clock:
+        # This session drives a real browser through real input, so the
+        # renderer samples its pointer every frame exactly as it would a
+        # person's -- the clock belongs to the compositor, not to whoever
+        # moves the mouse. Its VELOCITY is preserved rather than its step: the
+        # persona's character is "near-constant speed with a little jitter",
+        # and 10*vx px every 80 ms is the same speed as 10*vx*(frame/80) px
+        # every frame. (Keeping the step instead would have made it move five
+        # times faster than any pointer measured here, which would be a new
+        # invented persona rather than the same one resampled.)
+        #
+        # minimum_jerk=False on purpose: the frame clock is the renderer's,
+        # but the MOTION is still a script's -- constant velocity with a
+        # little jitter. That leaves it at speed autocorrelation ~0.35 where a
+        # hand sits at ~0.85, so this persona gets the human's timing
+        # signature without getting the human's motor structure for free.
+        scale = s.frame_ms / 80.0
+        _pointer_burst(
+            s, n_points,
+            (traits["vx"] * 10 * scale, traits["vy"] * 10 * scale),
+            (2.5 * scale, 1.8 * scale),
+            minimum_jerk=False,
+        )
+    else:
+        for _ in range(n_points):
+            # More jitter than the plain "bot" variant -- this persona is the
+            # hard-to-detect, human-mimicking bot, so its acceleration profile
+            # should land closer to human territory.
+            s.x += traits["vx"] * 10 + rng.normal(0, 2.5)
+            s.y += traits["vy"] * 10 + rng.normal(0, 1.8)
+            s.t += max(80 + int(rng.normal(0, 7)), 1)  # mostly regular interval
+            s.mouse_event(s.x, s.y, s.t)
 
     # Same rationale as the "bot" branch: an occasional realistic pause
     # between phases, so hesitation_intervals==[] cannot be a near-guaranteed
@@ -392,12 +684,97 @@ def _phase_bot_sophisticated(s: _Stream, traits: dict) -> None:
         s.key_event(s.t)
 
 
+def _phase_human_autofill(s: _Stream, traits: dict) -> None:
+    """A customer paying with a card the BROWSER fills in.
+
+    WHY THIS PERSONA EXISTS. Before it, every human window in the training set
+    carried at least fifteen keystrokes (_phase_human draws 15-50,
+    _phase_human_rushed 10-35). A window with ZERO keydown events could only
+    come from a bot. So the forest learned "no typing" as a bot signature, and
+    a stored-card checkout -- the ordinary case in the e-wallets this product
+    targets, where the browser fills the card and the customer never types --
+    scored 76.7, "Yüksek Risk", in the M1 baseline.
+
+    That is an absence in the training distribution, not a feature bug: the
+    features measure exactly what they claim to. The fix is to show the class
+    the shape.
+
+    The shape, following frontend/src/pages/Demo.jsx: reach the card field,
+    click it, wait for the browser's suggestion to render, click the
+    suggestion, pause while the customer reads what appeared, often type the
+    three CVV digits by hand, then reach "Onayla" and click.
+
+    This persona always clicks, ignoring `zero_clicks`: a stored card is
+    chosen by clicking the browser's suggestion and the payment is confirmed
+    by clicking the button, so a session with neither is a different persona,
+    not this one with a flag set.
+    """
+    step = (traits.get("step_x_mean", 6.0), traits.get("step_y_mean", 4.0))
+    tremor = (traits.get("tremor_x_px", 1.0), traits.get("tremor_y_px", 1.0))
+    click_lo, click_hi = _between(traits, "click_pause_centre", 300, 900)
+
+    # Reach the card field and click it.
+    _pointer_burst(s, _burst_length(traits.get("burst_len_centre", POINTER_BURST_LOG_MEDIAN),
+                                    POINTER_BURST_LOG_SIGMA), step, tremor)
+    s.t += rng.uniform(click_lo, click_hi)
+    s.click_event(s.x, s.y, s.t)
+
+    # The suggestion list renders, then a short reach to the row and a click.
+    s.t += rng.uniform(400, 1200)
+    _pointer_burst(s, _burst_length(0.5 * POINTER_BURST_LOG_MEDIAN, POINTER_BURST_LOG_SIGMA),
+                   step, tremor)
+    s.t += rng.uniform(click_lo, click_hi)
+    s.click_event(s.x, s.y, s.t)
+
+    # Reading what the browser filled in. This is the long pause that makes
+    # the persona's tereddut_skoru human rather than robotic.
+    s.t += _pause(1500.0, 0.6)
+
+    if rng.random() < AUTOFILL_CVV_TYPED_RATE:
+        _pointer_burst(s, _burst_length(0.5 * POINTER_BURST_LOG_MEDIAN, POINTER_BURST_LOG_SIGMA),
+                       step, tremor)
+        s.t += rng.uniform(click_lo, click_hi)
+        s.click_event(s.x, s.y, s.t)
+        s.t += rng.uniform(300, 900)
+        for _ in range(3):
+            s.t += rng.lognormal(mean=traits.get("key_log_mean", 5.0),
+                                 sigma=traits.get("key_log_sigma", 0.5))
+            s.key_event(s.t)
+        s.t += rng.uniform(300, 900)
+
+    # Reach "Onayla" and confirm.
+    _pointer_burst(s, _burst_length(traits.get("burst_len_centre", POINTER_BURST_LOG_MEDIAN),
+                                    POINTER_BURST_LOG_SIGMA), step, tremor)
+    s.t += rng.uniform(click_lo, click_hi)
+    s.click_event(s.x, s.y, s.t)
+
+    if rng.random() < traits.get("scroll_prob", 0.35):
+        _scroll_burst(s, _burst_length(SCROLL_BURST_LOG_MEDIAN, SCROLL_BURST_LOG_SIGMA))
+
+    if rng.random() < traits.get("focus_prob", 0.15):
+        s.focus_event(s.t + rng.uniform(500, 3000))
+
+
 _PHASES = {
     "human": _phase_human,
     "human_rushed": _phase_human_rushed,
+    "human_autofill": _phase_human_autofill,
     "bot": _phase_bot,
     "bot_sophisticated": _phase_bot_sophisticated,
 }
+
+# Which personas run inside a real browser's rendering pipeline, and therefore
+# get pointermove and scroll on the frame clock. See REFRESH_RATES_HZ for what
+# the clock is and BOT_REAL_CLOCK_RATE for why one bot persona is in here.
+_FRAME_CLOCKED_PERSONAS = frozenset({"human", "human_rushed", "human_autofill"})
+
+
+def _frame_clocked(persona: str, traits: dict) -> bool:
+    if persona in _FRAME_CLOCKED_PERSONAS:
+        return True
+    if persona == "bot_sophisticated":
+        return bool(traits["real_browser_clock"])
+    return False
 
 
 def _background_motion(s: _Stream, traits: dict, base_t: int) -> None:
@@ -437,7 +814,11 @@ def _simulate_window(persona: str, traits: dict, base_t: int) -> dict:
     training row was a single window -- what changed is that a session is now
     a *sequence* of these rather than one in isolation.
     """
-    s = _Stream(base_t)
+    s = _Stream(
+        base_t,
+        frame_ms=1000.0 / traits["frame_hz"],
+        frame_clock=_frame_clocked(persona, traits),
+    )
     _PHASES[persona](s, traits)
 
     if persona == "bot":
@@ -446,9 +827,9 @@ def _simulate_window(persona: str, traits: dict, base_t: int) -> dict:
     # Simulate the flush boundary itself: activity is often followed by real
     # idle time before the window closes (e.g. a fast burst of typing, then
     # nothing until the next flush fires). See _hesitation_intervals().
-    flush_checkpoint = s.t
+    flush_checkpoint = int(s.t)
     if rng.random() < 0.40:
-        flush_checkpoint = s.t + int(rng.uniform(400, 2000))
+        flush_checkpoint = int(s.t) + int(rng.uniform(400, 2000))
 
     return {
         "mouse_trajectory": s.mouse,
@@ -547,6 +928,8 @@ def _pick_persona(is_bot: int) -> str:
         return "bot_sophisticated" if rng.random() < CONTAMINATION_RATE else "bot"
     if rng.random() < DRIFT_RATE:
         return "drift_to_human"
+    if rng.random() < AUTOFILL_RATE:
+        return "human_autofill"
     return "human_rushed" if rng.random() < CONTAMINATION_RATE else "human"
 
 
@@ -596,14 +979,82 @@ REAL_TELEMETRY_PATH = os.getenv(
     ),
 )
 
-# Real rows are vastly outnumbered by synthetic ones, so without a weight they
-# would be rounding error. This makes the real set count for roughly as much in
-# aggregate as the synthetic set, while keeping synthetic coverage of the
-# personas the browser lab does not enumerate.
-REAL_TELEMETRY_WEIGHT = 120.0
+# The recorded-session archive: data/real/{human,bot}/*.json, written by
+# record_session.py. Read as a SECOND source of real rows, alongside the
+# browser lab.
+#
+# It is deliberately not copied into lab/real_telemetry.json even though
+# record_session.py --to-training can do that, and the reason is .gitignore
+# line 95: `data/real/**/*.json`. Recordings of actual people are kept out of
+# version control on purpose, while lab/real_telemetry.json is tracked. Merging
+# a recording into the lab file walks a real person's raw pointer and keystroke
+# timings straight across that boundary and into git history. Reading the
+# archive in place gets the same rows to the model with the same person split
+# and leaves the boundary where it is.
+#
+# This reverses an earlier decision to keep recordings out of training
+# entirely. That decision was to preserve them as untouched evidence, and it
+# no longer holds: the simulator's frame clock (REFRESH_RATES_HZ, DROPPED_FRAME
+# _RATE, the dispatch-latency draw) was FITTED to the one recorded session's
+# own gap distribution. That session is therefore already not a clean holdout,
+# and treating it as one produces a number that looks out-of-sample and is not.
+# Training on it and saying so is the honest version of the same situation.
+#
+# What is still true, and does not go away by putting it in training: one
+# person on one machine is one 60 Hz monitor and one hand. Nothing measured on
+# this archive is a false-positive RATE.
+RECORDED_SESSIONS_DIR = os.getenv(
+    "RECORDED_SESSIONS_DIR",
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "real"
+    ),
+)
 
-# Fraction of real RUNS -- not flushes -- held out for evaluation. Splitting by
-# run matters: every flush from one browser session is correlated with its
+# Labels the archive's directory names carry, and the scenario each becomes.
+# Kept distinct from the lab's scripted H1/H2/A1-A4 so the holdout report can
+# tell "a person did this" from "a script did this" -- the same names
+# record_session.LIVE_SCENARIOS writes when it merges into the lab file.
+RECORDED_LABELS = {"human": ("R1_human_live", 0), "bot": ("R2_bot_live", 1)}
+
+# How much of the forest's fitted mass the real rows carry, all of them
+# together. Real rows are vastly outnumbered, so without a weight they are
+# rounding error -- 213 of them against 20,000 synthetic rows is 1.1%, and the
+# forest would not see them at all.
+#
+# This was a per-row constant of 120 until a recorded session existed, and 120
+# was the right number for the dataset that picked it: 164 lab rows * 120 =
+# 19,680 against 20,000 synthetic rows, i.e. 49.6%. What it was not is STABLE.
+# The forest is fitted on one row per synthetic SESSION -- the final window,
+# see generate_synthetic_dataset -- but on one row per real FLUSH, so the ratio
+# a fixed per-row weight produces moves with however much real data happens to
+# exist. Blending the one recorded session at 120 took the real share to 56.1%
+# (measured), and every further recording would push it higher, quietly
+# crowding out the synthetic personas that are the only coverage of the attack
+# families the browser lab does not enumerate.
+#
+# So the ratio is the constant and the per-row weight is derived from it. 0.5
+# is not a new choice: it is the ratio the old constant already produced,
+# named instead of implied.
+#
+# What it works out to at today's sizes (printed by main(), so it is never a
+# claim in a comment): 213 real rows -> 93.9 per row. One recorded person is
+# 49 * 93.9 = 4,601, i.e. 11.5% of the fitted mass -- not rounding error, and
+# not a majority. One number for both real sources on purpose: a flush from a
+# person is not evidence of a different KIND from a flush from the lab, so
+# weighting them differently would be a preference, not a measurement.
+REAL_TELEMETRY_MASS_SHARE = 0.5
+
+
+def real_row_weight(n_synthetic_rows: int, n_real_rows: int) -> float:
+    """Per-row weight that gives the real rows REAL_TELEMETRY_MASS_SHARE of
+    the total fitted mass. Solves w*R / (S + w*R) = share for w."""
+    if n_real_rows <= 0:
+        return 0.0
+    share = min(max(REAL_TELEMETRY_MASS_SHARE, 0.0), 0.999)
+    return n_synthetic_rows * share / ((1.0 - share) * n_real_rows)
+
+# Fraction of real GROUPS -- not flushes -- held out for evaluation. Splitting
+# by group matters: every flush from one browser session is correlated with its
 # siblings, so a random per-flush split puts the same session on both sides and
 # reports a number that will not reproduce on a fresh session.
 REAL_HOLDOUT_FRACTION = 0.3
@@ -665,6 +1116,23 @@ def _group_of(sample: dict) -> str:
     return sample.get("person_id") or sample.get("run_id") or sample["scenario"]
 
 
+def _source_of(sample: dict) -> str:
+    """Which real source a row came from: "recorded" (a person, from
+    data/real/) or "lab" (a scripted Playwright run). The holdout is drawn
+    within each source rather than from the pool -- see _structural_split."""
+    return sample.get("source") or "lab"
+
+
+# Salt for the holdout hash. Any fixed string works; it exists so the
+# assignment is a property of the group NAME rather than of the order the
+# groups happened to be listed in.
+_HOLDOUT_SALT = "deepcheck-real-holdout-v1"
+
+
+def _holdout_rank(group: str) -> str:
+    return hashlib.sha256(f"{_HOLDOUT_SALT}:{group}".encode("utf-8")).hexdigest()
+
+
 def _session_key(sample: dict) -> str:
     """One server session: the unit smooth_session_score() folds over.
 
@@ -683,6 +1151,121 @@ def _read_real_payload(path: str) -> dict | None:
     with open(path, encoding="utf-8") as fh:
         payload = json.load(fh)
     return payload if payload.get("samples") else None
+
+
+def load_recorded_samples(
+    directory: str | None = RECORDED_SESSIONS_DIR,
+) -> tuple[list[dict], dict]:
+    """The recorded-session archive, as rows in the same shape as the lab file.
+
+    data/real/{human,bot}/*.json, one file per session, written by
+    record_session.py. The directory name IS the ground truth, exactly as it
+    is for evaluate.py.
+
+    Applies the same admission gate record_session.merge_into_training_set
+    applies when it writes the lab format, through the one shared definition
+    in scorer.measured_feature_count: a flush whose raw channels the retention
+    sweep already blanked is unknowable, and a flush that measured fewer than
+    scorer.MIN_MEASURED_FOR_CONFIDENT_SCORE features is a vector made mostly
+    of neutral fallbacks. Filed as "human" that teaches the model an empty
+    window is a person, which is precisely what a naive headless bot sends.
+
+    A file with no person_id is REFUSED, loudly, rather than falling back to
+    the session id. Falling back looks like it works and quietly turns the
+    person split into a session split -- the exact substitution the rest of
+    this module exists to prevent. record_session.py stamps the field; a
+    session recorded before it did needs the person filled in by hand.
+
+    Returns (samples, stats).
+    """
+    stats = {
+        "files": 0, "flushes": 0, "kept": 0, "purged": 0, "thin": 0,
+        "incomplete": 0, "no_person": [], "persons": set(), "by_label": {},
+    }
+    if not directory or not os.path.isdir(directory):
+        return [], stats
+
+    gate = scorer.MIN_MEASURED_FOR_CONFIDENT_SCORE
+    samples: list[dict] = []
+    for label, (scenario, y) in sorted(RECORDED_LABELS.items()):
+        for path in sorted(glob.glob(os.path.join(directory, label, "*.json"))):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    record = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(record, dict) or not record.get("flushes"):
+                continue
+            stats["files"] += 1
+            person = record.get("person_id")
+            if not person:
+                stats["no_person"].append(os.path.basename(path))
+                continue
+            stats["persons"].add(person)
+            stats["by_label"].setdefault(label, 0)
+            for flush_index, flush in enumerate(record["flushes"]):
+                stats["flushes"] += 1
+                features = flush.get("features") or {}
+                if any(features.get(name) is None for name in FEATURE_NAMES):
+                    stats["incomplete"] += 1
+                    continue
+                if flush.get("raw_purged"):
+                    stats["purged"] += 1
+                    continue
+                raw = {
+                    name: list((flush.get("raw") or {}).get(name) or [])
+                    for name in RAW_CHANNELS
+                }
+                if scorer.measured_feature_count(scorer.extract_raw(raw)) < gate:
+                    stats["thin"] += 1
+                    continue
+                samples.append({
+                    # Kept for inspection only. A row carrying raw is always
+                    # re-extracted under the scaling in force (load_real_rows).
+                    "features": {name: float(features[name]) for name in FEATURE_NAMES},
+                    "raw": raw,
+                    "label": y,
+                    "scenario": scenario,
+                    "run_id": record.get("session_id") or os.path.basename(path),
+                    "person_id": person,
+                    "flush_index": flush_index,
+                    "source": "recorded",
+                })
+                stats["kept"] += 1
+                stats["by_label"][label] += 1
+    return samples, stats
+
+
+def _holdout_groups(samples: list[dict]) -> set:
+    """Which groups are held out, drawn WITHIN each source.
+
+    Two changes from a single shuffled pool, both about a number REPRODUCING
+    rather than about a number improving.
+
+    Stable. A group's assignment is a hash of its NAME, so recording one new
+    session moves the boundary by at most one rank instead of re-drawing
+    everything. Under the old np.random.default_rng(1234).shuffle, adding a
+    row to the archive silently reshuffled the lab holdout as well, and the
+    lab numbers from before and after a capture were not comparable -- which
+    is the one thing a holdout has to be.
+
+    Stratified by source, with a plain floor instead of max(1, ...). The lab
+    has 47 scripted run groups; the recorded archive currently has ONE person.
+    Pooled, whether that person lands in training or evaluation is decided by
+    an arbitrary hash, and both outcomes are wrong in their own way: held out,
+    the model never sees a real person at all; trained on, there is no real
+    person left to evaluate. int(n * 0.3) per source answers it without a
+    special case -- one person is trained on, four persons hold one out, and
+    "can this be evaluated on somebody new" becomes a fact about how many
+    people have been recorded instead of a coin flip. It changes nothing for
+    the lab: int(47 * 0.3) == max(1, int(47 * 0.3)) == 14.
+    """
+    holdout: set = set()
+    for source in sorted({_source_of(s) for s in samples}):
+        groups = sorted({_group_of(s) for s in samples if _source_of(s) == source})
+        groups.sort(key=_holdout_rank)
+        holdout.update(groups[: int(len(groups) * REAL_HOLDOUT_FRACTION)])
+    return holdout
 
 
 def _structural_split(samples: list[dict]) -> tuple[list[dict], set, int, int]:
@@ -710,11 +1293,7 @@ def _structural_split(samples: list[dict]) -> tuple[list[dict], set, int, int]:
         else:
             incomplete += 1
 
-    groups = sorted({_group_of(s) for s in usable})
-    holdout_rng = np.random.default_rng(1234)
-    holdout_rng.shuffle(groups)
-    holdout = set(groups[: max(1, int(len(groups) * REAL_HOLDOUT_FRACTION))]) if groups else set()
-    return usable, holdout, incomplete, idle
+    return usable, _holdout_groups(usable), incomplete, idle
 
 
 def _close(recorded, current: list[float]) -> bool:
@@ -766,7 +1345,34 @@ def _loud(lines: list[str]) -> None:
     print("\n" + bar + "\n" + "\n".join(f" {line}" for line in lines) + "\n" + bar)
 
 
-def load_real_rows(path: str = REAL_TELEMETRY_PATH) -> dict | None:
+def _report_recorded(stats: dict) -> None:
+    """What the archive contributed, and what it refused to contribute."""
+    if stats["no_person"]:
+        _loud([
+            "UYARI: data/real/ altindaki bazi kayitlarda person_id yok:",
+            *[f"   {name}" for name in stats["no_person"][:6]],
+            " Ayirma KISI bazinda yapilir; person_id olmayan dosya oturum",
+            " bazinda ayrilir ve ayni kisi ayirmanin iki yaninda birden",
+            " cikar. Bu yuzden bu dosyalar ATLANIYOR.",
+            " Cozum: dosyaya \"person_id\" alanini ekleyin (record_session.py",
+            " --person artik bunu kendisi yaziyor).",
+        ])
+    if not stats["files"]:
+        return
+    dropped = stats["purged"] + stats["thin"] + stats["incomplete"]
+    print(
+        f"  recorded archive: {stats['files']} file(s), "
+        f"{len(stats['persons'])} person(s) {sorted(stats['persons'])}, "
+        f"{stats['kept']}/{stats['flushes']} flushes usable "
+        f"({dropped} dropped: {stats['purged']} raw-purged, {stats['thin']} too thin, "
+        f"{stats['incomplete']} predate the feature set)"
+    )
+
+
+def load_real_rows(
+    path: str = REAL_TELEMETRY_PATH,
+    recorded_dir: str | None = RECORDED_SESSIONS_DIR,
+) -> dict | None:
     """Every usable labelled real row, in the coordinate system in force NOW.
 
     This is the answer to the project's oldest weakness: the models were
@@ -776,8 +1382,8 @@ def load_real_rows(path: str = REAL_TELEMETRY_PATH) -> dict | None:
     simulator and 36.5 (approved) through real Chromium, because the heaviest
     timing features are inverted between the two distributions.
 
-    The rows carry REAL_TELEMETRY_WEIGHT each, which makes the way they are
-    stored matter. The lab used to store only normalised features, frozen to
+    The rows carry real_row_weight() each -- about ninety synthetic rows
+    apiece at today's sizes -- which makes the way they are stored matter. The lab used to store only normalised features, frozen to
     the feature_scaling and neutral_defaults of the bundle that happened to be
     serving at capture time: change the simulator, retrain, and every real row
     silently sits in the old coordinate system while outweighing 120 synthetic
@@ -791,9 +1397,13 @@ def load_real_rows(path: str = REAL_TELEMETRY_PATH) -> dict | None:
     order (flush order within a session), or None.
     """
     payload = _read_real_payload(path)
-    if payload is None:
+    recorded, recorded_stats = load_recorded_samples(recorded_dir)
+    _report_recorded(recorded_stats)
+    if payload is None and not recorded:
         return None
-    samples = payload["samples"]
+    samples = list((payload or {}).get("samples") or []) + recorded
+    if not samples:
+        return None
     usable, holdout, incomplete, idle = _structural_split(samples)
 
     if incomplete:
@@ -809,7 +1419,7 @@ def load_real_rows(path: str = REAL_TELEMETRY_PATH) -> dict | None:
 
     keep_stored = True
     stored_only = sum(1 for s in usable if _sample_raw(s) is None)
-    if stored_only:
+    if stored_only and payload is not None:
         status, diffs = recorded_extraction_status(payload)
         if status == "legacy":
             _loud([
@@ -832,16 +1442,26 @@ def load_real_rows(path: str = REAL_TELEMETRY_PATH) -> dict | None:
                 " Cozum: lab/capture.py ile yeniden yakalayin (ham telemetri yazar).",
             ])
 
-    X, y, holdout_flags, from_raw = [], [], [], []
-    scenario, group, session, order = [], [], [], []
+    X, y, holdout_flags, from_raw, observed = [], [], [], [], []
+    scenario, group, session, order, source = [], [], [], [], []
     for position, sample in enumerate(usable):
         raw = _sample_raw(sample)
         if raw is None:
             if not keep_stored:
                 continue
             features = sample["features"]
+            # Unknowable without the raw events, and True is what
+            # smooth_session_score() defaults to, so a stored-features row
+            # keeps the behaviour it had. Every row captured since
+            # lab/capture.py started writing raw answers this for real.
+            structural = True
         else:
-            features = scorer.extract_features(raw)
+            raw_values = scorer.extract_raw(raw)
+            features = scorer.extract_features(raw, raw_values)
+            structural = any(
+                raw_values.get(name) is not None for name in scorer.BUCKET_FEATURES
+            )
+        observed.append(structural)
         X.append([float(features[name]) for name in FEATURE_NAMES])
         y.append(int(sample["label"]))
         holdout_flags.append(_group_of(sample) in holdout)
@@ -850,6 +1470,7 @@ def load_real_rows(path: str = REAL_TELEMETRY_PATH) -> dict | None:
         group.append(_group_of(sample))
         session.append(_session_key(sample))
         order.append(sample.get("flush_index", position))
+        source.append(_source_of(sample))
     if not X:
         return None
 
@@ -858,16 +1479,24 @@ def load_real_rows(path: str = REAL_TELEMETRY_PATH) -> dict | None:
         "y": np.array(y),
         "holdout": np.array(holdout_flags, dtype=bool),
         "from_raw": np.array(from_raw, dtype=bool),
+        # Did this flush measure at least one BUCKET_FEATURE? The level-shift
+        # bypass in smooth_session_score() asks, so any replay of the served
+        # smoothing has to carry the answer or it is replaying a softer rule.
+        "observed_structure": np.array(observed, dtype=bool),
         "scenario": scenario,
         "group": group,
         "session": session,
         "order": order,
+        "source": source,
     }
 
 
-def load_real_split(path: str = REAL_TELEMETRY_PATH) -> dict | None:
+def load_real_split(
+    path: str = REAL_TELEMETRY_PATH,
+    recorded_dir: str | None = RECORDED_SESSIONS_DIR,
+) -> dict | None:
     """load_real_rows(), split into training rows and held-out rows."""
-    rows = load_real_rows(path)
+    rows = load_real_rows(path, recorded_dir)
     if rows is None:
         return None
     evaluate = rows["holdout"]
@@ -886,18 +1515,26 @@ def load_real_split(path: str = REAL_TELEMETRY_PATH) -> dict | None:
         "eval_scenarios": pick(rows["scenario"], evaluate),
         "eval_sessions": pick(rows["session"], evaluate),
         "eval_order": pick(rows["order"], evaluate),
+        "eval_observed_structure": pick(rows["observed_structure"].tolist(), evaluate),
         "raw_rows": int(rows["from_raw"].sum()),
+        "train_sources": pick(rows["source"], train),
+        "eval_sources": pick(rows["source"], evaluate),
+        "train_groups": sorted(set(pick(rows["group"], train))),
+        "eval_groups": sorted(set(pick(rows["group"], evaluate))),
     }
 
 
-def load_real_telemetry(path: str = REAL_TELEMETRY_PATH):
+def load_real_telemetry(
+    path: str = REAL_TELEMETRY_PATH,
+    recorded_dir: str | None = RECORDED_SESSIONS_DIR,
+):
     """Labelled real-browser telemetry, split by run.
 
     Returns (X_train, y_train, X_eval, y_eval, eval_scenarios) or None. Kept
     for benchmark.py and the tests; load_real_split() carries the session
     order the conformal calibration needs.
     """
-    split = load_real_split(path)
+    split = load_real_split(path, recorded_dir)
     if split is None:
         return None
     return (
@@ -909,17 +1546,28 @@ def load_real_telemetry(path: str = REAL_TELEMETRY_PATH):
     )
 
 
-def load_real_raw_for_scaling(path: str = REAL_TELEMETRY_PATH) -> list[dict]:
+def load_real_raw_for_scaling(
+    path: str = REAL_TELEMETRY_PATH,
+    recorded_dir: str | None = RECORDED_SESSIONS_DIR,
+) -> list[dict]:
     """Raw flushes from the TRAINING side of the real split.
 
     Held-out rows stay out of the scaling pool for the same reason they stay
     out of the forest: a scale fitted to them would make the holdout number
     describe data the pipeline had already looked at.
+
+    Until the recorded archive existed this returned nothing at all, because
+    lab/real_telemetry.json stores normalised vectors and no raw events. Every
+    scale this project has ever served was therefore fitted to the simulator
+    alone -- which is why a real browser sat on the clip ceiling in three
+    features at once.
     """
     payload = _read_real_payload(path)
-    if payload is None:
+    recorded, _ = load_recorded_samples(recorded_dir)
+    samples = list((payload or {}).get("samples") or []) + recorded
+    if not samples:
         return []
-    usable, holdout, _, _ = _structural_split(payload["samples"])
+    usable, holdout, _, _ = _structural_split(samples)
     return [
         raw
         for raw, sample in ((_sample_raw(s), s) for s in usable)
@@ -932,7 +1580,9 @@ def load_real_raw_for_scaling(path: str = REAL_TELEMETRY_PATH) -> list[dict]:
 BLOCK_SCORE = 80.0
 
 
-def session_level_human_calibration(rf, scaler, X_eval, y_eval, sessions, order) -> list[float]:
+def session_level_human_calibration(
+    rf, scaler, X_eval, y_eval, sessions, order, observed_structure=None
+) -> list[float]:
     """Held-out human scores on the scale /api/decision compares them against.
 
     The conformal guard is asked about session.risk_score, which is the
@@ -947,6 +1597,17 @@ def session_level_human_calibration(rf, scaler, X_eval, y_eval, sessions, order)
     So each held-out human session is replayed in flush order exactly as the
     API scores it, and every smoothed value it passes through is kept: the
     decision can be requested after any flush.
+
+    `observed_structure` is the per-row flag /api/analyze passes to
+    smooth_session_score(): did this flush measure any BUCKET_FEATURE? Without
+    it the replay falls back to True, which is a SOFTER rule than the server
+    applies -- a flush that observed no generator would take the level-shift
+    bypass here and not in production, putting spikes into the reference
+    sample that the value being judged can never contain. The guard would then
+    soften blocks on a distribution with a longer right tail than the real
+    one. It defaults to None (all True) so an older caller keeps its
+    behaviour rather than silently getting a different one; load_real_split()
+    supplies it as eval_observed_structure.
     """
     human = np.flatnonzero(np.asarray(y_eval) == 0)
     if not len(human):
@@ -956,13 +1617,16 @@ def session_level_human_calibration(rf, scaler, X_eval, y_eval, sessions, order)
     by_session: dict[str, list[tuple]] = {}
     for idx, p in zip(human, proba):
         # Rounded exactly as compute_risk rounds the per-flush score it stores.
-        by_session.setdefault(sessions[idx], []).append((order[idx], round(100.0 * float(p), 1)))
+        structural = True if observed_structure is None else bool(observed_structure[idx])
+        by_session.setdefault(sessions[idx], []).append(
+            (order[idx], round(100.0 * float(p), 1), structural)
+        )
 
     calibration = []
     for key in sorted(by_session):
         per_flush: list[float] = []
-        for _, score in sorted(by_session[key], key=lambda item: item[0]):
-            calibration.append(scorer.smooth_session_score(per_flush, score))
+        for _, score, structural in sorted(by_session[key], key=lambda item: item[0]):
+            calibration.append(scorer.smooth_session_score(per_flush, score, structural))
             per_flush.append(score)
     return calibration
 
@@ -1025,16 +1689,21 @@ def compute_feature_scaling(n_sessions: int = SCALING_SESSIONS, real_raw: list[d
     iteration -- nothing here depends on its own output.
 
     `real_raw` are raw real-browser flushes (load_real_raw_for_scaling). A
-    scale fitted to the simulator alone clipped real traffic: in the lab
-    capture ivme_degisimi sat at exactly 1.0 in 90 of 234 rows, a value that
-    carries one bit. Real values therefore join the pool, each weighted so the
-    real values of a feature carry the SAME total mass as its synthetic
-    values -- the 50/50 blend REAL_TELEMETRY_WEIGHT gives the forest's own
-    training rows. At unit weight a couple of hundred real flushes against
-    fifteen thousand synthetic windows are about 1% of the pool, and the 99th
-    percentile would not move for them however far out they sit. The weight is
-    per feature rather than the fixed 120, because the ratio has to hold
-    whatever SCALING_SESSIONS is and however often each feature is measurable.
+    scale fitted to the simulator alone clips real traffic, and this is not a
+    hypothetical: under the served bundle the one recorded human session sat
+    at exactly 1.000 in ivme_degisimi for 48 of its 52 flushes and in
+    scroll_hizi_varyansi for 27. A feature pinned to its ceiling carries one
+    bit. Real values therefore join the pool, each weighted so the real values
+    of a feature carry the SAME total mass as its synthetic values. At unit
+    weight a couple of hundred real flushes against fifteen thousand synthetic
+    windows are about 1% of the pool, and the 99th percentile would not move
+    for them however far out they sit. The weight is per feature rather than a
+    fixed number, because the ratio has to hold whatever SCALING_SESSIONS is
+    and however often each feature happens to be measurable.
+
+    This 50/50 is the SCALING pool. REAL_TELEMETRY_MASS_SHARE happens to be
+    0.5 as well, but it is a separate decision about a separate pool; the two
+    are not wired together and either can move without the other.
 
     The blend can only WIDEN the synthetic range. Narrowing it would clip
     simulator rows that fit today, and a wider range costs a tree nothing:
@@ -1244,6 +1913,12 @@ def main():
     real_scaling_raw = load_real_raw_for_scaling()
     if real_scaling_raw:
         print(f"  {len(real_scaling_raw)} training-side real flushes carry raw telemetry")
+    else:
+        print(
+            "  NO training-side real flush carries raw telemetry -- the scale below is "
+            "fitted to the SIMULATOR ALONE. Every feature a real browser drives past the "
+            "simulator's 99th percentile will sit on the clip ceiling."
+        )
     feature_scaling = compute_feature_scaling(real_raw=real_scaling_raw)
     # extract_features() reads this whenever no bundle is loaded, which is the
     # case for the whole of training, so the dataset below is generated with
@@ -1292,15 +1967,48 @@ def main():
         X_real, y_real = real["X_train"], real["y_train"]
         X_real_eval, y_real_eval = real["X_eval"], real["y_eval"]
         real_eval_scenarios = real["eval_scenarios"]
+        train_recorded = sum(1 for src in real["train_sources"] if src == "recorded")
+        eval_recorded = sum(1 for src in real["eval_sources"] if src == "recorded")
         print(
             f"\nBlending {len(y_real)} real-browser rows into training "
-            f"({len(y_real_eval)} held out by run; "
+            f"({len(y_real_eval)} held out by group; "
             f"{real['raw_rows']} re-extracted from raw telemetry)."
         )
+        print(
+            f"  by source -- lab: {len(y_real) - train_recorded} train / "
+            f"{len(y_real_eval) - eval_recorded} held out;  "
+            f"recorded people: {train_recorded} train / {eval_recorded} held out"
+        )
+        if train_recorded and not eval_recorded:
+            # Says out loud what int(n * 0.3) per source means while n == 1:
+            # every recorded person is in training, so no number this run
+            # produces about a real person is out-of-sample. Silence here is
+            # how an in-sample number gets quoted as a false-positive rate.
+            print(
+                "  NOTE: every recorded person is on the TRAINING side. Nothing measured "
+                "on data/real/ after this run is out-of-sample, and no false-positive "
+                "rate can be read off it. Record more people to get one."
+            )
+        # Total fitted mass, so the weight is a stated ratio rather than a
+        # constant nobody has divided out.
+        row_weight = real_row_weight(len(y_train), len(y_real))
+        real_mass = len(y_real) * row_weight
+        recorded_mass = train_recorded * row_weight
+        print(
+            f"  target share {REAL_TELEMETRY_MASS_SHARE:.0%} -> {row_weight:.1f} per real "
+            f"row; real rows are {100 * real_mass / (len(y_train) + real_mass):.1f}% of the "
+            f"fitted mass ({len(y_train)} synthetic rows at weight 1)"
+        )
+        if train_recorded:
+            print(
+                f"  of which recorded people: "
+                f"{100 * recorded_mass / (len(y_train) + real_mass):.1f}% "
+                f"of the fitted mass, from {train_recorded} flushes"
+            )
         X_fit = np.vstack([X_train, X_real])
         y_fit = np.concatenate([y_train, y_real])
         weights = np.concatenate(
-            [np.ones(len(y_train)), np.full(len(y_real), REAL_TELEMETRY_WEIGHT)]
+            [np.ones(len(y_train)), np.full(len(y_real), row_weight)]
         )
 
     print("Training RandomForest + IsolationForest...")
@@ -1314,7 +2022,8 @@ def main():
         # calibration is not measuring sessions the forest was fitted on, and
         # SMOOTHED per session, because the guard judges session.risk_score.
         human_calibration = session_level_human_calibration(
-            rf, scaler, X_real_eval, y_real_eval, real["eval_sessions"], real["eval_order"]
+            rf, scaler, X_real_eval, y_real_eval, real["eval_sessions"],
+            real["eval_order"], real["eval_observed_structure"],
         )
         if human_calibration:
             sessions = len({s for s, label in zip(real["eval_sessions"], y_real_eval) if label == 0})

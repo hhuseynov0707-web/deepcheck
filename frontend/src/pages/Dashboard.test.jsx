@@ -61,6 +61,20 @@ describe("Dashboard", () => {
     expect(await screen.findByText(/Yetkisiz erişim/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Pano Erişim Anahtarı/i)).toBeInTheDocument();
   });
+
+  it("reports an unreachable server in Turkish, never in the browser's own words", async () => {
+    // fetch() rejects with a TypeError whose message the BROWSER wrote:
+    // "Failed to fetch" in Chrome. Rendering err.message put that English in
+    // front of a Turkish-speaking analyst.
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+    render(<Dashboard />);
+    await userEvent.type(screen.getByLabelText(/Pano Erişim Anahtarı/i), "gizli-anahtar");
+    await userEvent.click(screen.getByRole("button", { name: /Panoya Gir/i }));
+
+    expect(await screen.findByText(/Sunucuya ulaşılamadı/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to fetch/i)).not.toBeInTheDocument();
+  });
 });
 
 // GET /api/score/{id} always carries this block with these keys; only the
@@ -154,8 +168,8 @@ describe("Dashboard simulated sessions", () => {
   it("badges a simulated session in the list and in the selected-session card", async () => {
     openWith([simulated, real]);
 
-    const heading = await screen.findByRole("heading", { name: "Seçili Session" });
-    const selected = within(heading.parentElement);
+    const heading = await screen.findByRole("heading", { name: "Seçili Oturum" });
+    const selected = within(heading.closest("section"));
     await waitFor(() => expect(selected.getByText("Sentetik demo verisi")).toBeInTheDocument());
     expect(selected.getByText(/Simüle edilmiş oturum — gerçek bir kişi değil/)).toBeInTheDocument();
 
@@ -239,9 +253,17 @@ describe("Dashboard customer profile card", () => {
     expect(card.getByText("Olgun")).toBeInTheDocument();
     expect(card.getByText("0.0476")).toBeInTheDocument();
     expect(card.getByText("4.73")).toBeInTheDocument();
-    expect(card.getByText("tereddut_skoru: z 5.2")).toBeInTheDocument();
-    expect(card.getByText("odak_degisimi: z 3.1")).toBeInTheDocument();
-    expect(card.getByText("zaman_kuantasyonu: z 2.0")).toBeInTheDocument();
+    // The deviating features are rendered as visible text -- the backend's own
+    // feature name beside its Turkish gloss, and the z value in its own
+    // column -- rather than as a bar chart with an sr-only list beside it.
+    for (const [feature, z] of [
+      ["tereddut_skoru", "z 5.2"],
+      ["odak_degisimi", "z 3.1"],
+      ["zaman_kuantasyonu", "z 2.0"],
+    ]) {
+      expect(card.getByText(feature)).toBeInTheDocument();
+      expect(card.getByText(z)).toBeInTheDocument();
+    }
     expect(card.getByText("Gölge modu — karar etkilenmedi")).toBeInTheDocument();
     // Shadow mode computed a deviation and asked nobody for anything.
     expect(card.queryByText("Ek doğrulama istendi")).not.toBeInTheDocument();
@@ -396,7 +418,8 @@ describe("Dashboard customer profile card", () => {
     expect(card.getByText(/mekanizmayı gösterir, gerçek kişilerdeki doğruluğu değil/)).toBeInTheDocument();
     expect(card.getByText("Fare: 20 / 19")).toBeInTheDocument();
     expect(card.getByText("Olgun")).toBeInTheDocument();
-    expect(card.getByText("hiz_otokorelasyonu: z 6.4")).toBeInTheDocument();
+    expect(card.getByText("hiz_otokorelasyonu")).toBeInTheDocument();
+    expect(card.getByText("z 6.4")).toBeInTheDocument();
     expect(card.getByText("Ek doğrulama istendi")).toBeInTheDocument();
   });
 

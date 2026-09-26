@@ -48,15 +48,22 @@ Yukarıdaki muhakeme doğruysa veride görünmesi gerekirdi; göründü. Eğitim
 hiç kullanılmamış **gerçek tarayıcı satırları** (n=82) üzerinde her bileşenin
 tek başına ayrıştırma gücü:
 
-| bileşen | ROC-AUC |
-|---|---|
-| Random Forest | 0.990 |
-| LSTM | 0.898 |
-| **Isolation Forest** | **0.340** |
+| bileşen | ROC-AUC (2026-09-06, **geri çekildi**) | ROC-AUC (2026-09-25, düzeltilmiş veri) |
+|---|---|---|
+| Random Forest | 0.990 | 0.996 |
+| LSTM | 0.898 | 0.871 |
+| **Isolation Forest** | **0.340** | **0.657** |
 
-0.340 zayıf değildir; **ters**tir. Rastgele tahmin 0.5 verir — bu bileşen
-sistematik olarak saldırganı daha "normal" sıralıyordu. Aynı telemetri iki
-ağırlıklandırmadan geçirildiğinde:
+> **Bu tablonun ilk sütunu geri çekilmiştir — sayfanın sonundaki "Isolation
+> Forest dışarıda kaldı" bölümüne bakın.** 0.340 değeri, o tarihte donmuş
+> laboratuvar satırları üzerinde ölçülmüştü; laboratuvar ham telemetriyle
+> yeniden yakalanınca aynı model 0.657 veriyor. Yani bileşen **ters değil**.
+> Yine de dışarıda: meşru akışların %38'ini, kaydedilmiş tek kişinin
+> akışlarının %76'sını ek doğrulama çizgisinin üstüne koyuyor. Karar
+> değişmedi, **gerekçe değişti** — ve ölçülmeyen bir gerekçe gerekçe değildir.
+
+Aynı telemetri iki ağırlıklandırmadan geçirildiğinde (bu ölçüm de
+düzeltmeden **önceye** aittir):
 
 | persona | IsoF ile ortalama | IsoF'siz | AUC ile | AUC'siz |
 |---|---|---|---|---|
@@ -346,34 +353,93 @@ yakalandı.
 
 ## Ölçüm
 
-`backend/model_selection.py` yedi model ailesini (RF, ExtraTrees,
-HistGradientBoosting, LightGBM, XGBoost, lojistik regresyon, MLP) ve dört
-zamansal varyantı aynı bölmelerle karşılaştırıyor. Dört protokol var:
-simülatörden simülatöre, simülatörden tarayıcıya, tarayıcı koşularında
-grup-bazlı çapraz doğrulama ve **bir senaryoyu tamamen dışarıda bırakma**.
-Sonuncusu en önemlisi, çünkü gerçek müşteri tanım gereği modelin görmediği
-davranıştır.
+> **ÖNEMLİ DÜZELTME (2026-09-25).** Bu bölümün önceki sürümü şunu yazıyordu:
+> *"H1 insan senaryosu eğitimden çıkarıldığında LightGBM görülmemiş insanların
+> %74'ünü blokladı, Random Forest hiçbirini bloklamadı."* **Bu sayı geri
+> çekilmiştir.** O ölçüm, `lab/real_telemetry.json` içinde yalnızca
+> *normalize edilmiş* vektör olarak saklanan 234 satır üzerinde yapılmıştı; o
+> vektörler yakalandıkları andaki ölçekleme sabitlerine donmuştu ve aradaki
+> yeniden eğitim o sabitleri değiştirmişti. Laboratuvar ham telemetriyle
+> yeniden yakalandıktan sonra aynı protokol LightGBM için %4, RF için %0
+> veriyor. **Sonuç değişmedi, ama gerekçe olarak gösterilen sayı yanlıştı** ve
+> yanlış bir sayının doğru bir sonucu desteklemesi, ölçüm sayılmaz.
 
-| | ROC-AUC | Bot ≥80 (görülen senaryolar) | Görülmemiş H1 insanı ≥80 (blok) |
-|---|---|---|---|
-| **Random Forest** | 0.988 | 0.63 | **%0** |
-| LightGBM | 0.983 | 0.89 | **%74** |
-| XGBoost | 0.982 | 0.89 | %74 |
-| HistGradientBoosting | 0.973 | 0.89 | %2 |
+`backend/model_selection.py` sekiz model ailesini (RF, ExtraTrees,
+HistGradientBoosting, LightGBM, XGBoost, lojistik regresyon, MLP ve tek-sınıflı
+Isolation Forest) ve LSTM varyantlarını aynı bölmelerle karşılaştırıyor. Altı
+protokol var; kararı verenler ikisi:
 
-**Gradient boosting benimsenmedi.** Sıralama gücü aynı (AUC farkı −0.003,
-%95 bootstrap GA [−0.010, +0.002]). Gördüğü senaryolarda daha çok bot yakalıyor
-(+0.27, GA [+0.13, +0.40]). Ama görmediği bir insan grubunu dörtte üç oranında
-blokluyor. Gerçek veri yokken ödeme kapısında doğru model, görmediğine en az
-emin davranan modeldir.
+* **D — bir senaryoyu tamamen dışarıda bırakma.** Gerçek müşteri de, ciddi bir
+  saldırı da tanım gereği modelin görmediği davranıştır.
+* **R — bir *kişiyi* tamamen dışarıda bırakma.** Kaydedilmiş tek gerçek kişinin
+  akışları, o kişiyi hiç görmemiş bir modelle skorlanıyor ve `/api/decision`
+  hangi değeri okuyorsa o değere (yumuşatılmış oturum skoru) kadar götürülüyor.
 
-**LSTM skordan çıkarıldı.** Yalnızca simülatörle eğitildiği için tarayıcı
-trafiğinde çıktısı "insan"a çöküyordu (AUC 0.947, Brier 0.51). 0.4 ağırlıkla
-harmanlandığında ≥60'a ulaşan bot oranı 0.90'dan 0.79'a düştü; karşılığında
-tek bir ek insan yakalanmadı. Var olma sebebi olan devir teslimde RF'den
-**4 akış geç** tepki verdi. Tarayıcı verisiyle yeniden eğitilmesi (AUC 0.956)
-ve RF'ye geçmiş akışları öznitelik olarak vermek (AUC 0.984) de RF'yi
-geçmedi.
+Ölçüm: 301 gerçek satır (46 koşuda 252 betikli tarayıcı akışı + tek kişiden 49
+akış) + 6.400 simüle oturum.
+
+| | ROC-AUC | Bot ≥.8 | Görülmemiş insan ≥.6 / ≥.8 | Görülmemiş A2 botu ≥.8 | R: tek kişinin oturum skoru |
+|---|---|---|---|---|---|
+| **Random Forest** | 0.996 | 0.81 | **0.05** / **0.00** | 0.00 | 40.9 |
+| ExtraTrees | 0.998 | 0.92 | 0.63 / 0.00 | 0.00 | 46.2 |
+| HistGradientBoosting | 0.995 | 0.95 | 0.15 / 0.02 | 0.00 | 97.9 |
+| LightGBM | 0.994 | 0.93 | 0.30 / 0.04 | 0.00 | 39.2 |
+| XGBoost | 0.996 | 0.94 | 0.14 / 0.00 | 0.00 | 72.6 |
+| Lojistik regresyon | 0.982 | 0.79 | 0.42 / 0.14 | 0.12 | 0.0 |
+| MLP | 0.996 | 0.92 | **0.04** / 0.02 | **0.75** | 1.1 |
+| Isolation Forest | 0.657 | 0.45 | 0.89 / 0.45 | 0.00 | 97.6 |
+
+**Gradient boosting gerçekten daha çok bot yakalıyor** ve bu gürültü değil:
+tpr@0.8 üzerinde +0.11 ila +0.15, 47 gerçek grubun bootstrap'ı sıfırı dışarıda
+bırakıyor. Laboratuvardaki ek yanlış-işaret bedeli (fpr@0.6 üzerinde +0.014 ila
++0.020) ise **gürültünün içinde**.
+
+**Rahatsız edici sütun sonuncudan bir öncekidir ve suçladığı bizim modelimiz.**
+Rastgeleleştirilmiş bot senaryosu eğitimden çıkarıldığında Random Forest onun
+**hiçbirini** yakalamıyor; aynı on iki öznitelik üzerinde sıradan bir MLP
+%75'ini yakalıyor. Bu tek bir şanslı tohum değil: beş farklı `random_state` ile
+yeniden eğitildiğinde RF her seferinde 0.00, MLP her seferinde 0.75 veriyor
+(naif bot senaryosunda RF 0.57, MLP 1.00 — yine her tohumda).
+
+**Peki MLP neden benimsenmedi?** Aynı tohum taraması nerede kararsız olduğunu da
+gösteriyor: görülmemiş **klavye-ağırlıklı meşru kullanıcı** senaryosunun ek
+doğrulamaya düşen oranı beş tohumda 0.00 / 0.00 / 0.07 / 0.16 / 0.33, kaçamaklı
+saldırı ailesindeki yakalama oranı ise 0.06 / 0.12 / 0.33 / 0.44 / 0.61. RF'nin
+karşılık gelen aralıkları 0.00–0.05 ve 0.00–0.00. Ödeme kapısında, meşru
+kullanıcıyı yanlış işaretleme oranı `random_state`'e göre yazı-tura olan bir
+model tutulamaz; en iyi görünen tohumu seçmek ise bu projenin dürüstlük
+kuralının tam olarak engellemek için var olduğu harekettir. Tohum ortalaması
+almak veya topluluk kurmak bariz bir sonraki deney — ama ölçülebilmesi için
+gerçek insan lazım, bir laboratuvar koşusu daha değil.
+
+**Tek gerçek kişi de beraberliği bozamıyor:** kişi bazında dışarıda
+bırakıldığında yedi model aynı oturuma 0.0, 1.1, 39.2, 40.9, 46.2, 72.6 ve 97.9
+veriyor — üç "geçir", üç "ek doğrulama", bir "blok". Bir kişi, bir makine, bir
+oturum, yedi karar.
+
+**LSTM skordan çıkarıldı — ve yeniden yargılandıktan sonra dışarıda kaldı.**
+Eskiden gönderildiği biçimde (yalnızca simüle tam diziler) gerçek satırlarda
+ROC-AUC 0.848, Brier 0.440. **Sunum yolunun gerçekten ürettiği biçimde** —
+`build_sequence()` ilk akıştan itibaren dolgulu önek üretir — 0.871'e çıkıyor,
+Brier 0.424: sıralaması kalibrasyonundan çok daha iyi. Gerçek satırlar da
+harmanlandığında kalibrasyon düzeliyor (Brier 0.113) ama sıralama farkı
+kapanmıyor (RF 0.996). Var olma sebebi olan **devir teslimde** hâlâ kaybediyor:
+6. akışta el değiştiren oturumlarda, yalnızca o anki akışa bakan RF %100'ünü
+6. akışta yakalıyor; dolgulu-önek LSTM %63'ünü (bir akış sonra %100), eski
+biçimdeki LSTM ise 10. akışa kadar hiçbirini. İkisi de tek bir saf insan
+oturumunu yükseltmiyor. RF'ye geçmiş akışları öznitelik olarak vermek de hiçbir
+şey katmıyor (0.996'ya karşı 0.996).
+
+**Isolation Forest dışarıda kaldı — ama eski gerekçe geri çekildi.** Eskiden
+*ters* olduğu için reddedilmişti: gerçek tarayıcı satırlarında ROC-AUC 0.340,
+yani rastgeleden de kötü, sistematik olarak saldırgandan yana oy veriyordu.
+Düzeltilmiş veride artık ters değil (0.657). Sadece önemli olan yönde işe
+yaramıyor: meşru akışların %38'ini, kaydedilmiş kişinin akışlarının %76'sını ve
+görülmemiş H1 insan akışlarının %87'sini ek doğrulama çizgisinin üstüne
+koyuyor; kayıtlı kartla yapılan bir ödemeye RF'nin 0.8 verdiği yerde 54.0
+veriyor. Tek-sınıflı bir dedektörün burada başka türlü olması da mümkün değil:
+"normal"i insan dağılımı olarak öğreniyor, bu üründe ise **saldırı zaten insana
+benziyor**.
 
 **Bedeli, ölçüldüğü haliyle:** LSTM meşru skorları da bastırıyordu. Karar
 katmanından geçirilen tam form doldurmalarında:
@@ -388,9 +454,14 @@ Yani daha az müşteri reddediliyor, daha çok müşteriden ek doğrulama isteni
 `benchmark.py` form doldurma üreteciyle, kişi başına 500 oturumla ölçüldü.)
 
 **Asıl sınır model ailesi değil.** Senaryo dışarıda bırakıldığında ağaç
-modellerinin hiçbiri A2/A3/A4 saldırılarının %20'sinden fazlasını yakalamadı.
-Görülmemiş bir saldırıyı yakalayan iki model (lojistik regresyon ve MLP) ise
-görülmemiş insanların %48-68'ini de işaretledi. Darboğaz sinyaller ve veri.
+modellerinin hiçbiri A2/A3/A4 saldırılarının anlamlı bir kısmını yakalamıyor
+(RF: A2 %0, A3 %0, A4 %2 — ek doğrulama çizgisinde). Görülmemiş saldırıyı
+yakalayan modeller ise görülmemiş insanı da, tohuma bağlı olarak %33'e varan
+oranda işaretliyor. Darboğaz model ailesi değil, **sinyal ve veri**: bu ödünleşi
+çözecek olan şey daha iyi bir topluluk değil, kişi bazında ayrılabilecek kadar
+çok gerçek kayıt (20–30 kişi, kişi başına birkaç oturum) ve bir de dokunmatik
+yüzey, dokunmatik ekran, kalem ve kısıtlanmış oturum kayıtları — bunların
+hiçbiri bugüne kadar bir kez bile kaydedilmedi.
 
 ## Rakipler ne yapıyor
 

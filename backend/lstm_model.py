@@ -65,7 +65,50 @@ FEATURE_NAMES = [
 # so a rename or reorder cannot land without a bump. A change to how a feature
 # is COMPUTED leaves the names alone and no hash can see it: that half of the
 # rule is enforced by this comment and by review, not by a test.
-FEATURE_SCHEMA_VERSION = 1
+#
+# 1 -> 2: the frame-clock retrain moved the log-percentile endpoints that
+# scroll_hizi_varyansi, tereddut_skoru and ivme_degisimi are normalised
+# against. The endpoints are fitted to the training distribution, and that
+# distribution changed, so identical raw telemetry now lands somewhere else.
+# Measured by re-extracting the 52 recorded flushes of data/real/human/ (the
+# archive keeps both the raw events and the features the server computed from
+# them under the previous bundle), same raw in, both coordinate systems out:
+#
+#   scroll_hizi_varyansi   n=46  mean -0.197  max |d| 0.263
+#   tereddut_skoru         n=50  mean -0.177  max |d| 0.340
+#   ivme_degisimi          n=48  mean -0.185  max |d| 0.401
+#   the other nine                mean  0.000  max |d| 0.000
+#
+# Nothing renamed and nothing reordered, so the sha256 pin above could not see
+# this. It is the "same afternoon" case in the paragraph above, arriving
+# exactly as described: a fifth of the range, on three of twelve axes, against
+# every reference vector a customer had banked. Bumping retires those vectors
+# instead of comparing across the move.
+#
+# 2 -> 3: the browser lab was re-captured. Until then lab/real_telemetry.json
+# stored only NORMALISED vectors -- no raw events -- so the 234 rows carrying
+# half the forest's fitted mass were frozen in whatever coordinate system was
+# serving when they were captured, and they could never enter the percentile
+# pool that sets the scale. Re-capturing with raw fixed both: the pool crossed
+# MIN_SCALING_VALUES for two of the three log-scaled features (209 real values
+# for tereddut_skoru, 156 for ivme_degisimi, against 46-48 before), so their
+# endpoints are now fitted with real browser values in the sample and moved.
+# Measured the same way as the 1 -> 2 bump -- the 52 recorded flushes of
+# data/real/human/ re-extracted under both bundles, same raw in:
+#
+#   tereddut_skoru         n=48  mean -0.039  max |d| 0.083
+#   ivme_degisimi          n=49  mean -0.033  max |d| 0.044
+#   the other ten                mean  0.000  max |d| 0.000
+#
+# A fifth the size of the previous move, and still far too large to compare
+# across: profiles.py judges a customer against PROFILE_SCALE_FLOOR = 0.0062,
+# so a systematic 0.039 shift is several floors' worth of deviation on every
+# stored vector at once. Small is not the test; systematic is.
+#
+# scroll_hizi_varyansi did NOT move, and that is not luck: its real pool is
+# still 46 values, below the floor of 50, so its endpoints are still the
+# simulator's alone. It crosses on the next capture or the next recording.
+FEATURE_SCHEMA_VERSION = 3
 
 # Per-timestep features fed into the LSTM
 NUM_FEATURES = len(FEATURE_NAMES)

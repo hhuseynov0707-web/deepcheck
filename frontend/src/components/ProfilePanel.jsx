@@ -1,4 +1,9 @@
-import { ShapBarChart } from "./RiskChart.jsx";
+import Alert from "./Alert.jsx";
+import Badge from "./Badge.jsx";
+import Card from "./Card.jsx";
+import Disclosure from "./Disclosure.jsx";
+import FeatureBars from "./FeatureBars.jsx";
+import SectionHeading from "./SectionHeading.jsx";
 import SyntheticBadge from "./SyntheticBadge.jsx";
 
 // The SOC view of the per-customer profile layer for one session, read from the
@@ -8,6 +13,14 @@ import SyntheticBadge from "./SyntheticBadge.jsx";
 // per-operator review credential. Nothing here is ever shown to the customer:
 // the Demo page renders none of it, and a profile escalation reaches the
 // checkout as the same generic step-up as every other one.
+//
+// Presented as data. The card used to be five paragraphs of grey prose with the
+// figures buried in them; the same sentences are still here, but the numbers
+// are now tiles and bars and the standing caveats are folded into a disclosure,
+// so an operator reading their tenth card reads four values instead of an
+// essay. Nothing was dropped and nothing new is claimed: every figure below is
+// a field of that block, and a field the backend did not fill renders as an em
+// dash.
 
 // profiles.PROFILE_MIN_SESSIONS: with n references the smallest attainable
 // p-value is 1/(n+1), so at alpha 0.05 the layer cannot fire below 19. Derived,
@@ -49,10 +62,31 @@ export const MODALITY_LABELS = {
 // which "0 / 19" would misstate as "this customer has no history".
 const REFERENCE_COUNT_STATES = new Set(["immature", "too_few_features", "budget_exhausted", "breaker", "evaluated"]);
 
-const formatZ = (value) => value.toFixed(1);
+// The profile's bars are z scores, not the SHAP percentages the other card
+// plots, so the unit is printed on every value rather than left to a heading.
+const formatZ = (value) => `z ${value.toFixed(1)}`;
+
+// Read from the newest decision_audit row carrying a profile opinion. A session
+// watched before its customer presses Onayla has no such row, so it reads
+// "Profil yok" even for a mature customer; without this sentence that looks
+// like the layer losing a profile.
+const READ_FROM_DECISION =
+  "Bu oturumda müşteri referansıyla verilen son ödeme kararından okunur. Henüz böyle bir karar verilmemiş " +
+  "oturumda durum “Profil yok” görünür.";
 
 function formatNumber(value, digits) {
   return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "—";
+}
+
+// A labelled value in its own well. The dt is immediately followed by its dd,
+// always: that pairing is what makes the two lines read as one definition.
+function Detail({ term, children, className = "" }) {
+  return (
+    <div className={`rounded-field border border-line bg-canvas-sunken px-3 py-2.5 ${className}`}>
+      <dt className="eyebrow">{term}</dt>
+      <dd className="mt-1 text-body leading-snug text-ink">{children}</dd>
+    </div>
+  );
 }
 
 export default function ProfilePanel({ profile }) {
@@ -87,134 +121,135 @@ export default function ProfilePanel({ profile }) {
   // itself was simulated. Strictly true, so a server that does not send the
   // field yet labels nothing rather than guessing.
   const synthetic = profile.synthetic === true;
+  const explainsNoProfile = profile.state === "no_profile";
+  const readFromDecision = profile.state !== "disabled";
 
   return (
-    <section
+    <Card
+      as="section"
+      tone={synthetic ? "synthetic" : "default"}
       aria-labelledby="profile-heading"
-      className="bg-[#18181b] border border-zinc-800 rounded-lg p-5 shadow-xl shadow-black/50 space-y-4"
+      className="flex flex-col gap-4"
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 id="profile-heading" className="text-lg font-semibold tracking-tight text-zinc-50">
-          Müşteri Profili
-        </h2>
-        <div className="flex flex-wrap gap-2">
-          {synthetic && <SyntheticBadge />}
-          {profile.escalated && (
-            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-0.5 text-xs font-medium text-amber-400">
-              Ek doğrulama istendi
-            </span>
-          )}
-          {profile.shadow && (
-            <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2.5 py-0.5 text-xs font-medium text-sky-400">
-              Gölge modu — karar etkilenmedi
-            </span>
-          )}
-        </div>
-      </div>
+      <SectionHeading
+        level={2}
+        size="card"
+        id="profile-heading"
+        eyebrow="Hesap ele geçirme kontrolü"
+        actions={
+          <>
+            {synthetic && <SyntheticBadge />}
+            {profile.escalated && (
+              <Badge tone="suspect" size="sm">
+                Ek doğrulama istendi
+              </Badge>
+            )}
+            {profile.shadow && (
+              <Badge tone="accent" size="sm">
+                Gölge modu — karar etkilenmedi
+              </Badge>
+            )}
+          </>
+        }
+      >
+        Müşteri Profili
+      </SectionHeading>
 
       {synthetic && (
-        <p className="rounded-md border border-violet-500/30 bg-violet-500/10 px-3 py-2 text-xs text-violet-200">
-          Bu karara sentetik demo verisi katıldı: karşılaştırılan müşteri geçmişi ya da oturumun kendisi simülatörle
-          üretildi, gerçek bir kişiye ait değil. Sonuç mekanizmayı gösterir, gerçek kişilerdeki doğruluğu değil; hiçbir
-          ölçüme katılmaz.
-        </p>
+        <Alert tone="synthetic">
+          Bu karara sentetik demo verisi katıldı: karşılaştırılan müşteri geçmişi ya da oturumun kendisi
+          simülatörle üretildi, gerçek bir kişiye ait değil. Sonuç mekanizmayı gösterir, gerçek kişilerdeki
+          doğruluğu değil; hiçbir ölçüme katılmaz.
+        </Alert>
       )}
 
-      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-        <div>
-          <dt className="text-xs text-zinc-500">Profil durumu</dt>
-          <dd className="text-zinc-200">{stateLabel}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-zinc-500">Giriş türü</dt>
-          <dd className="text-zinc-200">{modalityLabel ?? "—"}</dd>
-        </div>
-        <div className="col-span-2">
-          <dt className="text-xs text-zinc-500">Referans oturum sayısı</dt>
-          <dd className="space-y-1.5">
-            {countKnown ? (
-              <>
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="font-mono text-zinc-200">
-                    {modalityLabel}: {referenceN} / {PROFILE_MIN_SESSIONS}
-                  </span>
-                  <span className={`text-xs ${maturityNote === "Olgun" ? "text-emerald-400" : "text-zinc-500"}`}>
-                    {maturityNote}
-                  </span>
-                </div>
-                <div
-                  role="progressbar"
-                  aria-label={`${modalityLabel} profili olgunluğu`}
-                  aria-valuemin={0}
-                  aria-valuemax={PROFILE_MIN_SESSIONS}
-                  aria-valuenow={progress}
-                  className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-800"
-                >
-                  <div
-                    className={`h-full rounded-full ${maturityNote === "Olgun" ? "bg-emerald-500" : "bg-zinc-400"}`}
-                    style={{ width: `${(progress / PROFILE_MIN_SESSIONS) * 100}%` }}
-                  />
-                </div>
-                <p className="text-xs text-zinc-500">
-                  Karar anındaki sayı. Her giriş türü ayrı olgunlaşır; eşik altında katman karşılaştırma yapmaz.
-                </p>
-                {probationN > 0 && (
-                  <p className="text-xs text-zinc-400">
-                    <span className="font-mono text-zinc-200">Onay bekleyen oturum: {probationN}</span>
-                    {" — "}ek doğrulamayla geçti; satıcı ödemeyi onaylayana ya da üst üste 3 başarılı doğrulama
-                    profili yenileyene kadar karşılaştırmaya ve olgunluğa katılmaz.
-                  </p>
-                )}
-              </>
-            ) : (
-              <span className="font-mono text-zinc-200">—</span>
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs text-zinc-500">Sapma p-değeri</dt>
-          <dd className="font-mono text-zinc-200">{formatNumber(profile.p_value, 4)}</dd>
-        </div>
-        <div>
-          <dt className="text-xs text-zinc-500">Sapma skoru</dt>
-          <dd className="font-mono text-zinc-200">{formatNumber(profile.deviation, 2)}</dd>
-        </div>
+      <dl className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        <Detail term="Profil durumu">{stateLabel}</Detail>
+        <Detail term="Giriş türü">{modalityLabel ?? "—"}</Detail>
+        <Detail term="Sapma skoru">
+          <span className="num text-h3 font-semibold">{formatNumber(profile.deviation, 2)}</span>
+        </Detail>
+        <Detail term="Sapma p-değeri">
+          <span className="num text-h3 font-semibold">{formatNumber(profile.p_value, 4)}</span>
+        </Detail>
       </dl>
 
-      {/* backend main._profile_block reads the newest decision_audit row that
-          carries a profile opinion, and answers no_profile when there is none.
-          So a session watched on the dashboard before its customer presses
-          Onayla shows "Profil yok" even when that customer has a mature
-          profile; without this line that reads as the layer having lost it. */}
-      {profile.state !== "disabled" && (
-        <p className="text-xs text-zinc-500">
-          Bu oturumda müşteri referansıyla verilen son ödeme kararından okunur. Henüz böyle bir karar verilmemiş
-          oturumda durum “Profil yok” görünür.
-        </p>
-      )}
+      <div className={topFeatures.length > 0 ? "grid gap-5 xl:grid-cols-2" : undefined}>
+      <div>
+        <div className="flex items-baseline justify-between gap-2">
+          <h3 className="eyebrow">Referans oturum sayısı</h3>
+          {countKnown && (
+            <span
+              className={`text-caption font-medium ${maturityNote === "Olgun" ? "text-risk-safe" : "text-ink-faint"}`}
+            >
+              {maturityNote}
+            </span>
+          )}
+        </div>
+        {countKnown ? (
+          <div className="mt-2 space-y-2">
+            <p className="num text-h2 font-semibold text-ink">
+              {modalityLabel}: {referenceN} / {PROFILE_MIN_SESSIONS}
+            </p>
+            <div
+              role="progressbar"
+              aria-label={`${modalityLabel} profili olgunluğu`}
+              aria-valuemin={0}
+              aria-valuemax={PROFILE_MIN_SESSIONS}
+              aria-valuenow={progress}
+              className="h-1.5 w-full overflow-hidden rounded-full bg-panel-raised"
+            >
+              <div
+                className={`h-full rounded-full transition-[width] duration-500 ${
+                  maturityNote === "Olgun" ? "bg-risk-safe" : "bg-accent"
+                }`}
+                style={{ width: `${(progress / PROFILE_MIN_SESSIONS) * 100}%` }}
+              />
+            </div>
+            <p className="text-caption text-ink-faint">
+              Karar anındaki sayı. Her giriş türü ayrı olgunlaşır; eşik altında katman karşılaştırma yapmaz.
+            </p>
+            {probationN > 0 && (
+              <p className="text-caption text-ink-muted">
+                <span className="num font-semibold text-ink">Onay bekleyen oturum: {probationN}</span>
+                {" — "}ek doğrulamayla geçti; satıcı ödemeyi onaylayana ya da üst üste 3 başarılı doğrulama
+                profili yenileyene kadar karşılaştırmaya ve olgunluğa katılmaz.
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="num mt-2 text-h2 font-semibold text-ink-faint">—</p>
+        )}
+      </div>
 
       {topFeatures.length > 0 && (
-        <div>
-          <h3 className="text-xs text-zinc-500 mb-2">En çok sapan özellikler (z)</h3>
-          <ShapBarChart
-            shapExplanation={topFeatures.map((f) => ({ feature: f.feature, impact: f.z }))}
-            formatValue={formatZ}
+        <div className="border-t border-line pt-4 xl:border-l xl:border-t-0 xl:pl-5 xl:pt-0">
+          <h3 className="eyebrow mb-3">En çok sapan özellikler</h3>
+          <FeatureBars
+            items={topFeatures.map((f) => ({ feature: f.feature, amount: f.z }))}
+            format={formatZ}
+            axisCaption="Müşterinin kendi referans dağılımından sapma (z), aynı giriş türü içinde."
           />
-          {/* The bars are an SVG a screen reader cannot read. */}
-          <ul className="sr-only">
-            {topFeatures.map((f) => (
-              <li key={f.feature}>
-                {f.feature}: z {formatZ(f.z)}
-              </li>
-            ))}
-          </ul>
         </div>
       )}
+      </div>
 
-      <p className="text-xs text-zinc-500 border-t border-zinc-800 pt-3">
-        Bu katman yalnızca ek doğrulama isteyebilir: engellemez, onaylamaz, risk skorunu değiştirmez. Katmanın
-        ayarları yalnızca sentetik kimlikler üzerinde ölçüldü; gerçek müşteri verisi yoktur.
-      </p>
-    </section>
+      {/* The state an operator is most likely to misread gets the explanation
+          in front of them; on every other state it is a standing caveat and
+          lives with the others, one keystroke away. */}
+      {explainsNoProfile && <Alert tone="neutral">{READ_FROM_DECISION}</Alert>}
+
+      {/* The layer's contract, folded away: it is the same sentence on every
+          session, and an operator reading the tenth card does not need it
+          expanded -- but it is one keystroke away, and it is what stops this
+          panel from being mistaken for something that blocks payments. */}
+      <Disclosure summary="Bu katman ne yapar, ne yapmaz?" className="mt-auto">
+        <p>
+          Bu katman yalnızca ek doğrulama isteyebilir: engellemez, onaylamaz, risk skorunu değiştirmez. Katmanın
+          ayarları yalnızca sentetik kimlikler üzerinde ölçüldü; gerçek müşteri verisi yoktur.
+        </p>
+        {readFromDecision && !explainsNoProfile && <p>{READ_FROM_DECISION}</p>}
+      </Disclosure>
+    </Card>
   );
 }

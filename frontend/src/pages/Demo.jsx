@@ -1,8 +1,25 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import CardTypeIcon from "../components/CardTypeIcon.jsx";
-import RiskBadge from "../components/RiskBadge.jsx";
+import DecisionLadder from "../components/DecisionLadder.jsx";
+import LiveScorePanel from "../components/LiveScorePanel.jsx";
+import SyntheticBadge from "../components/SyntheticBadge.jsx";
 import VerificationModal from "../components/VerificationModal.jsx";
+import {
+  Alert,
+  Button,
+  Card,
+  CardWell,
+  Disclosure,
+  Field,
+  Input,
+  LockIcon,
+  RefreshIcon,
+  SectionHeading,
+  Select,
+  ShieldIcon,
+  riskLevelFor,
+} from "../components/ui.js";
 import { SYNTHETIC_DEMO_CUSTOMERS, syntheticCustomerLabel } from "../demoCustomers.js";
 import { detectCardType, formatCardNumber, formatCvv, formatExpiry } from "../utils/cardFormat.js";
 
@@ -52,15 +69,23 @@ const CUSTOMER_REF_HELP =
 // The retention sentence is backend/main.py's demo rule: everything a visitor
 // leaves in the demo namespace is swept on the session's clock
 // (ROW_RETENTION_HOURS, 24 by default).
+//
+// It stays verbatim, and it moved into a Disclosure rather than out of the
+// page: three lines of amber small print in the middle of a payment form are
+// not read by anyone, while one keystroke away it is still in the document,
+// still in the accessibility tree, still wired into the field's
+// aria-describedby and still found by ctrl-F.
 const CUSTOMER_REF_NAMESPACE_WARNING =
   "Uyarı: bu referans yalnızca ayrılmış demo ad alanında tutulur; hiçbir gerçek satıcının müşterisiyle eşleşemez ve raporlanan ölçümlere katılmaz. Bu ödemeden demo ad alanında kalan her şey 24 saat içinde silinir.";
 // The jury prototype's SYNTHETIC demo customers (backend/demo_seed.py), offered
 // beside free entry. The team has no customer base, so these are simulator
-// identities with a seeded history -- and the page says so twice: in every
-// option label and in the line under the selector. Both are static facts about
-// the seed, not something the server said about a profile, so the rule above
-// ("nothing about the profile comes back to this page") still holds: a juror
-// paying as Ayşe learns nothing from the server that the label did not state.
+// identities with a seeded history -- and the page says so three times: in
+// every option label, in the line under the selector, and in a badge beside the
+// reference field whenever one of them is chosen. All three are static facts
+// about the seed, not something the server said about a profile, so the rule
+// above ("nothing about the profile comes back to this page") still holds: a
+// juror paying as Ayşe learns nothing from the server that the label did not
+// state.
 //
 // Free entry stays the DEFAULT on purpose. The page's main demonstration is the
 // behavioural score, and a default that names a mature synthetic customer
@@ -118,9 +143,15 @@ export default function Demo() {
   const [reloadMessage, setReloadMessage] = useState(null);
   const [customerRef, setCustomerRef] = useState(DEFAULT_CUSTOMER_REF);
   const [customerRefError, setCustomerRefError] = useState(null);
+  // How many scored windows the SDK has handed back, i.e. how many
+  // /api/analyze responses reached onUpdate. It is a count of things that
+  // happened, not an estimate of anything: a failed flush routes to onError
+  // and is not counted.
+  const [windowCount, setWindowCount] = useState(0);
   // Consecutive "insufficient_evidence" answers. A ref, not state: it is read
   // by the charge that handleVerified starts, whose closure predates a render.
   const insufficientStreak = useRef(0);
+  const namespaceNoteId = useId();
 
   useEffect(() => {
     if (!window.DeepCheck) {
@@ -137,6 +168,7 @@ export default function Demo() {
       onUpdate: (result) => {
         setRisk(result);
         setScoreUnavailable(false);
+        setWindowCount((n) => n + 1);
       },
       onError: () => setScoreUnavailable(true),
     });
@@ -148,7 +180,7 @@ export default function Demo() {
   const total = ORDER.subtotal + tax;
   const cardType = detectCardType(cardNumber);
 
-  // The badge is DISPLAY ONLY. Nothing on this page decides whether the
+  // The panel is DISPLAY ONLY. Nothing on this page decides whether the
   // payment goes through any more: the 40/60/80 ladder lives behind
   // POST /api/decision, where a page the attacker controls cannot edit it
   // away. What used to be here was a client-side gate that an attacker could
@@ -164,6 +196,9 @@ export default function Demo() {
     Number.isFinite(risk.risk_score) &&
     risk.provisional !== true;
   const riskScore = hasScore ? risk.risk_score : null;
+  // Only so the ladder can mark the band the live score is in. Resolved by the
+  // same published table the panel uses; nothing branches on it.
+  const activeBandKey = hasScore ? riskLevelFor(riskScore).key : null;
 
   function sessionHeaders() {
     const sessionId = window.DeepCheck?.getSessionId?.();
@@ -352,290 +387,295 @@ export default function Demo() {
     submitCharge({ afterVerification: true });
   }
 
-  const inputClass =
-    "w-full bg-[#09090b] text-zinc-100 border border-zinc-800 rounded-md p-3 font-mono text-sm tracking-widest focus:outline-none focus:border-zinc-700 transition-colors duration-200 ease-out placeholder-zinc-600";
-  // Proportional type, not the card fields' spaced monospace: in that style the
-  // option label was cut off after "20 fare + 2" in the 1280 px layout, and the
-  // part a juror must be able to read is the whole label.
-  const selectClass =
-    "w-full bg-[#09090b] text-zinc-100 border border-zinc-800 rounded-md p-3 text-sm focus:outline-none focus:border-zinc-700 transition-colors duration-200 ease-out";
-
   return (
-    <div className="min-h-[calc(100vh-64px)] px-4 py-10">
-      <div className="max-w-4xl mx-auto flex items-center justify-end mb-4">
-        {hasScore ? (
-          <RiskBadge riskScore={riskScore} size="lg" />
-        ) : scoreUnavailable ? (
-          <div className="rounded-full border border-zinc-700 bg-zinc-800/60 px-4 py-2 text-sm text-zinc-300">
-            Risk skoru alınamadı — ek doğrulama uygulanacak
-          </div>
-        ) : (
-          <div className="text-sm text-zinc-400">Risk skoru hesaplanıyor...</div>
-        )}
+    <div className="mx-auto w-full max-w-[76rem] px-4 pb-16 pt-8 sm:px-6 sm:pt-10">
+      <header className="max-w-[46rem]">
+        <p className="eyebrow">Canlı demo</p>
+        <h1 className="mt-2 text-h1 font-semibold tracking-tight text-ink sm:text-display">
+          Ödeme anında davranış analizi
+        </h1>
+        <p className="mt-3 max-w-[64ch] text-body leading-relaxed text-ink-muted">
+          Formu doldurun: SDK her 2 saniyede bir davranış penceresi gönderir ve panel sunucunun döndürdüğü
+          skoru gösterir. &laquo;Onayla&raquo;ya bastığınızda kararı sunucu verir, bu sayfa değil.
+        </p>
+      </header>
+
+      {/* The product's output, above the fold and full width: it is the thing
+          this page exists to show. It holds no focusable element, so leading
+          with it costs a keyboard user nothing. */}
+      <div className="mt-7">
+        <LiveScorePanel
+          risk={risk}
+          hasScore={hasScore}
+          unavailable={scoreUnavailable}
+          windowCount={windowCount}
+        />
       </div>
 
-      {warnMessage && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="max-w-4xl mx-auto mb-4 rounded-lg border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400"
-        >
-          {warnMessage}
-        </div>
-      )}
+      <div className="mt-5 grid gap-5 lg:grid-cols-12 lg:items-start">
+        {/* THE MERCHANT'S CHECKOUT: everything a real customer would see, and
+            nothing else. The demo harness is a separate card, on the other
+            side of the page, drawn differently on purpose. */}
+        <section aria-labelledby="odeme-basligi" className="lg:col-span-7">
+          <Card padding="lg">
+            <SectionHeading id="odeme-basligi" level={2} size="section" eyebrow={`Satıcı · ${ORDER.merchant}`}>
+              Ödeme
+            </SectionHeading>
 
-      <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Order summary */}
-        <div className="bg-[#18181b] border border-zinc-800 rounded-lg p-6 shadow-xl shadow-black/50 flex flex-col gap-4">
-          <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">{ORDER.merchant}</p>
-          <h1 className="text-lg font-semibold tracking-tight text-zinc-50">Ödeme Özeti</h1>
-
-          <div className="rounded-md bg-[#09090b] border border-zinc-800 p-4">
-            <p className="text-sm text-zinc-300">{ORDER.product}</p>
-          </div>
-
-          <div className="space-y-2 text-sm text-zinc-400">
-            <div className="flex justify-between">
-              <span>Ara Toplam</span>
-              <span className="font-mono text-zinc-300">₺{formatCurrency(ORDER.subtotal)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>KDV (%{ORDER.taxRate * 100})</span>
-              <span className="font-mono text-zinc-300">₺{formatCurrency(tax)}</span>
-            </div>
-          </div>
-
-          <div className="border-t border-zinc-800 mt-2 pt-4 flex justify-between items-baseline">
-            <span className="text-zinc-300 font-medium">Toplam</span>
-            <span className="text-2xl font-semibold font-mono text-zinc-50">₺{formatCurrency(total)}</span>
-          </div>
-        </div>
-
-        {/* Card form */}
-        <div className="bg-[#18181b] border border-zinc-800 rounded-lg p-6 shadow-xl shadow-black/50 flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold tracking-tight text-zinc-50 uppercase">Kart Bilgileri</h3>
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="card-number" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Numarası</label>
-              <div className="relative">
-                <input
-                  id="card-number"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="cc-number"
-                  placeholder="1234 5678 9012 3456"
-                  value={cardNumber}
-                  onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
-                  className={`${inputClass} pr-14`}
-                  required
-                />
-                <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                  <CardTypeIcon type={cardType} className="h-6 w-10" />
+            <CardWell className="mt-5 p-4">
+              <p className="text-body text-ink">{ORDER.product}</p>
+              <dl className="mt-3.5 space-y-2 border-t border-line pt-3.5 text-caption">
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-ink-muted">Ara Toplam</dt>
+                  <dd className="num text-ink-muted">₺{formatCurrency(ORDER.subtotal)}</dd>
                 </div>
-              </div>
-            </div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-ink-muted">KDV (%{ORDER.taxRate * 100})</dt>
+                  <dd className="num text-ink-muted">₺{formatCurrency(tax)}</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 border-t border-line pt-3">
+                  <dt className="text-body font-medium text-ink">Toplam</dt>
+                  <dd className="num text-metric font-semibold leading-none text-ink">
+                    ₺{formatCurrency(total)}
+                  </dd>
+                </div>
+              </dl>
+            </CardWell>
 
-            <div className="flex flex-col gap-1.5">
-              <label htmlFor="card-name" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Kart Üzerindeki İsim</label>
-              <input
-                id="card-name"
-                type="text"
-                autoComplete="cc-name"
-                placeholder="AD SOYAD"
-                value={cardName}
-                onChange={(e) => setCardName(e.target.value.toUpperCase())}
-                className={inputClass}
-                required
-              />
-            </div>
+            <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+              <Field label="Kart Numarası" id="card-number">
+                {(aria) => (
+                  <div className="relative">
+                    <Input
+                      {...aria}
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="cc-number"
+                      placeholder="1234 5678 9012 3456"
+                      value={cardNumber}
+                      onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
+                      mono
+                      className="pr-16"
+                      required
+                    />
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
+                    >
+                      <CardTypeIcon type={cardType} className="h-6 w-10" />
+                    </span>
+                  </div>
+                )}
+              </Field>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="card-expiry" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Son Kullanma Tarihi</label>
-                <input
-                  id="card-expiry"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="cc-exp"
-                  placeholder="AA/YY"
-                  value={expiry}
-                  onChange={(e) => setExpiry(formatExpiry(e.target.value))}
-                  className={inputClass}
-                  required
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="card-cvv" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">CVV</label>
-                <input
-                  id="card-cvv"
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="cc-csc"
-                  placeholder="123"
-                  value={cvv}
-                  onChange={(e) => setCvv(formatCvv(e.target.value))}
-                  className={inputClass}
-                  required
-                />
-              </div>
-            </div>
-
-            {/* Dashed and set apart from the card fields on purpose: this is not
-                something a real checkout asks its customer. It stands in for
-                the merchant server naming the customer. */}
-            <div className="flex flex-col gap-1.5 rounded-md border border-dashed border-zinc-700 p-3">
-              <label htmlFor="demo-customer" className="text-xs font-medium text-zinc-400 uppercase tracking-wider">
-                Demo Müşterisi
-              </label>
-              <select
-                id="demo-customer"
-                value={customerChoice}
-                onChange={(e) => chooseCustomer(e.target.value)}
-                aria-describedby="demo-customer-note"
-                className={selectClass}
-              >
-                {SYNTHETIC_DEMO_CUSTOMERS.map((customer) => (
-                  <option key={customer.ref} value={customer.ref}>
-                    {syntheticCustomerLabel(customer)}
-                  </option>
-                ))}
-                <option value={CUSTOM_CUSTOMER}>Serbest referans (aşağıdaki alana yazılır)</option>
-              </select>
-              <p id="demo-customer-note" className="text-xs text-amber-400/90">
-                {SYNTHETIC_CUSTOMERS_NOTE}
-              </p>
-
-              <label htmlFor="customer-ref" className="mt-2 text-xs font-medium text-zinc-400 uppercase tracking-wider">
-                Müşteri Referansı (demo)
-              </label>
-              <input
-                id="customer-ref"
-                type="text"
-                autoComplete="off"
-                spellCheck={false}
-                maxLength={CUSTOMER_REF_MAX_LENGTH}
-                value={customerRef}
-                onChange={(e) => {
-                  setCustomerRef(e.target.value);
-                  setCustomerRefError(null);
-                }}
-                aria-describedby={
-                  customerRefError
-                    ? "customer-ref-help customer-ref-namespace customer-ref-error"
-                    : "customer-ref-help customer-ref-namespace"
-                }
-                aria-invalid={customerRefError ? "true" : undefined}
-                className={`${inputClass} tracking-normal`}
-              />
-              <p id="customer-ref-help" className="text-xs text-zinc-500">
-                {CUSTOMER_REF_HELP}
-              </p>
-              <p id="customer-ref-namespace" className="text-xs text-amber-400/90">
-                {CUSTOMER_REF_NAMESPACE_WARNING}
-              </p>
-              {customerRefError && (
-                <p id="customer-ref-error" role="alert" className="text-xs text-rose-400">
-                  {customerRefError}
-                </p>
-              )}
-              <a
-                href={KVKK_NOTICE_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="self-start text-xs text-zinc-400 underline underline-offset-2 hover:text-zinc-200 transition-colors duration-200"
-              >
-                KVKK Aydınlatma Metni
-              </a>
-            </div>
-
-            <button
-              type="submit"
-              disabled={status === "loading"}
-              className="w-full bg-zinc-100 hover:bg-zinc-200 text-zinc-900 font-medium py-3 px-4 rounded-md transition-colors duration-200 cursor-pointer text-sm tracking-wide shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-2"
-            >
-              {status === "loading" && (
-                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              <Field label="Kart Üzerindeki İsim" id="card-name">
+                {(aria) => (
+                  <Input
+                    {...aria}
+                    type="text"
+                    autoComplete="cc-name"
+                    placeholder="AD SOYAD"
+                    value={cardName}
+                    onChange={(e) => setCardName(e.target.value.toUpperCase())}
+                    className="tracking-[0.04em]"
+                    required
                   />
-                </svg>
-              )}
-              {status === "loading" ? "İşleniyor..." : `₺${formatCurrency(total)} Onayla`}
-            </button>
+                )}
+              </Field>
 
-            {/* Tek bir canlı bölge: ödeme sonucu ekran okuyucuya duyurulmazsa,
-                görme engelli bir kullanıcı işlemin reddedildiğini fark etmez. */}
-            <div role="status" aria-live="polite">
-              {blockMessage && (
-                <p className="text-center rounded-md border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
-                  {blockMessage}
-                </p>
-              )}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Son Kullanma Tarihi" id="card-expiry">
+                  {(aria) => (
+                    <Input
+                      {...aria}
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="cc-exp"
+                      placeholder="AA/YY"
+                      value={expiry}
+                      onChange={(e) => setExpiry(formatExpiry(e.target.value))}
+                      mono
+                      required
+                    />
+                  )}
+                </Field>
+                <Field label="CVV" id="card-cvv">
+                  {(aria) => (
+                    <Input
+                      {...aria}
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="cc-csc"
+                      placeholder="123"
+                      value={cvv}
+                      onChange={(e) => setCvv(formatCvv(e.target.value))}
+                      mono
+                      required
+                    />
+                  )}
+                </Field>
+              </div>
 
-              {hintMessage && (
-                <p className="text-center rounded-md border border-zinc-700 bg-zinc-800/60 px-3 py-2 text-sm text-zinc-300">
-                  {hintMessage}
-                </p>
-              )}
+              <Button type="submit" variant="primary" size="lg" fullWidth loading={status === "loading"}>
+                {status === "loading" ? "İşleniyor..." : `₺${formatCurrency(total)} Onayla`}
+              </Button>
 
-              {reloadMessage && (
-                <div className="flex flex-col items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
-                  <p className="text-center">{reloadMessage}</p>
-                  <button
-                    type="button"
-                    onClick={() => window.location.reload()}
-                    className="rounded-md border border-amber-500/30 px-3 py-1 text-xs font-medium text-amber-300 hover:bg-amber-500/10 transition-colors duration-200"
+              {/* Tek bir canlı bölge: ödeme sonucu ekran okuyucuya duyurulmazsa,
+                  görme engelli bir kullanıcı işlemin reddedildiğini fark etmez.
+                  Sunucudan dönen her karar durumu buraya yazılır. */}
+              <div role="status" aria-live="polite" className="space-y-3">
+                {/* Each outcome gets a Turkish headline that names WHAT the
+                    server did, and the server's own sentence underneath as the
+                    detail. The headline is derived from the decision's own
+                    `action` / `status` field -- never from the score, which
+                    this page is not allowed to interpret. */}
+                {status === "success" && (
+                  <Alert tone="safe" title="Ödeme onaylandı">
+                    Ödeme başarıyla alındı (demo). Gerçek tahsilat yapılmadı.
+                  </Alert>
+                )}
+
+                {warnMessage && (
+                  <Alert tone="suspect" title="Uyarı ile onaylandı">
+                    {warnMessage}
+                  </Alert>
+                )}
+
+                {blockMessage && (
+                  <Alert tone="blocked" title="Ödeme reddedildi">
+                    {blockMessage}
+                  </Alert>
+                )}
+
+                {hintMessage && (
+                  <Alert tone="info" title="Karar için biraz daha veri gerekiyor">
+                    {hintMessage}
+                  </Alert>
+                )}
+
+                {reloadMessage && (
+                  <Alert
+                    tone="suspect"
+                    title="Oturumun yenilenmesi gerekiyor"
+                    actions={
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => window.location.reload()}
+                      >
+                        <RefreshIcon className="h-3.5 w-3.5" />
+                        Sayfayı Yenile
+                      </Button>
+                    }
                   >
-                    Sayfayı Yenile
-                  </button>
-                </div>
-              )}
+                    {reloadMessage}
+                  </Alert>
+                )}
+              </div>
+            </form>
 
-              {status === "success" && (
-                <p className="text-center rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-400">
-                  Ödeme başarıyla alındı (demo).
-                </p>
-              )}
-            </div>
-          </form>
+            {/* No "confidence" figure here. The API's `confidence` is
+                max(p, 1-p) of the latest single flush, not a calibrated
+                probability of being right, while the panel shows the smoothed
+                session score. The two can point opposite ways: smoothing damps
+                a drop, so one human-looking flush after bot-looking ones shows
+                a red band beside "95%" that is certainty in the HUMAN class.
+                The analyst view keeps the figure, labelled for what it is. */}
 
-          {/* No "confidence" figure here. The API's `confidence` is
-              max(p, 1-p) of the latest single flush, not a calibrated
-              probability of being right, while the badge shows the smoothed
-              session score. The two can point opposite ways: smoothing damps
-              a drop, so one human-looking flush after bot-looking ones shows
-              a red badge beside "95%" that is certainty in the HUMAN class.
-              The analyst view keeps the figure, labelled for what it is. */}
-          {hasScore && (
-            <p className="font-mono text-xs text-zinc-500 text-center">
-              Yanıt süresi: {risk.response_time_ms} ms
-            </p>
-          )}
-
-          <div className="pt-4 border-t border-zinc-800 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
             {/* This used to claim "256-bit SSL" on a page served over plain
                 http://localhost. What is stated instead holds for this code:
                 the charge request carries only session_id, amount and the
                 demo customer reference -- never a card field -- and the SDK
                 records keydown timestamps, never key values. */}
-            <div className="flex items-center gap-1.5">
-              <svg className="h-3.5 w-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 11v5M12 8h.01" />
-              </svg>
-              <span>Demo ortamı — gerçek ödeme alınmaz, kart bilgileri sunucuya gönderilmez</span>
+            <div className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-line pt-4 text-caption text-ink-faint">
+              <span className="inline-flex items-center gap-1.5">
+                <LockIcon className="h-3.5 w-3.5 shrink-0" />
+                Demo ortamı — gerçek ödeme alınmaz, kart bilgileri sunucuya gönderilmez
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-ink-muted">
+                <ShieldIcon className="h-3.5 w-3.5 shrink-0 text-accent" />
+                DeepCheck ile korunuyor
+              </span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-              <span>DeepCheck ile korunuyor</span>
+          </Card>
+        </section>
+
+        <div className="flex flex-col gap-5 lg:col-span-5">
+          <DecisionLadder activeKey={activeBandKey} />
+
+          {/* THE DEMO HARNESS. Dashed and in the violet reserved for synthetic
+              data, so a juror can see at a glance which part of the screen is
+              the product and which part is the rig it is being shown on. No
+              real checkout asks its customer any of this. */}
+          <Card as="section" tone="synthetic" padding="lg" className="border-dashed" aria-labelledby="demo-kontrol-basligi">
+            <SectionHeading
+              id="demo-kontrol-basligi"
+              level={2}
+              size="card"
+              eyebrow="Demo kontrolleri"
+              description="Ürünün parçası değildir; sunumu yapan kişi içindir."
+            >
+              Müşteri seçimi
+            </SectionHeading>
+
+            <div className="mt-5 space-y-4">
+              <Field
+                id="demo-customer"
+                label="Demo Müşterisi"
+                hint={SYNTHETIC_CUSTOMERS_NOTE}
+                labelSuffix={selectedSynthetic ? <SyntheticBadge size="sm" /> : null}
+              >
+                {(aria) => (
+                  <Select {...aria} value={customerChoice} onChange={(e) => chooseCustomer(e.target.value)}>
+                    {SYNTHETIC_DEMO_CUSTOMERS.map((customer) => (
+                      <option key={customer.ref} value={customer.ref}>
+                        {syntheticCustomerLabel(customer)}
+                      </option>
+                    ))}
+                    <option value={CUSTOM_CUSTOMER}>Serbest referans (aşağıdaki alana yazılır)</option>
+                  </Select>
+                )}
+              </Field>
+
+              <Field
+                id="customer-ref"
+                label="Müşteri Referansı (demo)"
+                hint={CUSTOMER_REF_HELP}
+                error={customerRefError}
+                describedBy={namespaceNoteId}
+              >
+                {(aria) => (
+                  <Input
+                    {...aria}
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    maxLength={CUSTOMER_REF_MAX_LENGTH}
+                    value={customerRef}
+                    invalid={Boolean(customerRefError)}
+                    onChange={(e) => {
+                      setCustomerRef(e.target.value);
+                      setCustomerRefError(null);
+                    }}
+                    mono
+                    className="tracking-normal"
+                  />
+                )}
+              </Field>
+
+              <Disclosure summary="Bu referans nerede saklanır ve ne kadar kalır?">
+                <p id={namespaceNoteId}>{CUSTOMER_REF_NAMESPACE_WARNING}</p>
+                <a
+                  href={KVKK_NOTICE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-block rounded-field text-accent underline underline-offset-4 transition-colors hover:text-accent-strong"
+                >
+                  KVKK Aydınlatma Metni
+                </a>
+              </Disclosure>
             </div>
-          </div>
+          </Card>
         </div>
       </div>
 
@@ -645,6 +685,7 @@ export default function Demo() {
           onClose={() => setShowVerifyModal(false)}
           verify={verifyCode}
           demoCode={DEMO_VERIFY_CODE}
+          amountLabel={`₺${formatCurrency(total)}`}
         />
       )}
     </div>

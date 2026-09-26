@@ -17,7 +17,23 @@ from lstm_model import FEATURE_NAMES
 
 logger = logging.getLogger("deepcheck.scorer")
 
-MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
+# Where the trained artifacts live. Defaults to this directory, which is what
+# the container and every existing caller already assume.
+#
+# DEEPCHECK_MODEL_DIR exists so a training or evaluation run can write and read
+# a bundle somewhere ELSE without touching the one being served. Two concrete
+# needs, both met by the same one-line override:
+#
+#   * Measuring a change to the features or the training distribution means
+#     retraining, and retraining in place swaps the model out from under a
+#     running container mid-request -- and under two parallel workstreams, out
+#     from under whoever else is running the test suite.
+#   * CI can train into a scratch directory and assert on the result without a
+#     build step that leaves an untracked 4 MB pickle in the working tree.
+#
+# Read once at import, like the paths below it, so a process cannot be scoring
+# against two different bundles depending on when it looked.
+MODEL_DIR = os.getenv("DEEPCHECK_MODEL_DIR") or os.path.dirname(os.path.abspath(__file__))
 
 # The artifact names carry the scikit-learn version that wrote them.
 #
@@ -184,6 +200,23 @@ NEUTRAL_DEFAULTS = {
 # what the model actually said.
 MIN_MEASURED_FOR_CONFIDENT_SCORE = 6
 
+
+def measured_feature_count(raw_values: dict) -> int:
+    """How many of the twelve features this flush genuinely MEASURED.
+
+    extract_raw() returns None for a feature it could not compute, and
+    extract_features() then substitutes NEUTRAL_DEFAULTS, so a full twelve-
+    number vector says nothing about how much of it is real. Three callers
+    need that distinction and must agree on it: compute_risk (provisional
+    scores), record_session (which flushes may enter the training set) and
+    train_model (the same gate applied to a recorded archive). It lives here
+    because divergence between them is silent -- a looser gate in one path
+    fills the training set with vectors made of fallbacks, which is exactly
+    what a naive headless bot sends.
+    """
+    return sum(1 for name in FEATURE_NAMES if raw_values.get(name) is not None)
+
+
 # Features that never need a neutral fallback: they are simple counts (clicks
 # in window, focus-loss count) that are always well-defined, including as a
 # legitimate 0.
@@ -215,20 +248,76 @@ NEUTRAL_FEATURES = tuple(NEUTRAL_DEFAULTS)
 # sequential statistic over the newest ten per-flush scores still crosses the
 # bot bound, the session is held at verify whatever this smoothed score says
 # (internal reason "sequential"; test_crossing_the_bot_bound_is_never_charged).
+#
+# The bypass asks for a flush that OBSERVED THE GENERATOR, and that
+# qualification cost a real person a payment before it was added.
+#
+# A window in which almost nothing happened still produces a full twelve-number
+# vector, because every feature has a neutral fallback -- and the forest has an
+# opinion about that fallback coordinate like any other. In the one recorded
+# human session three windows carried no pointer, click, scroll or key event
+# worth the name (3 of 12 features measured, none of them structural). The
+# forest scored that coordinate 88.5, 97.3 and 88.4. One of the three was the
+# LAST flush, the one "Onayla" is decided on: against a session sitting at 0.0
+# it read as an 88-point level shift, took the bypass, and set the stored
+# session score to 88.4 -- "Bot Tespit Edildi" for somebody who had stopped
+# moving the mouse while the window was open. The per-flush median for that
+# session is 0.0; the number the payment is decided on was 88.4.
+#
+# The gate is the STRUCTURAL features (BUCKET_FEATURES), not `provisional`, and
+# the difference is the whole point. `provisional` is also true of a naive
+# headless bot -- measured on the fixtures: headless_bot measures 4 of 12 and
+# fast_keyboard_only_no_mouse 5 of 12 -- so gating on it would reopen the
+# handover hole this rule exists to close. What separates them is measured and
+# clean: the human's idle windows measured 0 of the 6 structural features,
+# while every bot fixture measured at least one (headless_bot 1, keyboard-only
+# 2, scripted_motion 4). The structural features are the ones that describe the
+# GENERATOR rather than the sample, which is exactly why behavior_bucket uses
+# only them -- and a level shift is a claim that the generator changed. With
+# none of them measurable there is no observation of a generator in this flush
+# to make that claim from.
+#
+# The median still carries such a flush: one of five cannot flip a verdict,
+# which is what a median is for. A session that has not produced enough
+# observed flushes is not decided on this median at all: main.
+# _decide_on_evidence holds any decision resting on fewer than three observed
+# flushes at verify("insufficient_evidence") -- neither approved nor blocked --
+# and its sequential statistic reads observed flushes only. That is also why a
+# bot sending only unobserved windows is not let through here. An unobserved
+# flush's score is NOT reliably high: it can be steered low through the
+# marginal features and the client-supplied hesitation_intervals (measured,
+# see the block above main._structural_bits), so "it will score 99" is not a
+# safety net and nothing downstream relies on it.
+#
+# Nothing here was retuned. LEVEL_SHIFT_POINTS is still 35 and the window is
+# still 5; the rule now checks that the reading it reacts to was observed.
 SMOOTHING_WINDOW = 5
 LEVEL_SHIFT_POINTS = 35.0
 
 
-def smooth_session_score(previous_scores: list[float], current: float) -> float:
+def smooth_session_score(
+    previous_scores: list[float], current: float, current_observed_structure: bool = True
+) -> float:
     """The session score /api/analyze stores and /api/decision reads.
 
     `previous_scores` are this session's earlier per-flush scores, oldest
     first. Non-finite values are skipped: statistics.median over a list
     containing NaN returns a meaningless value rather than raising.
+
+    `current_observed_structure` is whether this flush measured at least one
+    of BUCKET_FEATURES -- compute_risk() returns it as `observed_structure`.
+    A flush that measured none of them may join the median but may not trigger
+    the level-shift bypass; see the note above. It defaults to True so a
+    caller that has not got the flag keeps the old behaviour rather than
+    silently getting a softer rule.
     """
     previous = [s for s in previous_scores if s is not None and math.isfinite(s)][-(SMOOTHING_WINDOW - 1):]
     smoothed = float(np.median(previous + [current]))
-    if previous and current - float(np.median(previous)) >= LEVEL_SHIFT_POINTS:
+    if (
+        previous
+        and current_observed_structure
+        and current - float(np.median(previous)) >= LEVEL_SHIFT_POINTS
+    ):
         smoothed = max(smoothed, current)
     return round(smoothed, 1)
 
@@ -516,13 +605,14 @@ def behavior_bucket(raw_values: dict) -> str | None:
 #
 # AS SERVED IT SOFTENS NOTHING, and calling it a safety net without saying so
 # was wrong. Both served bundles (model-sklearn1.5.0.pkl and
-# model-sklearn1.8.0.pkl, read 2026-09-19) carry n=36 calibration values with
-# a maximum of 27.71. Every blocked score is >= 80, so no calibration human
-# reaches it, p = 1/(n+1) = 0.027 < CONFORMAL_ALPHA for every block, and the
-# guard never fires. Those 36 values are not customers either: data/real/ holds
-# no recorded sessions, so they come from lab/real_telemetry.json, whose only
-# human scenarios are the lab's SCRIPTED Playwright personas (H1_human,
-# H2_keyboard_only) -- one author's idea of a human, driven on one machine.
+# model-sklearn1.8.0.pkl, retrained 2026-09-25) carry n=28 calibration values
+# with a maximum of 33.2. Every blocked score is >= 80, so no calibration human
+# reaches it, p = 1/(n+1) = 0.034 < CONFORMAL_ALPHA for every block, and the
+# guard never fires. Those 28 values are not customers either. The one recorded
+# person is on the TRAINING side -- with a single person there is nobody to
+# hold out -- so the calibration comes from lab/real_telemetry.json, whose only
+# human scenario in this holdout is H1_human: the lab's SCRIPTED Playwright
+# persona, one author's idea of a human, driven on one machine.
 # The guard therefore protects no real user today, and the existing test that
 # shows it softening a block does so with a hand-made calibration in the 90s.
 # ModelBundle logs this state once at load, so it is visible without reading
@@ -897,7 +987,7 @@ def compute_risk(raw: dict) -> dict:
 
     raw_values = extract_raw(raw)
     features = extract_features(raw, raw_values)
-    measured = sum(1 for name in FEATURE_NAMES if raw_values.get(name) is not None)
+    measured = measured_feature_count(raw_values)
     # Bit i set when FEATURE_NAMES[i] was genuinely measured in this flush,
     # rather than filled in with NEUTRAL_DEFAULTS by extract_features. Stored
     # on behavior_data.measured_mask. Nothing below reads it: it is computed
@@ -931,63 +1021,164 @@ def compute_risk(raw: dict) -> dict:
 
     fraud_probability = float(bundle.rf.predict_proba(scaled)[0][1])
 
-    # The score is the RandomForest alone. Two former ensemble members were
-    # removed from it, each on measurement. Both are still trainable, so either
-    # decision can be re-measured once real recordings exist. model_selection.py
-    # reproduces the numbers below.
+    # The score is the RandomForest alone. Two former ensemble members -- an
+    # LSTM and an Isolation Forest -- were removed from it, each on
+    # measurement, and both have now been PUT BACK ON TRIAL and measured
+    # again. `model_selection.py` reproduces every number below.
     #
-    # THE LSTM. It was trained on simulated sessions only, and on browser
-    # traffic its output collapsed to "human". Its ranking was fine (ROC-AUC
-    # 0.947) but its calibration was not (Brier 0.51). Scored out-of-fold on
-    # the 234 browser-lab flushes:
+    # WHY THEY WERE RETRIED. The measurements that dropped them were taken
+    # against a training distribution now known to be wrong about real
+    # browsers: the simulator drew event timestamps from continuous
+    # distributions, while a real browser delivers pointer events on renderer
+    # frame boundaries and therefore repeats the same millisecond gap by
+    # construction. The first real person this project scored came out at a
+    # per-flush median of 68.0 because of it. A model judged on that
+    # distribution was judged unfairly, so the study was re-run end to end on
+    # the corrected simulator, with the browser lab re-captured so its rows
+    # carry raw telemetry and can be re-extracted under the scale in force.
     #
-    #                                bots >=60   bots >=80   Brier
-    #     RF 0.6 + LSTM 0.4          0.79        0.54        0.070
-    #     RandomForest alone         0.90        0.63        0.056
+    # WHAT THE RETRIAL RETRACTED. The previous version of this comment said
+    # gradient boosting was rejected because, with the H1 human scenario held
+    # out of training, LightGBM blocked 74% of those unseen humans at 80 while
+    # the forest blocked none. That number does not reproduce, and it should
+    # not have been quoted: it was measured on 234 lab rows stored as
+    # already-normalised vectors, frozen to a superseded scale and superseded
+    # neutral fallbacks. Re-captured with raw and re-extracted, the same
+    # scenario gives LightGBM 0.04 and the forest 0.00.
     #
-    # Retraining it with the lab rows blended in (ROC-AUC 0.956) still scored
-    # below the forest it was diluting. The one case it existed for, a
-    # mid-session handover, it caught four flushes LATER than the forest
-    # reading the current flush alone. The old disagreement term was a patch
-    # over that lag, and smooth_session_score() now does its job directly.
-    # Handing the forest the previous flushes as extra features added nothing
-    # either (ROC-AUC 0.984 against 0.988).
+    # WHAT THE RETRIAL FOUND, on 301 real rows (252 scripted browser-lab
+    # flushes across 46 runs, 49 flushes from the one recorded person) blended
+    # with 6,400 simulated sessions. Protocol D holds one SCENARIO out of
+    # training; it is the column a payment product is chosen on, because every
+    # real customer is unseen by construction. "worst unseen human" is the
+    # human scenario each model treats worst when it never trained on it:
     #
-    # Gradient boosting was measured as well and NOT adopted. LightGBM, XGBoost
-    # and HistGradientBoosting matched the forest's ROC-AUC and caught more bots
-    # at 80 (0.89 against 0.63). But with the H1 human scenario held out of
-    # training, LightGBM blocked 74% of those unseen humans at 80; the forest
-    # blocked none. Real customers will be unseen by construction, so the
-    # conservative model is the right one until there is real data.
+    #                   C.auc  C.tpr@.8  worst unseen  unseen A2   1-row
+    #                                     human  >=.6/.8  bot >=.8   latency
+    #     RandomForest  0.996   0.81      0.05 (H2) 0.00    0.00      13.3 ms
+    #     ExtraTrees    0.998   0.92      0.63 (H2) 0.00    0.00      20.8 ms
+    #     HistGB        0.995   0.95      0.15 (H1) 0.02    0.00       4.6 ms
+    #     LightGBM      0.994   0.93      0.30 (H2) 0.04    0.00       0.5 ms
+    #     XGBoost       0.996   0.94      0.14 (H2) 0.00    0.00       0.5 ms
+    #     LogReg        0.982   0.79      0.42 (H2) 0.14    0.12       0.2 ms
+    #     MLP           0.996   0.92      0.04 (H1) 0.02    0.75       0.2 ms
     #
-    # Isolation Forest is NOT read here either, and the reason is measured.
+    # The boosting families do catch more bots: +0.11 to +0.15 on tpr@0.8, and
+    # a bootstrap resampling the 47 real GROUPS separates that from zero.
+    # Their extra false-challenge cost on the lab (+0.014 to +0.020 on
+    # fpr@0.6) does NOT separate from zero.
     #
-    # It is fitted on human rows only, so it learns "normal" as the human
-    # distribution -- and in this product the attack IS looking human. On the
-    # held-out real browser rows its standalone discrimination came out at
-    # ROC-AUC 0.340: not weak, INVERTED. It was systematically voting for the
-    # attacker, and its 20% share cost real accuracy:
+    # THE LAST COLUMN IS THE UNCOMFORTABLE ONE, and it is about this forest,
+    # not about them. With the randomised-bot scenario held out of training,
+    # the forest catches NONE of it -- 0.00 at both the step-up and the block
+    # line -- and the MLP catches 0.75. That is not one lucky seed: refitted at
+    # five random_states the forest gives 0.00 every time and the MLP 0.75
+    # every time. The same holds on the naive-bot scenario (forest 0.57, MLP
+    # 1.00 at every seed). docs/evaluation.md has long said this detector
+    # "catches attack techniques it has samples of, and does not generalise to
+    # techniques it has not seen". This measures that sentence, and it says the
+    # limitation is a property of the MODEL FAMILY, not of the data.
     #
-    #     component alone      RF 0.990   LSTM 0.898   IsolationForest 0.340
-    #     0.5 / 0.2 / 0.3      0.977
-    #     0.6 / 0.4 (no IsoF)  0.990
+    # WHY THE MLP IS STILL NOT ADOPTED, measured rather than asserted. Refit at
+    # those same five seeds, its share of an UNSEEN keyboard-only human
+    # scenario challenged at 60 runs 0.00 / 0.00 / 0.07 / 0.16 / 0.33, and its
+    # recall on the unseen evasive family at 80 runs 0.06 / 0.12 / 0.33 / 0.44
+    # / 0.61. The forest's corresponding spreads are 0.00-0.05 and 0.00-0.00.
+    # A model whose false-challenge rate on unseen legitimate users is a coin
+    # flip over random_state cannot hold a payment gate, and picking the seed
+    # that looks best is the exact move this project's honesty rule exists to
+    # stop. Seed-averaging or ensembling it is the obvious next experiment; it
+    # needs real people to be measured against, not another lab run.
     #
-    # It was also 44% of the scoring budget: compute_risk measured 31.7 ms with
-    # the decision_function call and 17.7 ms without it.
+    # And the one real person cannot break the tie either. Held out BY PERSON
+    # -- protocol R -- the smoothed session score /api/decision reads comes out
+    # at 0.0 for LogReg, 1.1 for the MLP, 39.2 for LightGBM, 40.9 for the
+    # forest, 46.2 for ExtraTrees, 72.6 for XGBoost and 97.9 for HistGB: three
+    # allows, three verifies and a block. One person, one machine, one session,
+    # seven verdicts. It is not stable within a family either -- running this
+    # same study against the PREVIOUS bundle, a scale differing by 0.04 on two
+    # of twelve features, moved LightGBM's number on that session from 0.0 to
+    # 39.2 while leaving its lab metrics unchanged to three decimals.
     #
-    # The model is still trained and still stored in the bundle, so the choice
-    # can be re-measured once there are real human recordings to measure
-    # against -- but nothing calls it per request, because computing a number
-    # only to give it zero weight is latency spent on nothing. test_scorer.py
+    # So the forest stays, and the reason is not that it won. It is the most
+    # STABLE model here on the axis a payment gate cannot be wrong about, and
+    # the measurement that would justify trading that stability for the MLP's
+    # generalisation -- a false-challenge rate on real people, with an interval
+    # on it -- does not exist yet.
+    #
+    # THE LSTM. Still out, and now for a better reason than "it collapses".
+    # Trained the way it used to be shipped (simulated full sequences only) it
+    # scores ROC-AUC 0.848 with a Brier of 0.440 on the real rows; trained on
+    # the shape the SERVING path actually produces -- padded prefixes, which
+    # build_sequence() emits from the first flush -- it improves to 0.871 with
+    # the Brier still at 0.424, i.e. it ranks far better than it calibrates.
+    # Blending the real rows in out of fold finally fixes the calibration
+    # (Brier 0.113) without closing the gap in rank. All three sit below the
+    # forest's 0.996, and every blend tested is worse than the forest alone:
+    #
+    #     RandomForest alone                     auc 0.996  brier 0.026  tpr@.8 0.81
+    #     0.6 RF + 0.4 LSTM (best variant)       auc 0.990  brier 0.039  tpr@.8 0.66
+    #     the former 0.6/0.4 + escalation rule   auc 0.996  brier 0.033  tpr@.8 0.77
+    #     the former 0.5 RF / 0.2 LSTM / 0.3 IF  auc 0.977  brier 0.094  tpr@.8 0.12
+    #
+    # The one case it exists for is a mid-session handover, and it still loses
+    # there. On simulated drift_to_bot sessions, where the generator changes at
+    # flush 6, the share caught at the flush AFTER the switch is: forest
+    # reading the current flush alone 1.00; LSTM on padded prefixes 0.63, and
+    # 1.00 one flush later; LSTM as formerly shipped 0.00 until flush 10.
+    # Neither variant raises a single pure-human session at any k, so this is
+    # not a threshold effect -- the sequence model is simply one flush, or
+    # four, behind a forest that looks at nothing but now. smooth_session_
+    # score()'s level-shift rule already covers the case it was hired for.
+    # Handing the forest the previous flushes as extra columns adds nothing
+    # either (auc 0.996 against 0.996, tpr@0.8 0.80 against 0.81).
+    #
+    # THE ISOLATION FOREST. Still out; the old reason is RETRACTED and a new
+    # one measured. The old reason was inversion: fitted on human rows only,
+    # it scored ROC-AUC 0.340 on real browser rows -- worse than chance,
+    # systematically voting for the attacker. On the corrected data it is no
+    # longer inverted. It is merely useless in the direction that matters:
+    #
+    #     ROC-AUC on the real rows                     0.657  (forest 0.996)
+    #     share of legitimate flushes it puts >=0.6      0.38  (forest 0.00)
+    #     share of the recorded person's flushes >=0.6   0.76  (forest 0.00)
+    #     unseen H1_human flushes it puts >=0.6          0.87  (forest 0.00)
+    #     stored-card checkout, median session score     54.0  (forest 0.8)
+    #
+    # That shape is not a tuning problem, it is what a one-class detector has
+    # to be here: it learns "normal" as the human distribution, and in this
+    # product the attack IS looking human, so the only thing it can be
+    # confident about is that an unusual human is unusual. Every blend that
+    # gives it weight loses -- RF 0.9 + IsoF 0.1 drops tpr@0.8 from 0.81 to
+    # 0.77 while raising the recorded person's out-of-fold session score from
+    # 45.7 to 51.1, and max(RF, IsoF) takes the legitimate-flush challenge
+    # rate to 0.38.
+    #
+    # It is also 44% of the scoring budget: compute_risk measured 31.7 ms with
+    # the decision_function call and 17.7 ms without it. The model is still
+    # trained and still stored in the bundle so the choice stays
+    # re-measurable, but nothing calls it per request, and test_scorer.py
     # booby-traps decision_function to keep it that way.
+    #
+    # WHAT WOULD CHANGE ANY OF THIS. Not a better ensemble -- more people. The
+    # deciding column is protocol R, and it has n=1 person, one machine, one
+    # 60 Hz monitor, one hand; that person is on the TRAINING side because
+    # with one person there is nobody to hold out. Twenty to thirty recorded
+    # people with several sessions each, split by person, would turn "the
+    # smoothed score is somewhere between 0.0 and 97.9 depending on which
+    # model you pick" into a rate with an interval on it, and that rate is
+    # what should choose the family. Devices matter as much as headcount: no
+    # trackpad, touch, pen or throttled session has ever been recorded, and
+    # the simulator's 0.70/0.20/0.10 refresh-rate mix is an assumption fitted
+    # to the only machine there is.
 
     # What this number is. A RandomForest's predict_proba is the mean over
     # trees of the bot fraction in the leaf each tree lands in: a ranking
     # score, not a calibrated P(fraud | behaviour). Nothing here recalibrates
     # it (no Platt or isotonic step), the class balance it learned is the
-    # training set's (simulated sessions and scripted lab runs), not any real
-    # traffic's fraud rate, and the Brier score of 0.056 above was measured on
-    # scripted browser-lab flushes. So
+    # training set's (simulated sessions, scripted lab runs and one recorded
+    # person), not any real traffic's fraud rate, and the Brier score of 0.026
+    # above was measured on those same rows. So
     # "Risk Score = 100 x P(fraud | behavior)" states the intent, not a
     # measured property. Two consequences, stated where they bite: the
     # 40/60/80 ladder and the conformal guard are thresholds on a ranking, and
@@ -1032,6 +1223,13 @@ def compute_risk(raw: dict) -> dict:
         "label": label,
         "measured_features": measured,
         "measured_mask": measured_mask,
+        # Whether anything about the GENERATOR was observed in this flush, as
+        # opposed to counts and neutral fallbacks. smooth_session_score()
+        # requires it before a single flush may override the session's
+        # history; see the note on LEVEL_SHIFT_POINTS.
+        "observed_structure": any(
+            raw_values.get(name) is not None for name in BUCKET_FEATURES
+        ),
         # True when too little was measured for the score to mean much. The
         # score is still returned and stored; this says how much weight it can
         # carry.
