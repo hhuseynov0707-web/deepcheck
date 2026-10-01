@@ -566,6 +566,11 @@ dizüstü bilgisayarda yaklaşık 20 saniye sürdü.
 
 ## Jüri önünde
 
+> Bu bölüm sentetik müşteri profili (hesap ele geçirme) gösterimidir. İki
+> bilgisayarlı canlı akış — bir ekip arkadaşının kendi bilgisayarından elle
+> ödemesi ve aynı bilgisayardan betikli bot saldırısı — `docs/canli-demo.md`
+> dosyasındadır.
+
 1. SOC panosu (`/dashboard`) ayrı bir sekmede açık tutulur.
 2. Demo sayfası **yeniden yüklenir**; her yükleme yeni bir oturumdur.
    "Demo Müşterisi" seçicisinden bir sentetik müşteri seçilir (ör. Ayşe).

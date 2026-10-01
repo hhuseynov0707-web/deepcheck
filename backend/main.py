@@ -701,7 +701,10 @@ def _require_demo_endpoints() -> None:
 # office puts many genuine users behind one address, and an IP limit there
 # would blind the detector for everyone. Minting is what is keyed by IP, so
 # the two compose -- an attacker needs a new session per 60 flushes and is
-# limited in how fast new sessions can be created.
+# limited in how fast new sessions can be created. "IP" is the address
+# _client_ip resolves: behind the bundled nginx proxy that is nginx's own
+# address for every browser, i.e. one shared minting bucket, unless
+# FORWARDED_ALLOW_IPS names the proxy (see _client_ip).
 # Read these as PER WORKER: with UVICORN_WORKERS=4 the aggregate ceiling is
 # four times each number, because a request lands on whichever worker accepts
 # it. Measured on the running stack (then at 4 workers): 30 consecutive mints
@@ -801,8 +804,22 @@ def _client_ip(request: Request) -> str:
 
     That header is attacker-controlled unless a trusted proxy is known to
     rewrite it, and honouring it blindly turns a per-IP limit into no limit
-    at all. Behind a real reverse proxy, configure uvicorn's --proxy-headers
-    with --forwarded-allow-ips so request.client is the resolved address.
+    at all. Trust is uvicorn's job, not this function's: its proxy-headers
+    middleware is on by default and replaces request.client with the
+    X-Forwarded-For address only when the connecting peer is listed in
+    FORWARDED_ALLOW_IPS (default 127.0.0.1).
+
+    In the bundled deployment every browser request arrives through the
+    frontend's nginx (/api/ is proxied, frontend/nginx.conf), so the peer is
+    the nginx container. Unless FORWARDED_ALLOW_IPS is set to that
+    container's address, this returns nginx's address for every visitor and
+    the per-IP minting limit is ONE bucket shared by all of them. nginx
+    overwrites X-Forwarded-For with the address it saw, so trusting it does
+    not let a client choose its own key. uvicorn 0.30.1 (the pinned version)
+    matches exact addresses only -- no CIDR -- and "*" must never be used: it
+    takes the leftmost entry, which the caller writes. On Docker Desktop the
+    address nginx sees may itself be a gateway for every LAN client; that has
+    not been checked.
     """
     return request.client.host if request.client else "unknown"
 
@@ -4116,6 +4133,66 @@ def _review_recomputation(
     }
 
 
+def _window_evidence(measured_mask: int | None) -> dict:
+    """What the decision gate would make of one stored window, for the SOC
+    panel.
+
+    `observed` is _observed_a_generator itself, not a re-derivation: the panel
+    counts these over the newest SPRT_MAX_FLUSHES rows to show the same
+    "n of MIN_FLUSHES_FOR_DECISION observed" that holds a decision at verify in
+    _decide_on_evidence. A NULL mask therefore reads as observed, exactly as the
+    gate reads it, and `measured_features` -- how many of the twelve features
+    the window measured -- is null for it: the column cannot say."""
+    return {
+        "observed": _observed_a_generator(measured_mask),
+        "measured_features": None if measured_mask is None else int(measured_mask).bit_count(),
+    }
+
+
+_LAST_DECISION_COLUMNS = (
+    DecisionAudit.action,
+    # The INTERNAL reason. The scored client is told public_reason instead
+    # (PUBLIC_REASONS); the SOC panel is where the real one is meant to be read.
+    DecisionAudit.reason,
+    DecisionAudit.public_reason,
+    DecisionAudit.decided_at,
+    DecisionAudit.risk_score,
+)
+
+
+async def _last_decision(db: AsyncSession, session_id: str) -> dict | None:
+    """The newest recorded decision for this session, or None.
+
+    The band beside the score is the PUBLISHED ladder entry, not what the server
+    did: a session in the block band can still be answered verify (too few
+    observed windows, the conformal guard), and the panel could not show that.
+    This reads it back from decision_audit -- any row, not only the ones with a
+    profile opinion that _profile_block reads.
+
+    A read and nothing else: persisting a "last decision" on the session would
+    put a write on the decision path, which T31 pins at the sequential-test
+    read alone with the layer off. The cost is that only what the audit already
+    records can be shown --
+    nothing while the layer is off (the table is the layer's, and like
+    _profile_block this reads none of it then), and with it on, no plain allow
+    that named no customer (_learn_and_audit returns before writing). The
+    dashboard says so rather than implying no decision was made.
+
+    Never the merchant, the profile id or the compared vector: those stay
+    behind the per-operator review credential (T34)."""
+    if not PROFILE_ENABLED:
+        return None
+    row = (
+        await db.execute(
+            select(*_LAST_DECISION_COLUMNS)
+            .where(DecisionAudit.session_id == session_id)
+            .order_by(DecisionAudit.decided_at.desc(), DecisionAudit.id.desc())
+            .limit(1)
+        )
+    ).first()
+    return None if row is None else _columns_as_dict(_LAST_DECISION_COLUMNS, row)
+
+
 @app.get("/api/score/{session_id}", dependencies=[Depends(require_dashboard_key)])
 async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
     session = await db.get(Session, session_id)
@@ -4145,6 +4222,8 @@ async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
         # A session driven by demo_seed.py --simulate ("Sentetik demo verisi").
         "is_synthetic": bool(getattr(session, "is_synthetic", False)),
         "profile": await _profile_block(db, session_id),
+        # Always present, null when nothing was recorded; see _last_decision.
+        "last_decision": await _last_decision(db, session_id),
         "history": [
             {
                 "timestamp": row.created_at,
@@ -4152,6 +4231,8 @@ async def get_score(session_id: str, db: AsyncSession = Depends(get_db)):
                 **{name: getattr(row, name) for name in FEATURE_NAMES},
                 # Recorded, not scored -- see ClientSignals.
                 "client_signals": row.client_signals or {},
+                # getattr: the test suites' stub rows predate the column.
+                **_window_evidence(getattr(row, "measured_mask", None)),
             }
             for row in history
         ],

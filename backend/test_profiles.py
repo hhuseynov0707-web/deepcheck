@@ -4083,6 +4083,127 @@ def test_score_endpoint_profile_block_is_uniform_and_minimal(api):
     assert unauthenticated.status_code == 401
 
 
+_LAST_DECISION_KEYS = {"action", "reason", "public_reason", "decided_at", "risk_score"}
+
+
+def test_score_endpoint_reports_the_last_recorded_decision(api, monkeypatch):
+    """T34b. The band printed beside a score is the PUBLISHED ladder entry, not
+    what the server did, so /api/score also carries `last_decision`: the newest
+    decision_audit row for the session whatever its profile state, with the
+    internal reason the scored client was never told. The key is on every
+    answer and null when nothing was recorded -- with the layer off nothing is
+    even read. Reading it writes nothing (the decision path stays as T31 pins
+    it, because nothing new is stored there) and leaks nothing T34 forbids."""
+    main = api.main
+    ts = _scorer_tests()
+    # Calibration humans far below 95, so the conformal guard keeps a block a
+    # block (as in T9).
+    monkeypatch.setattr(main.scorer, "_bundle", SimpleNamespace(human_calibration=[3.0 + i * 0.3 for i in range(30)]))
+    tables = _ProfileTables()
+    pid = _seed_profile(tables)
+    texts = []
+
+    api.configure(layer=False)
+    db = _dashboard_db(api, tables)
+    response = _score(api, db, "kapali")
+    assert "last_decision" in response.json() and response.json()["last_decision"] is None
+    # Not one statement against the layer's tables (the history read is the
+    # stub's behavior_data entry).
+    assert [s for s in db.tables.statements if s[1] in _PROFILE_TABLES] == []
+    texts.append(response.text)
+
+    api.configure(escalation=True)
+    response = _score(api, _dashboard_db(api, tables), "kararsiz")
+    assert "last_decision" in response.json() and response.json()["last_decision"] is None
+
+    # A profile escalation: verify, told to the client as step_up.
+    session_id = str(uuid.uuid4())
+    told = _post_decision(api, _customer_session(api, tables, session_id), session_id).json()
+    assert (told["action"], told["reason"]) == ("verify", "step_up")
+    db = _dashboard_db(api, tables)
+    already = len(tables.statements)
+    response = _score(api, db, session_id)
+    decision = response.json()["last_decision"]
+    assert set(decision) == _LAST_DECISION_KEYS
+    assert (decision["action"], decision["reason"], decision["public_reason"]) == (
+        "verify",
+        "profile_deviation",
+        "step_up",
+    )
+    assert decision["risk_score"] == 12.0 and decision["decided_at"]
+    # A read: only SELECTs reached the tables, nothing was added or committed.
+    assert {kind for kind, _ in tables.statements[already:]} == {"select"}
+    assert db.added == [] and db.committed is False
+    texts.append(response.text)
+
+    # Then the same session is blocked with no customer named. Its audit row
+    # carries no profile opinion; `last_decision` follows it anyway, while the
+    # profile block keeps showing the newest row that had one.
+    blocked = api.db(session=ts._stub_session(95.0, "Bot Tespit Edildi"), tables=tables)
+    told = _post_decision(api, blocked, session_id, ref=None).json()
+    assert (told["action"], told["reason"]) == ("block", "score")
+    response = _score(api, _dashboard_db(api, tables), session_id)
+    decision = response.json()["last_decision"]
+    assert (decision["action"], decision["reason"], decision["public_reason"]) == ("block", "score", "score")
+    assert decision["risk_score"] == 95.0
+    assert response.json()["profile"]["escalated"] is True
+    texts.append(response.text)
+
+    for text in texts:
+        for leaked in (pid, pid[:12], _REF, "acme", "customer_ref", "profile_id", "vec"):
+            assert leaked not in text, f"/api/score '{leaked}' iceriyor"
+
+
+def test_score_history_rows_carry_the_decision_gates_evidence(api):
+    """The SOC panel's "Degerlendiriliyor (n/3)" has to count observed windows
+    exactly as the decision gate does (main._decide_on_evidence), so every
+    history row carries the gate's own verdict -- main._observed_a_generator on
+    the row's measured_mask -- and how many features the window measured.
+    A NULL mask, or a stub row from before the column, is observed for the gate
+    and has no count."""
+    main = api.main
+    structural = main._structural_bits()
+    marginal_only = _ALL_MEASURED & ~structural
+    one_structural = structural & -structural
+    now = datetime.now(timezone.utc)
+
+    def window(seconds, **mask):
+        return SimpleNamespace(
+            created_at=now + timedelta(seconds=seconds),
+            risk_score=40.0,
+            client_signals={},
+            **{name: 0.5 for name in FEATURE_NAMES},
+            **mask,
+        )
+
+    chronological = [
+        window(0, measured_mask=marginal_only),
+        window(2, measured_mask=_ALL_MEASURED),
+        window(4, measured_mask=None),
+        window(6),
+        window(8, measured_mask=one_structural),
+    ]
+    ts = _scorer_tests()
+    session = ts._stub_session(40.0, "Şüpheli")
+    session.created_at = now
+    # test_scorer's stub, whose history read returns these rows; the layer is
+    # off, so nothing else is read. The endpoint reads newest first and flips
+    # the rows back for the chart.
+    api.configure(layer=False)
+    db = ts._StubDB(session=session, history=list(reversed(chronological)))
+    rows = _score(api, db, "pencereler").json()["history"]
+
+    assert [(row["observed"], row["measured_features"]) for row in rows] == [
+        (False, len(FEATURE_NAMES) - len(main.scorer.BUCKET_FEATURES)),
+        (True, len(FEATURE_NAMES)),
+        (True, None),
+        (True, None),
+        (True, 1),
+    ]
+    for row, source in zip(rows, chronological):
+        assert row["observed"] is main._observed_a_generator(getattr(source, "measured_mask", None))
+
+
 def test_review_endpoint_needs_its_own_credential(api, monkeypatch, caplog):
     """T33. The review surface returns the vectors a decision was made on, so
     it takes a per-operator credential: the shared dashboard key is refused,
@@ -4601,3 +4722,40 @@ def test_frontend_profile_labels_match_the_backend():
     names = re.search(r"^const FEATURE_NAMES = \[(.*?)^\];", demo_test, re.MULTILINE | re.DOTALL)
     assert names, "FEATURE_NAMES is missing from Demo.test.jsx"
     assert re.findall(r'"([a-z_]+)"', names.group(1)) == list(FEATURE_NAMES)
+
+
+def test_dashboard_decision_copies_match_the_backend():
+    """The SOC panel's "Son kaydedilen karar" line and its "Degerlendiriliyor (n/3)" state
+    carry copies of backend names and numbers: /api/score ships reason and
+    action codes, not sentences, and the panel mirrors the decision gate rather
+    than asking the server for it on every poll. Each copy is pinned here, so a
+    new reason or a moved gate fails a test instead of shipping a raw code on
+    the projector, or a panel that calls a session decidable while the server
+    still holds it at verify."""
+    import os
+    import re
+
+    main = _main()
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "frontend", "src", "pages", "Dashboard.jsx"), encoding="utf-8") as fh:
+        dashboard = fh.read()
+
+    def constant(name):
+        match = re.search(rf"^export const {name} = (\d+);", dashboard, re.MULTILINE)
+        assert match, f"{name} is missing from Dashboard.jsx"
+        return int(match.group(1))
+
+    # main._decide_on_evidence: the newest SPRT_MAX_FLUSHES windows, of which
+    # MIN_FLUSHES_FOR_DECISION must have observed a generator.
+    assert constant("MIN_OBSERVED_WINDOWS") == main.MIN_FLUSHES_FOR_DECISION
+    assert constant("DECISION_WINDOW") == main.SPRT_MAX_FLUSHES
+
+    def object_keys(name):
+        block = re.search(rf"^export const {name} = \{{(.*?)^\}};", dashboard, re.MULTILINE | re.DOTALL)
+        assert block, f"{name} is missing from Dashboard.jsx"
+        return re.findall(r"^\s*([a-z_]+):", block.group(1), re.MULTILINE)
+
+    assert sorted(object_keys("DECISION_ACTION_LABELS")) == sorted(action for _, action in main.ACTION_LADDER)
+    # Every reason a decision can record, internal and public alike.
+    assert sorted(object_keys("DECISION_REASON_LABELS")) == sorted(main.REASON_MESSAGES)
+    assert set(main.PUBLIC_REASONS.values()) <= set(main.REASON_MESSAGES)

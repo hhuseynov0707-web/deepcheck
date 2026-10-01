@@ -12,12 +12,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deepcheck}
       POSTGRES_DB: ${POSTGRES_DB:-deepcheck}
     # Bound to loopback, not 0.0.0.0 -- and deliberately NOT governed by
-    # BIND_ADDR below. Published on every interface with the development
-    # credentials above, this hands anyone who can reach the host read and
-    # write access to session scores and behavioral evidence -- which is the
-    # input to the charge decision. The backend reaches the database over the
-    # compose network and does not need this mapping at all; it is kept on
-    # localhost only so `psql` and record_session.py work from the host.
+    # BIND_ADDR or API_BIND_ADDR below. Published on every interface with the
+    # development credentials above, this hands anyone who can reach the host
+    # read and write access to session scores and behavioral evidence --
+    # which is the input to the charge decision. The backend reaches the
+    # database over the compose network and does not need this mapping at
+    # all; it is kept on localhost only so `psql` and record_session.py work
+    # from the host.
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -78,16 +79,33 @@ services:
       PROFILE_ESCALATION:
       PROFILE_REVIEW_KEYS:
       UVICORN_WORKERS:
-    # Loopback by default, like the database. DEBUG defaults to 1 so that
-    # `docker-compose up` works with no configuration, and DEBUG=1 means the
-    # published development secrets are in force -- session tokens anyone can
-    # forge and a dashboard key anyone can read. Those two defaults are only
-    # safe together if the port is not reachable from the network, so by
-    # default it is not. BIND_ADDR=0.0.0.0 exposes it, for a demo on a phone
-    # over the LAN; set DEBUG=0 with real secrets first. .env.example lists
-    # every step.
+      # Read by uvicorn itself, not by main.py: the peer addresses it trusts
+      # to name the real client in X-Forwarded-For. Unset, uvicorn trusts
+      # 127.0.0.1 only, and every browser that comes through the frontend's
+      # /api/ proxy reaches the backend from the nginx container's address --
+      # so the per-IP session-minting limit is one bucket shared by every
+      # visitor. Setting it to that container's address restores per-visitor
+      # keying. Exact addresses only (uvicorn 0.30.1 has no CIDR support), and
+      # never "*", which believes whatever the caller writes. Not pinned here,
+      # because pinning the proxy's address means pinning a compose subnet,
+      # and a subnet that collides with another Docker network on the
+      # presenter's laptop stops `up` with "Pool overlaps". See _client_ip in
+      # backend/main.py and .env.example.
+      FORWARDED_ALLOW_IPS:
+    # Loopback by default, like the database, and NOT opened by BIND_ADDR any
+    # more. Browsers reach the API through the frontend's nginx on port 3000
+    # (same origin, frontend/nginx.conf), so a LAN demo needs only 3000 on the
+    # network. DEBUG defaults to 1 so that `docker-compose up` works with no
+    # configuration, and DEBUG=1 means the published development secrets are
+    # in force -- session tokens anyone can forge and a dashboard key anyone
+    # can read; the less of this that is reachable, the better.
+    #
+    # API_BIND_ADDR=0.0.0.0 publishes 8000 itself, for the two cases that
+    # still talk to it directly from another machine: a bundle built with a
+    # cross-origin VITE_API_URL, and the lab harness (lab/bot_lab.py --api).
+    # Set DEBUG=0 with real secrets first. .env.example lists every step.
     ports:
-      - "${BIND_ADDR:-127.0.0.1}:8000:8000"
+      - "${API_BIND_ADDR:-127.0.0.1}:8000:8000"
     volumes:
       - ./backend:/app
       # The real-browser telemetry the model trains on. Without this the
@@ -127,18 +145,26 @@ services:
       # it into the dashboard instead.
       #
       # VITE_API_URL is the address the VISITOR'S browser uses to reach the
-      # backend, not the one this container uses. "localhost" in it means the
-      # visitor's own device, so a phone given the default bundle talks to
-      # itself. A LAN demo needs http://<LAN-IP>:8000 here and a rebuild.
+      # backend, not the one this container uses. Empty, the default, means
+      # same origin: the browser calls /api/... on the address it loaded the
+      # page from, and this image's nginx forwards it to the backend. Nothing
+      # about the network is compiled in, so a LAN demo needs no rebuild when
+      # the address changes. Setting it (http://<host>:8000) points every
+      # visitor at an API on a different origin; that also needs
+      # API_BIND_ADDR and CORS_ORIGINS. `:-` here and an empty ARG default in
+      # the Dockerfile, so unset and empty both build the same-origin bundle.
+      # The old default, http://localhost:8000, made a second laptop or a
+      # phone talk to itself.
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_API_URL: ${VITE_API_URL:-}
         VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
     container_name: deepcheck-frontend
     restart: unless-stopped
     # Loopback by default for the same reason: the demo page ships the step-up
-    # code and talks to an API running in development mode. BIND_ADDR opens
-    # it together with the backend; one without the other is a page that
-    # cannot reach its API.
+    # code and talks to an API running in development mode. BIND_ADDR=0.0.0.0
+    # opens this one port to the network, and with it the page AND the API,
+    # since /api/ is proxied from here (frontend/nginx.conf). Set DEBUG=0 with
+    # real secrets first: everything under /api/ is reachable through it.
     ports:
       - "${BIND_ADDR:-127.0.0.1}:3000:3000"
     depends_on:

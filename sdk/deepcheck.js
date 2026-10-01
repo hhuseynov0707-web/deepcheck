@@ -4,13 +4,22 @@
  *   <script src="/deepcheck.js"></script>
  *   <script>
  *     DeepCheck.init({
- *       apiUrl: "http://localhost:8000",
+ *       apiUrl: "",              // same origin: POST /api/... on this page's host
  *       intervalMs: 2000,
  *       onUpdate: (result) => console.log(result),
  *     });
  *     // Before asking the server for a decision (resolves, never rejects):
  *     DeepCheck.flush().then(askServerForDecision);
  *   </script>
+ *
+ * apiUrl is the address the VISITOR'S browser uses to reach the API. An empty
+ * string means the page's own origin, for a site that serves /api/ itself or
+ * through a reverse proxy, as the bundled demo does (frontend/nginx.conf). Any
+ * other value is an absolute base such as "https://api.example.com", and the
+ * API must then allow this page's origin in CORS_ORIGINS. Trailing slashes are
+ * dropped. Omitting apiUrl altogether keeps the old default,
+ * "http://localhost:8000" -- which only works when the browser runs on the
+ * same machine as the API.
  *
  * The session id is minted by the server (POST /api/session) together with a
  * signed token, and every flush carries that token in X-DeepCheck-Token. The
@@ -762,6 +771,14 @@
   function init(options) {
     if (started) return;
     config = { ...config, ...(options || {}) };
+    // Every request is `${config.apiUrl}/api/...`. A trailing slash would make
+    // that "//api/..." -- with "/" alone a protocol-relative URL naming a host
+    // called "api" -- so trailing slashes are dropped. An explicit
+    // `apiUrl: undefined` or null would make it the relative path
+    // "undefined/api/..."; it means the same-origin "" instead.
+    config.apiUrl = String(config.apiUrl == null ? "" : config.apiUrl)
+      .trim()
+      .replace(/\/+$/, "");
     state = createState();
     started = true;
 

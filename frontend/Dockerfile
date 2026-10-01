@@ -30,10 +30,16 @@ COPY sdk/ /app/sdk/
 # imports it at build time from ../docs, as in local development.
 COPY docs/kvkk-aydinlatma.md /app/docs/kvkk-aydinlatma.md
 
-# Vite inlines import.meta.env at BUILD time, so the API URL has to be known
-# here rather than at container start. docker-compose passes it as a build
-# arg; change it and rebuild to point the bundle at a different backend.
-ARG VITE_API_URL=http://localhost:8000
+# Vite inlines import.meta.env at BUILD time, so whatever VITE_API_URL holds
+# here is what every visitor's browser gets. EMPTY, the default, means same
+# origin: the page calls /api/... on the address it was loaded from and the
+# nginx stage below forwards that to the backend (nginx.conf,
+# src/apiBase.js). One image then works at localhost, at a LAN address and at
+# a new address after the venue's DHCP moves the laptop, with no rebuild. Set
+# it only to point the bundle at an API on a DIFFERENT origin -- then rebuild,
+# and see API_BIND_ADDR and CORS_ORIGINS in .env.example. The default used to
+# be http://localhost:8000, which in a second laptop's browser is that laptop.
+ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
 ARG VITE_DEMO_VERIFY_CODE=482913
 ENV VITE_DEMO_VERIFY_CODE=$VITE_DEMO_VERIFY_CODE
@@ -44,6 +50,9 @@ RUN npm run build
 FROM nginx:1.27-alpine
 
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+# Included by nginx.conf from each location that sets its own headers. Not in
+# conf.d/, whose *.conf files nginx loads on their own at http level.
+COPY frontend/nginx-security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 
 EXPOSE 3000

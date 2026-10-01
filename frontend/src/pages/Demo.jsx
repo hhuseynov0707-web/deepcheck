@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 
+import { API_URL } from "../apiBase.js";
 import CardTypeIcon from "../components/CardTypeIcon.jsx";
 import DecisionLadder from "../components/DecisionLadder.jsx";
 import LiveScorePanel from "../components/LiveScorePanel.jsx";
@@ -23,7 +24,6 @@ import {
 import { SYNTHETIC_DEMO_CUSTOMERS, syntheticCustomerLabel } from "../demoCustomers.js";
 import { detectCardType, formatCardNumber, formatCvv, formatExpiry } from "../utils/cardFormat.js";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 // Shown inside the step-up modal so the demo code reads as a deliberate demo
 // value. Must match the backend's DEMO_VERIFY_CODE (both come from .env).
 const DEMO_VERIFY_CODE = import.meta.env.VITE_DEMO_VERIFY_CODE || "482913";
@@ -583,7 +583,9 @@ export default function Demo() {
                 The analyst view keeps the figure, labelled for what it is. */}
 
             {/* This used to claim "256-bit SSL" on a page served over plain
-                http://localhost. What is stated instead holds for this code:
+                http -- http://localhost, or http://<LAN-IP>:3000 when a
+                second laptop opens the demo. What is stated instead holds
+                for this code:
                 the charge request carries only session_id, amount and the
                 demo customer reference -- never a card field -- and the SDK
                 records keydown timestamps, never key values. */}

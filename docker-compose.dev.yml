@@ -12,7 +12,12 @@ services:
       # Stop at the Node stage; nginx is not wanted here.
       target: build
     environment:
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      # Same origin by default, as in the built image: the page calls
+      # /api/... on the dev server, and Vite's proxy (vite.config.js) forwards
+      # it. Inside this container "localhost" is the container itself, so the
+      # proxy target is the backend's compose service name instead.
+      VITE_API_URL: ${VITE_API_URL:-}
+      DEV_API_PROXY: http://backend:8000
       VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
     volumes:
       - ./frontend:/app/frontend

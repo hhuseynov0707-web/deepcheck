@@ -180,6 +180,9 @@ describe("Demo", () => {
     await act(async () => finishFlush());
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(fetchMock.mock.calls[0][0]).toMatch(/\/api\/demo\/charge$/);
+    // Same origin by default (apiBase.js): no host is compiled in, so a second
+    // laptop's browser asks the server it loaded the page from.
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/demo/charge");
     expect(await screen.findByText(/başarıyla alındı/)).toBeInTheDocument();
   });
 

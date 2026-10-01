@@ -56,6 +56,41 @@ stored against the ones it extracts locally from the same raw payload, so it
 needs the backend's `DASHBOARD_KEY` (`--dashboard-key`, or the environment
 variable). `--no-verify` skips that check and the `backend/` import with it.
 
+## The stage bot (`live_bot.py`)
+
+Not part of the measurement ladder: the scripted attacker for the live jury
+demo (`docs/canli-demo.md`). It needs only the Python standard library, so it
+runs from a plain Windows `cmd` on the teammate's laptop, copied to the
+Desktop:
+
+```bat
+cd %USERPROFILE%\Desktop
+python live_bot.py --url http://<presenter-laptop-IP>:3000
+```
+
+(`py live_bot.py ...` where python.org was installed without "Add python.exe
+to PATH".) Exit codes: 0 not charged, 1 charged, 2 setup or network error (no
+result), 130 Ctrl+C.
+
+It speaks the SDK's protocol itself (session, proof of work, attest), posts a
+scripted form fill in the SDK's flush format, then asks `/api/demo/charge` for
+the payment. Its timeline is an almost exact copy of the model's own training
+"bot" generator (`train_model.py`: `_background_motion` + `_phase_bot`), so the
+model saw this behaviour in training, and how many real card-testing bots
+behave like it has not been measured. It is the easy case on purpose:
+
+- offline, with the host bundle `backend/model-sklearn1.8.0.pkl` (trained
+  2026-09-25): 200/200 blocked, lowest session score 93.2, median 94.8;
+- live, against the stack serving `backend/model-sklearn1.5.0.pkl` (the
+  scikit-learn 1.5.0 build of the same training): 20/20 blocked at
+  `http://localhost:8000` (2026-10-01), and 3 later runs through the nginx
+  proxy at `:3000` and via cmd.exe, also blocked;
+- the same timeline without the mousemove stream, 6 pointer-less settings x 20
+  runs offline with the host bundle: approved in 111 of 120.
+
+Its docstring and the runbook say so; do not present it as evidence about real
+or clever bots.
+
 ## The ladder
 
 | id | scenario | what it does |

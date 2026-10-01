@@ -94,6 +94,21 @@ export default function RiskChart({ history = [], height: fixedHeight }) {
 
   const hasData = data.length > 0;
 
+  // Stop D3's transitions when the SVG goes away. Under the SOC panel's live
+  // follow the chart unmounts on every switch to a new session, and D3 kept
+  // animating the detached nodes for TRANSITION_MS -- frames for a chart nobody
+  // can see. The node is captured here because React clears the ref before
+  // this cleanup runs. `hasData` because the SVG only exists while it is true.
+  useEffect(() => {
+    const node = svgRef.current;
+    if (!node) return undefined;
+    return () => {
+      const svg = d3.select(node);
+      svg.interrupt();
+      svg.selectAll("*").interrupt();
+    };
+  }, [hasData]);
+
   // Build the static skeleton once (or when the chart is resized). `hasData` is
   // a dependency because the SVG is not in the DOM at all while the session has
   // no history: without it the first history to arrive found a skeleton built

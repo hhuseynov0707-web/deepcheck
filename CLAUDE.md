@@ -54,16 +54,18 @@ deepcheck-mvp/
 │   ├── record_session.py      # Etiketlənmiş real sessionu data/real/-a yazır
 │   ├── evaluate.py            # O sessionları real scoring yolundan keçirir
 │   ├── test_scorer.py         # 71 test — skor, auth, ladder, token, ardıcıl qayda
-│   ├── test_profiles.py       # 97 test — profil statistikası, endpointlər, retention
+│   ├── test_profiles.py       # 100 test — profil statistikası, endpointlər, retention
 │   └── test_demo.py           # 18 test — sentetik demo müştəriləri və etiketlənməsi
 ├── frontend/
 │   ├── Dockerfile
-│   ├── nginx.conf             # access_log off
+│   ├── nginx.conf             # access_log off; /api/ → backend (eyni origin)
+│   ├── nginx-security-headers.conf  # hər location-a daxil edilən 3 təhlükəsizlik başlığı
 │   ├── package.json
 │   ├── vite.config.js
 │   └── src/
 │       ├── main.jsx
 │       ├── App.jsx
+│       ├── apiBase.js         # API ünvanı: boş = eyni origin (nginx /api/-ni ötürür)
 │       ├── demoCustomers.js   # Sentetik demo müştərilərinin siyahısı
 │       ├── pages/
 │       │   ├── Demo.jsx       # Ödəmə formu demo səhifəsi
@@ -78,12 +80,14 @@ deepcheck-mvp/
 │           └── SyntheticBadge.jsx # "Sentetik demo verisi" nişanı
 ├── lab/
 │   ├── capture.py             # Real Chromium-u real SDK ilə sürür, telemetri yazır
-│   └── bot_lab.py             # Adversarial ssenarilər
+│   ├── bot_lab.py             # Adversarial ssenarilər
+│   └── live_bot.py            # Səhnə botu: parametrləri təlimdəki «bot» generatorundan; cmd-dən, yalnız Python
 ├── data/real/                 # Real insan qeydləri — 1 şəxs, 1 sessiya (p01, 2026-09-25)
 └── docs/
     ├── evaluation.md          # Brauzer laboratoriyası ölçmələri
     ├── profile-evaluation.md  # Profil qatı (profile_lab.py generasiya edir)
     ├── juri-cevaplari.md      # Münsiflər üçün türkcə cavablar
+    ├── canli-demo.md          # İki kompüterli canlı demo runbook-u: insan ödənişi + bot
     ├── rapor-duzeltmeleri.md  # Ön-qiymətləndirmə raportundakı iddiaların düzəlişi
     ├── kvkk-aydinlatma.md     # Aydınlatma metni (/kvkk səhifəsi bunu oxuyur)
     ├── dpia.md                # DPIA — pilot üçün ÖN ŞƏRT
@@ -153,7 +157,10 @@ Endpointlər (cəmi 13):
 - `GET /api/profile/review/{session_id}` → mübahisəli qərarın insan tərəfindən
   yoxlanması. **Operator başına** ayrı açar (`PROFILE_REVIEW_KEYS`), hər oxuma
   `profile_access_audit`-ə yazılır
-- `GET /api/score/{session_id}` → session tarixçəsi (`X-Dashboard-Key`)
+- `GET /api/score/{session_id}` → session tarixçəsi (`X-Dashboard-Key`). Hər
+  pəncərədə `observed` (qərar qapısının saydığı "müşahidə edilmiş") və
+  `measured_features`; yuxarıda `last_decision` — `decision_audit`-in ən yeni
+  sətri, **yalnız oxunur** (sətir yalnız profil qatı açıq olanda yazılır)
 - `GET /api/sessions` → bütün sessionlar (dashboard üçün, `X-Dashboard-Key`)
 - `GET /api/health` → sistem sağlamlığı
 
@@ -378,6 +385,16 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
 - Simulyasiya edilmiş sessiyalarda **"Sentetik demo verisi"** nişanı; metrik
   kartları onları saymır və neçəsini kənarda saxladığını yazır
 - Hər 3 saniyədə auto-refresh
+- **Canlı takip** (default açıq): ən son *başlayan* sessiyaya (created_at) avtomatik
+  keçir; kartı əllə seçmək onu söndürür. Yeni sessiyada "Yeni" nişanı
+- 3-dən az müşahidə edilmiş pəncərəsi olan sessiya **"Değerlendiriliyor"** göstərir
+  (serverin qərar qapısı ilə eyni qayda), real insan ilk saniyələrdə qırmızı görünməsin
+- **"Son kaydedilen karar"**: `decision_audit`-in ən yeni sətri (`last_decision`), bant
+  etiketi deyil. Yalnız profil qatı açıq olanda yazılır; müştəri referansı olmayan
+  `allow` yazılmır. Telemetrinin vəziyyətini bildirən `verify` (az pəncərə,
+  köhnəlmiş, naməlum sessiya) **"Karar ertelendi"** kimi göstərilir, step-up kimi yox
+- **"Görünümü sıfırla"**: köhnə sessiyaları yalnız görünüşdən gizlədir, heç nə silmir.
+  Sıfırlamadan sonra yenidən aktivləşən köhnə sessiya ~12 s sonra geri qayıdır
 
 ---
 
@@ -428,6 +445,27 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
 > **təsadüfi aralıqlı** keydown-larla yazan, pointer-siz skript 120-dən
 > 119-da tahsil edilir — köhnə qaydada da eyni. Bu modelin boşluğudur, bu
 > layihə onu bağladığını iddia etmir
+>
+> **2026-10-01 ölçməsi (2026-09-25 təlimi, iki build):** çevrimdışı rəqəmlər
+> **host bundle-ı** `backend/model-sklearn1.8.0.pkl` (host sklearn 1.8.0) ilə,
+> canlı rəqəmlər konteynerin xidmət etdiyi `backend/model-sklearn1.5.0.pkl`
+> (eyni təlimin sklearn 1.5.0 build-i) ilə ölçülüb. Boşluq təsadüfi aralıqla
+> məhdud deyil. Pointer-i **heç tərpətməyən**, yalnız klik + 1–4 ms aralıqlı
+> keydown göndərən avtomatlaşdırma (6 ayar × 20, çevrimdışı) 120-dən **111-də
+> onaylanır** (9 qətiləşmir; ayar başına median sessiya skoru 2,5–21), real
+> Chromium-da pointer-siz yazan skript canlı serverdə 2/2 onaylanıb. Eyni zaman
+> xətti ~80 ms-lik nöqtəli pointer axını ilə birlikdə isə çevrimdışı 200/200
+> (ən aşağı skor 93,2, median 94,8), canlı 20/20 (`:8000`, qərar anında
+> 94,3–95,8) və nginx `:3000` / cmd.exe üzərindən daha 3/3 bloklanır. Səhnə
+> botu (`lab/live_bot.py`) budur: parametrləri modelin təlimdəki «bot»
+> generatorundan götürülüb (`_background_motion` + `_phase_bot`: 80±10 ms addım,
+> klikdən sonra 150±8 ms, headless variantın 1–4 ms düymə aralığı); pəncərə
+> tərkibi fərqlidir (davamlı pointer axını, 2 s-dən bir klik, scroll yox) —
+> model bu parametrlərlə yaradılmış davranışı təlimdə görüb. Real kart-sınayan botların nə qədərinin belə
+> davrandığı **ölçülməyib**; bot **asan hal** kimi təqdim olunur (docstring,
+> `docs/canli-demo.md`). Deck-in 12-ci slaydındakı "Naif headless betik →
+> Doğrula %100" köhnə (2026-09-07) modeldə ölçülüb; indiki modeldə yenidən
+> ölçülməyib
 
 > **Skorlanan tərəfə deyilən səbəb.** `cluster`, `sequential`, `conformal`,
 > `profile_deviation` və `profile_rate_limited` daxili səbəbləri müştəriyə
@@ -472,7 +510,11 @@ yalnız canlı nümayiş üçündür.
 3. SHAP explanation hər `/api/analyze` cavabında **artıq qaytarılmır**. `/api/analyze` skorlanan tərəfə cavab verir və onu məhkum edən üç xüsusiyyəti adlandırmaq hücumçuya köklənmə siqnalı verir: göndər, səbəbi oxu, dəyiş, təkrarla. Bu, canlı detektora qarşı nəzarətli optimallaşdırma döngüsüdür və adversarial sınaqda məhz bundan istifadə edilib. İzah hər sətirdə saxlanılır və SOC panosu onu `GET /api/score/{id}`-dən (`X-Dashboard-Key` arxasında) oxuyur. Yalnız canlı nümayiş üçün `SHAP_IN_ANALYZE=1`
 4. Docker Compose ilə `docker-compose up --build` əmri ilə hər şey işləməlidir
 5. `train_model.py` ilk öncə run edilməlidir — `model.pkl` yaranır
-6. Frontend `http://localhost:3000`, backend `http://localhost:8000` portunda işləyir
+6. Frontend `http://localhost:3000`, backend `http://localhost:8000` portunda işləyir.
+   Brauzer API-yə **eyni origin**-dən, `:3000/api/...` ilə çatır (nginx ötürür), ona
+   görə bundle-a heç bir IP yazılmır. `BIND_ADDR=0.0.0.0` yalnız 3000-i şəbəkəyə açır;
+   8000 `API_BIND_ADDR` ilə idarə olunur və default loopback-dir. İki kompüterli
+   münsif demosu: `docs/canli-demo.md`
 7. **Ölçülməyən heç bir rəqəm yazılmır.** Hər rəqəmin yanında nəyin üzərində
    ölçüldüyü durmalıdır. Sentetik data ilə ölçülmüş hər "yanlış çağırış"
    nisbəti **aşağı hədd**dir: sintetik insan real insandan daha öz-özünə
@@ -505,7 +547,7 @@ cd backend && DEEPCHECK_SECRET=... DASHBOARD_KEY=... DEBUG=0 python -m pytest -q
 cd frontend && npm test && npm run build
 ```
 
-186 backend testi, 60 frontend testi (2026-09-26).
+189 backend testi, 93 frontend testi (2026-10-01).
 
 ### Münsiflər üçün sentetik demo
 
