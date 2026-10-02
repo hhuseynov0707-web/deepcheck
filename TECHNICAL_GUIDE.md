@@ -47,30 +47,36 @@ a score. §18 and §19.
 ## 2. System overview
 
 ```
- Browser (customer)                     Backend (FastAPI, Python 3.11)          SOC Dashboard (React)
+ Browser (payer)                        Core backend (FastAPI, Python 3.11)     SOC (apps/soc + soc-api)
  +----------------------+   POST every 2 s   +--------------------------+   GET every 3 s   +------------------+
- | payment page         | -----------------> | /api/analyze             | <---------------- | /api/sessions    |
- | + sdk/deepcheck.js   |  raw telemetry     |  validate -> features -> |                   | /api/score/{id}  |
- |   (mouse, click,     | <----------------- |  Random Forest --------->|                   |  table, D3 chart,|
- |    scroll, keydown,  |  score + label     |  SHAP -> smooth -> store |                   |  SHAP bars,      |
- |    focus timestamps) |  (SHAP: SOC only)  +------------+-------------+                   |  profile card    |
+ | store checkout page  | -----------------> | /api/analyze             | <---------------- | /api/sessions    |
+ | + sdk/deepcheck.js   |  raw telemetry     |  validate -> features -> |  via soc-api,     | /api/score/{id}  |
+ |   (mouse, click,     | <----------------- |  Random Forest --------->|  X-Dashboard-Key  |  table, D3 chart,|
+ |    scroll, keydown,  |  ack only on the   |  SHAP -> smooth -> store |                   |  SHAP bars,      |
+ |    focus timestamps) |  store (no score)  +------------+-------------+                   |  profile card    |
  +----------------------+                                 |                                 +------------------+
                                                           v
                                               PostgreSQL 16 (sessions, behavior_data,
                                                           ^    + 4 profile tables)
  Merchant backend  ---- POST /api/decision ---------------'
- (it knows who the customer is)   + X-Merchant-Id / X-Merchant-Key
+ (the store: checkout-api)        + X-Merchant-Id / X-Merchant-Key
                                   + customer_ref -> per-customer profile (off by default)
 ```
 
-Everything runs from one `docker-compose up --build`: three containers,
-database, backend, frontend. The backend trains the model on first start if
-no model file exists.
+Everything runs from one `docker-compose up --build`: six containers -- the
+database, the core (`backend`), and two apps that each have a page and a
+server: the store (`checkout-web` on :3000, `checkout-api`) and the SOC
+(`soc-web` on :3100, `soc-api`). Design: `docs/architecture-two-apps.md`. The
+legacy single-page frontend that used to run beside them on :3200 was deleted
+on 2026-10-02, with `docker-compose.dev.yml`. The backend trains the model on
+first start if no model file exists.
 
 Two paths, and they answer different questions. `/api/analyze` scores the
-**behaviour** of whoever is on the page and is for display; `/api/decision` is
-the only enforcement point, and it is called by the merchant's server, never by
-the browser. The per-customer profile layer (§18, §19) hangs off that second
+**behaviour** of whoever is on the page and stores it for the SOC; on the store
+its reply to the browser is an acknowledgement only (`X-DeepCheck-Reply: ack`,
+added by the store's nginx), so the payer never sees a score. `/api/decision`
+is the only enforcement point, and it is called by the merchant's server, never
+by the browser. The per-customer profile layer (§18, §19) hangs off that second
 path alone: it needs a merchant credential and a customer reference, and it
 ships off.
 
@@ -97,12 +103,13 @@ ships off.
 | `backend/test_profiles.py` | The profile statistic, the endpoints, retention and the decision wiring. |
 | `backend/test_demo.py` | The synthetic demo customers and the labelling that keeps them out of measurements. |
 | `backend/entrypoint.sh` | Trains if needed, then starts uvicorn (2 workers by default). |
-| `frontend/src/pages/Demo.jsx` | Turkish payment form with the SDK embedded and a live risk badge. |
-| `frontend/src/pages/Dashboard.jsx` | SOC view: session table, D3 risk history, SHAP bars, the profile card. |
-| `frontend/src/pages/KvkkNotice.jsx` | Serves `docs/kvkk-aydinlatma.md` at `/kvkk`, imported at build time so the two cannot drift. |
-| `frontend/src/components/*` | RiskBadge, SessionTable, RiskChart (D3), VerificationModal, MetricCard, ProfilePanel, SyntheticBadge. |
+| `apps/checkout/` | TechStore's guest checkout (React): order summary with amounts only, card form, OTP dialog, receipt. Shows the payer no score. `/gizlilik` renders `docs/kvkk-aydinlatma.md`, imported at build time so the two cannot drift. Its nginx forwards `/api/` to checkout-api and an allow list of the SDK's calls to the core under `/deepcheck/api/`. |
+| `apps/checkout-server/` | The store's server (FastAPI): asks the core `POST /api/decision` with the merchant key and a per-session guest reference; answers the page paid / requires_action / declined only. |
+| `apps/soc/` | SOC view (React): session table, D3 risk history, SHAP bars, the profile card, the synthetic badge, live follow. |
+| `apps/soc-server/` | The SOC's backend-for-frontend (FastAPI): holds `DASHBOARD_KEY`, gives the browser a signed httpOnly cookie. |
 | `lab/capture.py`, `lab/bot_lab.py` | Drive a real Chromium through the real SDK and record labelled telemetry. |
-| `docker-compose.yml` | Postgres + backend + frontend. |
+| `lab/live_bot.py` | The stage bot (standard library only): the store path by default, `--legacy` against the core's `/api/demo/charge`. |
+| `docker-compose.yml` | Six services: Postgres, the core, checkout-api + checkout-web, soc-api + soc-web. |
 | `docs/index.html` | Landing page served by GitHub Pages. |
 
 ---
@@ -386,8 +393,11 @@ amount}` plus the token, runs the decision logic above, and returns
 `{status: "charged", charge_id, ...}` only for `allow` or `warn`; otherwise
 `{status: "declined", decision}`. In a real integration the merchant's own
 backend calls `/api/decision` and then its payment provider. Here both live
-in one endpoint so the property a jury will test for holds visibly: the
-demo page contains no condition that could be edited to produce a charge.
+in one endpoint so no page holds a condition that could be edited to produce
+a charge. Its callers today are `demo_seed.py --simulate` and the lab tools,
+against the core itself; the store's page cannot reach it (checkout-web's nginx
+forwards only the SDK's calls), and the store's own server uses
+`/api/decision`, as a real merchant would.
 
 ### `POST /api/demo/verify`
 
@@ -806,35 +816,39 @@ smell, not a result.
 
 ## 9. Life of one session, end to end
 
-1. Customer opens `/demo`. `index.html` loads `deepcheck.js`; `Demo.jsx`
-   calls `DeepCheck.init({apiUrl, onUpdate, onError})`, which asks the
-   server for a session id and its signed token.
-2. The customer moves the mouse and starts typing a card number. Only
+1. The payer opens the store (`http://localhost:3000`). `index.html` loads
+   `/deepcheck.js` from the store's own origin; the page calls
+   `DeepCheck.init({apiUrl: "/deepcheck", intervalMs: 2000})` with no
+   callback, and the SDK asks the core, through checkout-web's nginx, for a
+   session id and its signed token.
+2. The payer moves the mouse and starts typing a card number. Only
    coordinates, timestamps and keydown *times* are buffered.
 3. At t = 2 s the first flush posts about 30 mouse points, 8 key timestamps
    and 2 hesitation gaps.
 4. FastAPI validates the payload, extracts twelve features (scroll and click
    density fall back to neutral / zero because none happened yet), scores
-   about 18, SHAP is stored but **not returned** to the page, and two rows
-   are written.
-5. The badge on the page turns green: "Gerçek Kullanıcı 18". It is
-   display only, and nothing on the page compares it with a threshold.
-6. Every 2 s the window slides forward; the median of the last five raw
-   scores is the badge value.
-7. Meanwhile the dashboard polls `/api/sessions` every 3 s and lists the
-   session in green. Clicking it polls `/api/score/{id}` and draws the raw
-   per-flush history with D3, the top-3 SHAP bars, and the profile card if
-   the layer had an opinion.
-8. The customer presses **Onayla**. The page first awaits `DeepCheck.flush()`
-   so the decision is made on the behaviour that just happened, then calls
-   `POST /api/demo/charge`, which runs the decision server-side and either
-   charges or declines. The page renders whatever came back; it has no local
+   about 18, stores the score and SHAP, and writes two rows. Because the
+   store's nginx set `X-DeepCheck-Reply: ack`, the page gets back
+   `{session_id, accepted: true}` and nothing else.
+5. Every 2 s the window slides forward; the median of the last five raw
+   scores becomes the session's score. The page shows none of it.
+6. Meanwhile the SOC polls `/api/sessions` every 3 s through soc-api and
+   follows the newest session. Selecting it polls `/api/score/{id}` and draws
+   the raw per-flush history with D3, the top-3 SHAP bars, and the profile
+   card if the layer had an opinion.
+7. The payer presses **Öde**. The page first waits (bounded) for
+   `DeepCheck.flush()` so the decision is made on the behaviour that just
+   happened, then sends the store's server `POST /api/checkout` with the
+   session id, the token and the card's display fields only. The store's
+   server asks the core `POST /api/decision` with its merchant key and a
+   per-session guest reference, and answers paid, requires_action (the OTP
+   dialog) or declined. The page renders whatever came back; it has no local
    payment path.
-9. If a Playwright script drives the same page instead, mouse points arrive at
-   a fixed 80 ms cadence in a straight line, hesitation is empty, entropy near
-   0, acceleration variance near 0. The score climbs past 80 within three
-   flushes and the badge turns red — but what actually stops the payment is
-   the server's `block`, which no edit to the page can undo.
+8. If a script drives the same flow instead (`lab/live_bot.py`), mouse points
+   arrive at a fixed ~80 ms cadence, hesitation is empty, entropy near 0. The
+   session score climbs past 80 within a few flushes, visible in the SOC only
+   -- and what actually stops the payment is the core's `block`, relayed by
+   the store's server as a plain decline that no edit to the page can undo.
 
 ---
 
@@ -909,44 +923,58 @@ lock, so an existing volume keeps working. That is a stop-gap and §15 says so.
 
 ---
 
-## 11. Frontend
+## 11. Frontend: the store and the SOC
 
-- **Demo.jsx** — Turkish card form (Kart Numarası, Son Kullanma, CVV,
-  Tutar, Onayla). Card type icon and formatting are cosmetic. The risk
-  badge is top-right and is **display only**. Pressing Onayla calls
-  `POST /api/demo/charge` and renders whatever came back: charged,
-  declined with a block message, a "not enough behaviour yet, try again"
-  hint, or the verification modal. The page holds no threshold, no
-  decision, and no local payment path; a charge it cannot complete is not a
-  success and routes to step-up. The modal posts its code to
-  `POST /api/demo/verify` and then charges again so the server can apply
-  the recorded verification.
-- **Dashboard.jsx** — dark SOC theme. Opens on a key prompt; the entered
-  key goes to `sessionStorage` and is sent as `X-Dashboard-Key`. A 401 from
-  either poll clears it and returns to the prompt. Then: session table
-  coloured by label, D3 line chart of the selected session's raw history,
-  horizontal SHAP bars with Turkish feature names, metric cards, 3 s refresh.
-- **ProfilePanel.jsx** — the "Müşteri Profili" card, shown only when the
+The single-page `frontend/` (a payment demo with a live risk badge, a
+synthetic-customer selector and the old dashboard) was deleted on 2026-10-02.
+Two apps replace it; `docs/architecture-two-apps.md` has the contracts.
+
+- **`apps/checkout` — the store's checkout page.** A light, Turkish guest
+  checkout: the order summary shows only the amounts (Ara toplam, KDV,
+  Toplam; no product line or illustration, though the server's cart still
+  holds the item), then the card form (number, cardholder name, expiry, CVV)
+  and "Öde". It asks for **no e-mail address** or account. The name field
+  drops digits and symbols as they are typed ("İsimde rakam kullanılamaz.").
+  The page sends the store's server only the session id, the SDK token and the
+  card's display fields (last 4, brand, expiry); the full number, the CVV and
+  the name never leave the browser. It shows **no score, band, label or
+  reason** in any state, and holds no threshold and no local payment path:
+  the outcome is paid (receipt), requires_action (the OTP dialog, which posts
+  the code to the store's server) or declined. User-facing text uses the
+  plain hyphen "-", never a long dash. `/gizlilik` renders
+  `docs/kvkk-aydinlatma.md`, imported from that one file at build time (a
+  small renderer building React elements, never HTML strings), so the link
+  works offline and the notice and the document cannot drift apart.
+- **`apps/checkout-server`** — derives the customer reference per session,
+  `"misafir-" + HMAC-SHA256(CHECKOUT_CUSTOMER_REF_KEY, "session:" + session_id)[:24]`,
+  asks `/api/decision` (with the hidden insufficient-evidence retry), and
+  relays the outcome without any score, label or reason.
+- **`apps/soc` — the SOC (dark theme, loopback :3100).** Opens on a login
+  page; the key goes once to soc-api, which answers with a signed httpOnly
+  cookie, so the key is never stored in the browser. Then: session table
+  coloured by label with live follow, D3 line chart of the selected session's
+  raw history, horizontal SHAP bars with Turkish feature names, metric cards,
+  3 s refresh, "Son kaydedilen karar", "Görünümü sıfırla".
+- **ProfilePanel.jsx** (in `apps/soc`) — the "Müşteri Profili" card, shown only when the
   layer had an opinion: state, input type, reference count, deviation and
   p-value, the most deviating features as z bars, and the "Gölge modu — karar
   etkilenmedi" / "Ek doğrulama istendi" badges. It prints **no** count when the
   backend never read the reference vectors, so "0 / 19" can never claim a
   customer has no history. The card reads the newest decision-audit row with a
-  profile opinion, so a session watched *before* Onayla is pressed says "Profil
-  yok" even for a mature customer — the card says so, rather than leaving a
-  jury to misread it.
-- **SyntheticBadge.jsx** — "Sentetik demo verisi", on simulated sessions and on
+  profile opinion, so a session watched *before* its payment is decided says
+  "Profil yok" even for a mature customer — the card says so, rather than
+  leaving a jury to misread it.
+- **SyntheticBadge.jsx** (in `apps/soc`) — "Sentetik demo verisi", on simulated sessions and on
   decisions made against a synthetic profile. It appears only when the server
   sends the flag as exactly `true`, so an older server shows nothing rather
   than something wrong. The metric cards exclude simulated sessions and say how
-  many they left out.
-- **KvkkNotice.jsx** — serves `docs/kvkk-aydinlatma.md` at `/kvkk`, imported
-  from that one file at build time (a small renderer building React elements,
-  never HTML strings), so the link works offline and the notice and the
-  document cannot drift apart.
-- `VITE_API_URL` selects the backend and is compiled in at build time;
-  defaults to `http://localhost:8000`. The dashboard key is deliberately not
-  a build variable — see the comment at the top of `Dashboard.jsx`.
+  many they left out. Simulated sessions now come only from
+  `demo_seed.py --simulate`, run from the command line: no page lets a person
+  pay as a synthetic customer any more.
+- Neither app has a configurable API address: both always call their own
+  origin, and nginx splits the paths. `VITE_API_URL` belonged to the deleted
+  frontend and is read by nothing. The dashboard key is deliberately not a
+  build variable; CI fails if one appears in either bundle.
 
 ---
 
@@ -997,12 +1025,18 @@ lock, so an existing volume keeps working. That is a stop-gap and §15 says so.
 
 ## 13. Tests
 
-The backend suite is **186 tests** across three files, all passing as of
-2026-09-26, and the frontend suite is **60** across six files.
+The backend suite is **201 tests** across four files, all passing as of
+2026-10-02. The two app servers, the two app frontends and the stage bot have
+suites of their own (per-suite counts in `CLAUDE.md`); the legacy frontend's
+suite was deleted with it on 2026-10-02.
 
 ```bash
 cd backend && DEEPCHECK_SECRET=... DASHBOARD_KEY=... DEBUG=0 python -m pytest -q
-cd frontend && npm test && npm run build
+cd apps/checkout-server && python -m pytest -q
+cd apps/soc-server && python -m pytest -q
+cd apps/checkout && npm test && npm run build
+cd apps/soc && npm test && npm run build
+python -m pytest -q lab/test_live_bot.py
 ```
 
 ### `backend/test_scorer.py` — 71 tests
@@ -1052,7 +1086,7 @@ median) is not smoothed away while a single calm window in a bot session still
 is; training seeds torch; client provenance signals are stored but do not move
 the score.
 
-### `backend/test_profiles.py` — 97 tests
+### `backend/test_profiles.py` — 100 tests
 
 The statistic (`profiles.py`) without any infrastructure, and the wiring
 (`main.py`) against an in-memory model of the profile tables that interprets
@@ -1073,13 +1107,21 @@ the statements themselves — WHERE trees, `IN` subqueries, `ON CONFLICT` with i
   transactions, never sweep an objection tombstone, and neither sweep's failure
   stops the other
 - the published constants still match `docs/profile-evaluation.md`, and the
-  frontend's Turkish labels still match the backend's
+  SOC app's Turkish profile labels and feature glosses still match the
+  backend's
 
-### `backend/test_demo.py` — 18 tests
+### `backend/test_demo.py` — 17 tests
 
 The synthetic demo customers: seeding is idempotent, a synthetic profile is
 never taught by anything but the seeder, the flag reaches the audit row and both
 SOC endpoints, and `record_session.py` refuses a simulated session.
+
+### `backend/test_analyze_ack.py` — 13 tests
+
+`X-DeepCheck-Reply: ack`, which the store's nginx adds to every SDK call, turns
+the `/api/analyze` reply into `{session_id, accepted}` and changes nothing else:
+the window is checked, scored and stored exactly as without it, a refused
+window is never acknowledged, and any other header value keeps the full reply.
 
 Backend tests run against a stub database rather than Postgres, deliberately: an
 authorization check that needs infrastructure to test is an authorization check
@@ -1099,20 +1141,30 @@ docker-compose up --build
 First start trains the model (about one to two minutes on a laptop).
 Then:
 
-- Demo: http://localhost:3000/demo
-- Dashboard: http://localhost:3000/dashboard
-- API docs: http://localhost:8000/docs
+- Store checkout (TechStore / DemoPay): http://localhost:3000 -- shows the
+  payer no score; its own server (`apps/checkout-server`) asks the core
+  `POST /api/decision` with the merchant key
+- SOC dashboard: http://localhost:3100 (loopback only)
+- Core API: http://localhost:8000 (loopback unless `API_BIND_ADDR` opens it)
 
-The dashboard asks for the access key on first open. It is the value of
-`DASHBOARD_KEY`, typed rather than compiled in, and it is kept in
-`sessionStorage` for the tab only.
+Nothing listens on 3200 any more: the legacy single-page demo was deleted on
+2026-10-02. The store is a guest checkout and asks for no e-mail address; its
+server needs `CHECKOUT_MERCHANT_ID`, `CHECKOUT_MERCHANT_KEY` and
+`CHECKOUT_CUSTOMER_REF_KEY`, and the SOC's server needs `DASHBOARD_KEY` and
+`SOC_SESSION_SECRET`, with no fallback in any mode.
+
+The SOC asks for the access key on first open. It is the value of
+`DASHBOARD_KEY`, sent once to the SOC's own server (`apps/soc-server`), which
+answers with a signed httpOnly cookie; the key itself never reaches the
+browser's storage. Design: `docs/architecture-two-apps.md`.
 
 Environment variables, all documented with their reasoning in `.env.example`:
 
 | group | variables |
 |---|---|
 | secrets | `DEEPCHECK_SECRET` (signs session tokens), `DASHBOARD_KEY` (guards the SOC endpoints), `DEBUG` |
-| network | `CORS_ORIGINS`, `BIND_ADDR`, `VITE_API_URL`, `UVICORN_WORKERS` (default 2) |
+| network | `CORS_ORIGINS`, `BIND_ADDR` (the store's port 3000 only), `API_BIND_ADDR` (the core's 8000), `FORWARDED_ALLOW_IPS`, `UVICORN_WORKERS` (default 2) |
+| store and SOC servers (**no fallback in any mode**) | `CHECKOUT_MERCHANT_ID`, `CHECKOUT_MERCHANT_KEY`, `CHECKOUT_CUSTOMER_REF_KEY`, `SOC_SESSION_SECRET`, `SOC_COOKIE_SECURE` |
 | database | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`, `DATABASE_URL` |
 | retention | `RAW_RETENTION_HOURS` (1), `ROW_RETENTION_HOURS` (24), `PROFILE_RETENTION_DAYS` (180), `DECISION_AUDIT_RETENTION_DAYS` (90), `PROFILE_ACCESS_RETENTION_DAYS` (365) |
 | demo | `DEMO_ENDPOINTS`, `DEMO_VERIFY_CODE` |
@@ -1126,16 +1178,16 @@ missing secret must never quietly mean "authentication off". The profile
 variables have **no** fallback in either mode: unset means the layer is off.
 A malformed merchant or review credential stops the boot in every mode.
 
-The frontend image builds the bundle and serves it with nginx. `vite dev` is
-available as an override for development:
+The store and SOC images each build their bundle and serve it with nginx.
+There is no hot-reload compose override any more (`docker-compose.dev.yml` was
+deleted with the legacy demo); `npm run dev` in `apps/checkout` or `apps/soc`
+runs Vite with the same `/api` split their nginx does (`vite.config.js`).
 
-```bash
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
-```
-
-CI (`.github/workflows/ci.yml`) trains a reduced model, runs the test suite
-without a database, builds the frontend, and fails if a dashboard key ever
-appears in the built bundle.
+CI (`.github/workflows/ci.yml`) trains the model and runs the backend suite
+without a database; runs the two app servers' suites and the stage bot's;
+tests and builds both app bundles and fails if an absolute core address or a
+dashboard key appears in either; and validates the compose file and builds the
+four app images.
 
 ---
 
@@ -1887,9 +1939,10 @@ Consequences, each enforced in code rather than promised:
    `/api/decision` can never create one. No consent → no row → no personal data
    → no escalation, and the refusal costs the customer nothing: they are never
    challenged for refusing.
-   The one exception is the reserved `demo` namespace used by the demo page,
-   which no merchant may claim (`demo` is rejected at boot) and which is
-   excluded from every reported measurement.
+   The one exception is the reserved `demo` namespace, which no merchant may
+   claim (`demo` is rejected at boot) and which is excluded from every
+   reported measurement. Since the legacy demo page was deleted (2026-10-02)
+   it holds only `demo_seed.py`'s synthetic customers; no page writes there.
 
 `profile_id` is never logged either — not even truncated. The 12-character
 prefix pattern used for `payload_hash` is fine for a content hash and wrong for
@@ -2246,7 +2299,8 @@ response to the party being scored.
 11. No mTLS — a shared per-merchant key is the credential.
 12. No separate "profile challenge class" that a prior step-up cannot satisfy.
 13. No column-level encryption.
-14. Nothing profile-related on the Demo page's risk badge or in `/api/analyze`.
+14. Nothing profile-related in `/api/analyze` (and the store's page shows no
+    score at all).
 15. No change to the SDK, the model files, `compute_risk`'s score or
     `smooth_session_score`.
 

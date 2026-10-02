@@ -4688,12 +4688,12 @@ def test_published_poisoning_section_says_probation_vectors_are_not_references()
     assert "(cap)" not in section
 
 
-def test_frontend_profile_labels_match_the_backend():
-    """The SOC card and the Demo page's leak test carry copies of backend
+def test_soc_profile_labels_match_the_backend():
+    """The SOC app's profile card and feature glosses carry copies of backend
     names, because the profile block deliberately ships no constants. Each copy
     is pinned here, so a change on either side fails a test instead of shipping
     a card that prints "7 / 20" for a layer that matures at 19, a state with no
-    Turkish label, or a leak test that no longer knows a renamed feature."""
+    Turkish label, or a feature the panel can only print as a raw code."""
     import os
     import re
 
@@ -4703,14 +4703,14 @@ def test_frontend_profile_labels_match_the_backend():
         with open(os.path.join(root, *parts), encoding="utf-8") as fh:
             return fh.read()
 
-    panel = read("frontend", "src", "components", "ProfilePanel.jsx")
+    panel = read("apps", "soc", "src", "components", "ProfilePanel.jsx")
     match = re.search(r"^export const PROFILE_MIN_SESSIONS = (\d+);", panel, re.MULTILINE)
     assert match, "PROFILE_MIN_SESSIONS is missing from ProfilePanel.jsx"
     assert int(match.group(1)) == profiles.PROFILE_MIN_SESSIONS
 
     def object_keys(name, text):
         block = re.search(rf"^export const {name} = \{{(.*?)^\}};", text, re.MULTILINE | re.DOTALL)
-        assert block, f"{name} is missing from ProfilePanel.jsx"
+        assert block, f"{name} is missing"
         return re.findall(r"^\s*([a-z_]+):", block.group(1), re.MULTILINE)
 
     state_keys = object_keys("PROFILE_STATE_LABELS", panel)
@@ -4718,10 +4718,8 @@ def test_frontend_profile_labels_match_the_backend():
     modality_keys = object_keys("MODALITY_LABELS", panel)
     assert sorted(modality_keys) == sorted(profiles.MODALITIES)
 
-    demo_test = read("frontend", "src", "pages", "Demo.test.jsx")
-    names = re.search(r"^const FEATURE_NAMES = \[(.*?)^\];", demo_test, re.MULTILINE | re.DOTALL)
-    assert names, "FEATURE_NAMES is missing from Demo.test.jsx"
-    assert re.findall(r'"([a-z_]+)"', names.group(1)) == list(FEATURE_NAMES)
+    glosses = read("apps", "soc", "src", "components", "featureLabels.js")
+    assert object_keys("FEATURE_LABELS", glosses) == list(FEATURE_NAMES)
 
 
 def test_dashboard_decision_copies_match_the_backend():
@@ -4737,7 +4735,7 @@ def test_dashboard_decision_copies_match_the_backend():
 
     main = _main()
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(root, "frontend", "src", "pages", "Dashboard.jsx"), encoding="utf-8") as fh:
+    with open(os.path.join(root, "apps", "soc", "src", "pages", "Dashboard.jsx"), encoding="utf-8") as fh:
         dashboard = fh.read()
 
     def constant(name):

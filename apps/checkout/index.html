@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#F5F7FB" />
+    <meta name="description" content="TechStore ödeme sayfası (demo ortamı - gerçek ödeme alınmaz)." />
+    <!-- Inline so the tab icon works with no network and costs no request. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B1F3A'/%3E%3Cpath d='M9 10h14v3.2h-5.4V23h-3.2v-9.8H9z' fill='%23fff'/%3E%3Ccircle cx='23' cy='21.5' r='2' fill='%233B82F6'/%3E%3C/svg%3E"
+    />
+    <title>Ödeme - TechStore</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- The behaviour SDK, from this origin (vite.config.js publicDir). It does
+         nothing until the checkout page calls DeepCheck.init(). -->
+    <script src="/deepcheck.js"></script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

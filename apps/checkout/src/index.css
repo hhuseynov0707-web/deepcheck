@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-canvas font-sans text-[15px] leading-6 text-ink antialiased;
+    font-feature-settings: "kern";
+  }
+
+  /* One focus ring for every control, and nothing can switch it off: a stray
+     `outline-none` utility on a field would otherwise leave a keyboard user
+     with no idea where they are on a payment form. */
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid theme("colors.brand.ring") !important;
+    outline-offset: 2px !important;
+  }
+
+  /* A text field draws the same 2px ring flush with its own border, with a
+     soft halo around it (components/Field.jsx), instead of a second ring
+     floating 2px outside: one thick, clearly blue edge reads as "you are
+     typing here" on a form that is mostly fields. */
+  :where(.field-control):focus-visible {
+    outline-offset: 0 !important;
+  }
+
+  ::selection {
+    background: theme("colors.brand.line");
+    color: theme("colors.ink.DEFAULT");
+  }
+
+  /* Motion here only explains a change of state (a dialog arriving, the
+     receipt replacing the form). Someone who asked their system for less
+     motion gets none. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Card digits, amounts and codes line up column by column. */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .skip-link {
+    @apply absolute left-4 top-3 z-50 -translate-y-20 rounded-field bg-ink px-4 py-2 text-sm font-medium text-white transition-transform;
+  }
+  .skip-link:focus {
+    @apply translate-y-0;
+  }
+}

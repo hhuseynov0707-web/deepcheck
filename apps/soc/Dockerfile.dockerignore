@@ -1,0 +1,20 @@
+# Ignore file for apps/soc/Dockerfile only. BuildKit (the default builder in
+# current Docker and Compose) reads <Dockerfile>.dockerignore in place of the
+# context-root .dockerignore; the build context is the repository root
+# (docker-compose.yml), as for apps/checkout/Dockerfile.
+#
+# Allowlist: the image needs apps/soc and nothing else, which also keeps data/
+# (recorded real sessions) and .env out of the context. The host's
+# node_modules must not be laid over the tree `npm ci` installs in the image (a
+# Windows host's packages in a Linux image), and a local dist/ must not stand
+# in for the build.
+*
+!apps/soc
+
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/*.log
+**/.DS_Store
+**/Thumbs.db

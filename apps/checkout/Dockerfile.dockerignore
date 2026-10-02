@@ -1,0 +1,21 @@
+# Ignore file for apps/checkout/Dockerfile only. BuildKit (the default builder
+# in current Docker and Compose) reads <Dockerfile>.dockerignore in place of
+# the context-root .dockerignore; the legacy builder falls back to the root
+# file.
+#
+# Allowlist: the context is the repository root, and this image needs
+# apps/checkout, sdk/ and the one document /gizlilik renders -- nothing else.
+# That keeps data/ (recorded real sessions), .env and the host's node_modules
+# (a Windows host's packages laid over the Linux tree `npm ci` built) out.
+*
+!apps/checkout
+!sdk
+!docs/kvkk-aydinlatma.md
+
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/*.log
+**/.DS_Store
+**/Thumbs.db

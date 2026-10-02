@@ -699,10 +699,11 @@ def _phase_human_autofill(s: _Stream, traits: dict) -> None:
     features measure exactly what they claim to. The fix is to show the class
     the shape.
 
-    The shape, following frontend/src/pages/Demo.jsx: reach the card field,
-    click it, wait for the browser's suggestion to render, click the
-    suggestion, pause while the customer reads what appeared, often type the
-    three CVV digits by hand, then reach "Onayla" and click.
+    The shape, following the former demo page (frontend/src/pages/Demo.jsx,
+    removed 2026-10-02; not re-derived for the store's checkout page): reach
+    the card field, click it, wait for the browser's suggestion to render,
+    click the suggestion, pause while the customer reads what appeared, often
+    type the three CVV digits by hand, then reach "Onayla" and click.
 
     This persona always clicks, ignoring `zero_clicks`: a stored card is
     chosen by clicking the browser's suggestion and the payment is confirmed

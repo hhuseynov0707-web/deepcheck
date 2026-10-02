@@ -21,7 +21,6 @@ import copy
 import json
 import math
 import os
-import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -49,7 +48,6 @@ from test_profiles import (  # noqa: F401 -- `api` is a pytest fixture
 )
 
 BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = os.path.dirname(BACKEND_DIR)
 AYSE = demo_seed.DEMO_CUSTOMERS[0]
 
 
@@ -379,21 +377,6 @@ def test_simulated_flushes_are_rebased_without_changing_what_is_measured():
         assert main._payload_fingerprint(rebased) == main._payload_fingerprint(raw)
 
 
-# --- labelling on the page -------------------------------------------------------------
-
-
-def test_the_demo_page_lists_exactly_the_seeded_customers():
-    with open(os.path.join(REPO_DIR, "frontend", "src", "demoCustomers.js"), encoding="utf-8") as fh:
-        source = fh.read()
-    listed = re.findall(r'\{\s*ref:\s*"([^"]+)",\s*name:\s*"([^"]+)"\s*\}', source)
-    assert listed == [(c.ref, c.name) for c in demo_seed.DEMO_CUSTOMERS]
-    count = re.search(r"^export const SYNTHETIC_SESSIONS_PER_MODALITY = (\d+);", source, re.MULTILINE)
-    assert count and int(count.group(1)) == demo_seed.SESSIONS_PER_MODALITY
-    assert "sentetik geçmiş" in source
-    for customer in demo_seed.DEMO_CUSTOMERS:
-        assert "sentetik" in customer.ref, "the reference itself must say synthetic"
-
-
 # --- no measurement reads synthetic data -------------------------------------------------
 
 _EVALUATION_SCRIPTS = (
@@ -555,7 +538,7 @@ def test_a_simulated_session_is_synthetic_in_its_decision_row_when_written(api):
 
 def test_the_soc_panel_is_told_what_is_synthetic(api):
     """The SOC card and session list show "Sentetik demo verisi" from these
-    fields (frontend ProfilePanel / SessionTable). A juror is a real person,
+    fields (the SOC app's ProfilePanel / SessionTable). A juror is a real person,
     so the session is not synthetic -- but the profile it was compared against
     is, and the decision row must say so for as long as it is kept."""
     from test_profiles import _dashboard_db, _score

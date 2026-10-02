@@ -50,7 +50,8 @@ services:
       DASHBOARD_KEY: ${DASHBOARD_KEY:-}
       DEBUG: ${DEBUG:-1}
       # Step-up code accepted by POST /api/demo/verify. A demo stand-in for
-      # the merchant's SMS / 3-D Secure provider; shown in the demo's modal.
+      # the merchant's SMS / 3-D Secure provider; shown in the store's OTP
+      # dialog (checkout-web's VITE_DEMO_VERIFY_CODE below).
       DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
       # Optional knobs documented in .env.example. Until these lines existed
       # none of them reached the container: compose uses .env for
@@ -81,29 +82,39 @@ services:
       UVICORN_WORKERS:
       # Read by uvicorn itself, not by main.py: the peer addresses it trusts
       # to name the real client in X-Forwarded-For. Unset, uvicorn trusts
-      # 127.0.0.1 only, and every browser that comes through the frontend's
-      # /api/ proxy reaches the backend from the nginx container's address --
-      # so the per-IP session-minting limit is one bucket shared by every
-      # visitor. Setting it to that container's address restores per-visitor
-      # keying. Exact addresses only (uvicorn 0.30.1 has no CIDR support), and
-      # never "*", which believes whatever the caller writes. Not pinned here,
-      # because pinning the proxy's address means pinning a compose subnet,
-      # and a subnet that collides with another Docker network on the
-      # presenter's laptop stops `up` with "Pool overlaps". See _client_ip in
-      # backend/main.py and .env.example.
+      # 127.0.0.1 only, and every browser reaches the backend through one
+      # nginx -- the store's SDK path (checkout-web, /deepcheck/api/) -- so it
+      # arrives from that container's address, and the per-IP session-minting
+      # limit is one bucket shared by every visitor of the store. Setting it to
+      # that container's address restores per-visitor keying. Exact addresses
+      # only (uvicorn 0.30.1 has no CIDR support), and never "*", which
+      # believes whatever the caller writes: unlike checkout-api, which sets
+      # "*" in its image, this port CAN be published (API_BIND_ADDR). Not
+      # pinned here, because pinning a proxy's address means pinning a
+      # compose subnet, and a subnet that collides with another Docker
+      # network on the presenter's laptop stops `up` with "Pool overlaps".
+      # See _client_ip in backend/main.py and .env.example.
       FORWARDED_ALLOW_IPS:
-    # Loopback by default, like the database, and NOT opened by BIND_ADDR any
-    # more. Browsers reach the API through the frontend's nginx on port 3000
-    # (same origin, frontend/nginx.conf), so a LAN demo needs only 3000 on the
-    # network. DEBUG defaults to 1 so that `docker-compose up` works with no
+    # Loopback by default, like the database, and NOT opened by BIND_ADDR.
+    # Nothing a browser needs is here: the store's page reaches the core
+    # through checkout-web's nginx (/deepcheck/api/ on port 3000), and the
+    # store's server and the SOC's server reach it over the compose network
+    # (http://backend:8000). A LAN demo therefore needs only 3000 on the
+    # network. On this machine the lab tools and live_bot.py --legacy reach
+    # the core on this loopback port; demo_seed.py --simulate runs inside
+    # this container and calls it on the container's own localhost:8000.
+    # DEBUG defaults to 1 so that `docker-compose up` starts with no
     # configuration, and DEBUG=1 means the published development secrets are
     # in force -- session tokens anyone can forge and a dashboard key anyone
     # can read; the less of this that is reachable, the better.
     #
-    # API_BIND_ADDR=0.0.0.0 publishes 8000 itself, for the two cases that
-    # still talk to it directly from another machine: a bundle built with a
-    # cross-origin VITE_API_URL, and the lab harness (lab/bot_lab.py --api).
-    # Set DEBUG=0 with real secrets first. .env.example lists every step.
+    # API_BIND_ADDR=0.0.0.0 publishes 8000 itself, for a caller on ANOTHER
+    # machine that talks to the core directly: the lab harness
+    # (lab/bot_lab.py --api http://<IP>:8000). That caller gets the full
+    # /api/analyze reply, score included, because no nginx adds
+    # X-DeepCheck-Reply: ack on this port (ANALYZE_ACK_REPLY in
+    # backend/main.py). Set DEBUG=0 with real secrets first. .env.example
+    # lists every step.
     ports:
       - "${API_BIND_ADDR:-127.0.0.1}:8000:8000"
     volumes:
@@ -132,43 +143,130 @@ services:
       db:
         condition: service_healthy
 
-  frontend:
+  # --- The store: TechStore's checkout (docs/architecture-two-apps.md) -------
+  #
+  # Two services, as a real store would run them: a page (checkout-web) and the
+  # store's own server (checkout-api). The page shows the payer no score, band,
+  # label or reason; the server asks the core POST /api/decision with the
+  # merchant key and answers paid, requires_action or declined, nothing more.
+
+  checkout-api:
     build:
-      context: .
-      dockerfile: frontend/Dockerfile
-      # Vite inlines these at build time, so they are build args rather than
-      # runtime environment. Change one and rebuild the image.
-      #
-      # There is deliberately NO dashboard key here: a key compiled into the
-      # bundle is served to every visitor, which makes the header check on the
-      # SOC endpoints decoration rather than authentication. The analyst types
-      # it into the dashboard instead.
-      #
-      # VITE_API_URL is the address the VISITOR'S browser uses to reach the
-      # backend, not the one this container uses. Empty, the default, means
-      # same origin: the browser calls /api/... on the address it loaded the
-      # page from, and this image's nginx forwards it to the backend. Nothing
-      # about the network is compiled in, so a LAN demo needs no rebuild when
-      # the address changes. Setting it (http://<host>:8000) points every
-      # visitor at an API on a different origin; that also needs
-      # API_BIND_ADDR and CORS_ORIGINS. `:-` here and an empty ARG default in
-      # the Dockerfile, so unset and empty both build the same-origin bundle.
-      # The old default, http://localhost:8000, made a second laptop or a
-      # phone talk to itself.
-      args:
-        VITE_API_URL: ${VITE_API_URL:-}
-        VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
-    container_name: deepcheck-frontend
+      context: ./apps/checkout-server
+    container_name: deepcheck-checkout-api
     restart: unless-stopped
-    # Loopback by default for the same reason: the demo page ships the step-up
-    # code and talks to an API running in development mode. BIND_ADDR=0.0.0.0
-    # opens this one port to the network, and with it the page AND the API,
-    # since /api/ is proxied from here (frontend/nginx.conf). Set DEBUG=0 with
-    # real secrets first: everything under /api/ is reachable through it.
+    environment:
+      # The core over the compose network, never through a published port: the
+      # merchant key travels on this request and must not leave the host.
+      DEEPCHECK_CORE_URL: http://backend:8000
+      # The store's merchant credential, sent as X-Merchant-Id / X-Merchant-Key
+      # with every decision. The pair must equal one "id:key" entry of
+      # DEEPCHECK_MERCHANT_KEYS above, or the core answers 401 and the store
+      # fails closed: every payment is a 503, none is paid.
+      # No default in ANY mode, DEBUG=1 included -- a default key is one every
+      # reader of this repository holds. Unset, checkout-api refuses to start
+      # and says which variable is missing (`docker compose logs checkout-api`);
+      # the page then answers 502 under /api/ and never takes a payment.
+      CHECKOUT_MERCHANT_ID:
+      CHECKOUT_MERCHANT_KEY:
+      # The HMAC key the store derives its customer reference from
+      # (customer_ref_for in apps/checkout-server/main.py): a guest reference
+      # per checkout SESSION, "misafir-" + HMAC(key, session id). The page
+      # asks for no e-mail address or account, so nothing about the payer
+      # goes into it. Its own value, never the merchant key: the core holds
+      # that one, and the reference must not be computable from the session
+      # id by anyone but this server. Only this service is given it. Same
+      # rule as above, plus: under 32 characters, or equal to
+      # CHECKOUT_MERCHANT_KEY, and checkout-api refuses to start.
+      CHECKOUT_CUSTOMER_REF_KEY:
+      # Log verbosity only. Unlike the core, checkout-api has no development
+      # fallback for anything, so DEBUG=1 does not loosen it.
+      DEBUG: ${DEBUG:-1}
+    # No published port. The only peer that can reach 8100 is a container on
+    # the compose network, and the one forwarding browser traffic (checkout-web)
+    # overwrites X-Forwarded-For with the address it saw. That is what makes the
+    # image's FORWARDED_ALLOW_IPS="*" safe (see apps/checkout-server/Dockerfile):
+    # publishing this port would let any caller choose its own rate-limit bucket.
+    depends_on:
+      - backend
+
+  checkout-web:
+    build:
+      # Repository root: the image serves sdk/deepcheck.js as /deepcheck.js and
+      # the /gizlilik page renders docs/kvkk-aydinlatma.md, so it needs files
+      # from outside apps/checkout.
+      context: .
+      dockerfile: apps/checkout/Dockerfile
+      # Vite inlines this at BUILD time; the OTP dialog prints it as the demo
+      # SMS code. Must match the core's DEMO_VERIFY_CODE, hence the same
+      # variable: change it, then rebuild this image.
+      args:
+        VITE_DEMO_VERIFY_CODE: ${DEMO_VERIFY_CODE:-482913}
+    container_name: deepcheck-checkout-web
+    restart: unless-stopped
+    # The ONLY port BIND_ADDR opens, and the only one a LAN demo needs.
+    # Loopback by default. BIND_ADDR=0.0.0.0 puts on the network: the store's
+    # page, its server under /api/, and the core under /deepcheck/api/ -- only
+    # the SDK's session, attest and analyze calls and /api/health, the allow
+    # list in apps/checkout/nginx.conf; analyze answers an acknowledgement,
+    # never a score. Every other port stays on loopback unless API_BIND_ADDR
+    # opens the core's own (above). Set DEBUG=0 with real secrets first: with
+    # DEBUG=1 the core's token secret is the published development value.
+    # .env.example, LAN section, lists every step.
     ports:
       - "${BIND_ADDR:-127.0.0.1}:3000:3000"
     depends_on:
+      - checkout-api
       - backend
+
+  # --- The SOC: the analyst's view ------------------------------------------
+  #
+  # A backend-for-frontend (soc-api) holds DASHBOARD_KEY; the browser types the
+  # key once into the login page and from then on holds only a signed,
+  # httpOnly cookie scoped to /api on the SOC's origin.
+
+  soc-api:
+    build:
+      context: ./apps/soc-server
+    container_name: deepcheck-soc-api
+    restart: unless-stopped
+    environment:
+      DEEPCHECK_CORE_URL: http://backend:8000
+      # The same key the core checks on GET /api/sessions and /api/score/{id},
+      # and the one the analyst types into the SOC login. It must be SET in
+      # .env even with DEBUG=1: soc-api has no development fallback, and the
+      # core's DEBUG=1 fallback key is not visible to it. Unset, soc-api
+      # refuses to start.
+      DASHBOARD_KEY:
+      # Signs the SOC login cookie (HMAC-SHA256, 8 h). At least 32 characters,
+      # different from DASHBOARD_KEY; no fallback in any mode (a random
+      # per-process secret would log the analyst out on every restart, a fixed
+      # one is public in this repository). Rotating it logs everyone out.
+      SOC_SESSION_SECRET:
+      # 1 adds Secure to the cookie. Leave unset for http://localhost:3100;
+      # set it the moment TLS is in front of the SOC.
+      SOC_COOKIE_SECURE:
+    # No published port: only soc-web talks to it.
+    depends_on:
+      - backend
+
+  soc-web:
+    build:
+      context: .
+      dockerfile: apps/soc/Dockerfile
+    container_name: deepcheck-soc-web
+    restart: unless-stopped
+    # Always loopback, and deliberately NOT governed by BIND_ADDR. The SOC shows
+    # every customer's live session, score and SHAP explanation, and its login
+    # takes the dashboard key over plain http. BIND_ADDR exists to put the
+    # STORE on a venue network; letting the same switch publish the SOC would
+    # put the key and every session on that network too. The analyst works on
+    # the presenter's laptop, at http://localhost:3100. Anyone who truly needs
+    # it elsewhere edits this line on purpose, with TLS in front.
+    ports:
+      - "127.0.0.1:3100:3100"
+    depends_on:
+      - soc-api
 
 volumes:
   deepcheck-db-data:

@@ -14,8 +14,10 @@
  *
  * apiUrl is the address the VISITOR'S browser uses to reach the API. An empty
  * string means the page's own origin, for a site that serves /api/ itself or
- * through a reverse proxy, as the bundled demo does (frontend/nginx.conf). Any
- * other value is an absolute base such as "https://api.example.com", and the
+ * through a reverse proxy. A path such as "/deepcheck" is a prefix on the
+ * page's own origin: the bundled store uses exactly that, and checkout-web's
+ * nginx forwards /deepcheck/api/... to the core (apps/checkout/nginx.conf). An
+ * absolute base such as "https://api.example.com" is another origin, and the
  * API must then allow this page's origin in CORS_ORIGINS. Trailing slashes are
  * dropped. Omitting apiUrl altogether keeps the old default,
  * "http://localhost:8000" -- which only works when the browser runs on the
@@ -31,6 +33,12 @@
  * registers a NEW session once and carries on under it, so getSessionId() and
  * getToken() can change during the life of a page: read them when they are
  * needed, never cache them.
+ *
+ * onUpdate and the window's "deepcheck:update" event fire only for a reply
+ * that carries a score. Behind a proxy that asks the core for an
+ * acknowledgement instead (the store's checkout-web does, so the payer is
+ * never told their own score), neither ever fires; flush() and onError work
+ * the same either way.
  */
 (function (window) {
   "use strict";
@@ -667,14 +675,40 @@
       .then(({ res, body: result }) => {
         if (res.status === 401 && !reauthAttempted) return reregisterAndResend(payload);
         if (!res.ok) throw new Error(`DeepCheck API ${res.status}`);
-        if (!result || typeof result.risk_score !== "number" || !isFinite(result.risk_score)) {
+        const acknowledged = isAck(result);
+        if (!acknowledged && !isScored(result)) {
           throw new Error("DeepCheck API geçersiz yanıt döndürdü");
         }
         lastSentKey = key;
         reauthAttempted = false;
+        // An acknowledgement carries no score, so there is nothing to hand
+        // onUpdate or the page: the window was stored, which is all flush()
+        // waits for. Dispatching it anyway would put {accepted: true} where
+        // every listener expects a score, and a listener reading risk_score
+        // off it would get undefined -- the failure the check above exists
+        // to stop.
+        if (acknowledged) return;
         if (typeof config.onUpdate === "function") config.onUpdate(result);
         window.dispatchEvent(new CustomEvent("deepcheck:update", { detail: result }));
       });
+  }
+
+  // A scored reply: the full /api/analyze answer, as the lab harness
+  // (lab/harness.html, calling the core directly) and any integration that
+  // shows the score receive it.
+  function isScored(result) {
+    return !!result && typeof result.risk_score === "number" && isFinite(result.risk_score);
+  }
+
+  // The core's acknowledgement-only reply, {session_id, accepted: true},
+  // which it sends when the proxy in front of it asks for one (the store's
+  // nginx does: apps/checkout/nginx.conf). The page being scored is then told
+  // that its window was taken and nothing about how it scored. Only a body
+  // that says accepted: true counts: any other 2xx body without a score
+  // is still an invalid reply, so a misrouted request is reported rather than
+  // read as stored.
+  function isAck(result) {
+    return !!result && result.accepted === true && !("risk_score" in result);
   }
 
   // The token was refused -- expired, or signed with a secret the server no

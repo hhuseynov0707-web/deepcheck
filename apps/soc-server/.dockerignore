@@ -1,0 +1,9 @@
+# Build context is apps/soc-server; the image needs requirements.txt and
+# soc_api.py only.
+__pycache__/
+.pytest_cache/
+*.pyc
+test_*.py
+requirements-dev.txt
+.env
+.env.*

@@ -976,20 +976,30 @@ def test_challenge_signature_is_not_a_token():
         raise AssertionError("ASCII disi imza kabul edildi")
 
 
-def test_token_expiry_relies_on_the_sdk_and_demo_handling_401():
+def test_token_expiry_relies_on_the_sdk_and_the_store_handling_401():
     """SESSION_TOKEN_TTL_S is justified by what the clients do with a 401: the
-    SDK registers a new session once and resends the window, and the demo
-    page turns a 401 on charge into a reload message rather than a charge or a
-    code prompt. If either stops doing that, the TTL's reasoning is void."""
+    SDK registers a new session once and resends the window, and the store
+    turns a 401 on the decision into a reload message rather than a charge or
+    a code prompt (checkout-api answers 409, the page shows the reload
+    notice). If either stops doing that, the TTL's reasoning is void."""
+    import re
+
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(root, "sdk", "deepcheck.js"), encoding="utf-8") as fh:
-        sdk = fh.read()
+
+    def read(*parts):
+        with open(os.path.join(root, *parts), encoding="utf-8") as fh:
+            return fh.read()
+
+    sdk = read("sdk", "deepcheck.js")
     assert "res.status === 401 && !reauthAttempted" in sdk and "return reregisterAndResend(payload)" in sdk
     assert "function reregisterAndResend(payload)" in sdk and "reauthAttempted = false;" in sdk
-    with open(os.path.join(root, "frontend", "src", "pages", "Demo.jsx"), encoding="utf-8") as fh:
-        demo = fh.read()
-    assert 'if (res.status === 401) throw new NoSessionError(' in demo
-    assert "await flushBehaviour();" in demo
+    # The store sends the newest behaviour before it asks for a decision.
+    assert "await bounded(instance.flush?.(), FLUSH_WAIT_MS);" in read("apps", "checkout", "src", "lib", "sdk.js")
+    server = read("apps", "checkout-server", "main.py")
+    assert "raise CoreSessionGone()" in server and "def _session_gone() -> JSONResponse:" in server
+    assert 'if (status === 409) return { kind: "session" };' in read("apps", "checkout", "src", "lib", "api.js")
+    page = read("apps", "checkout", "src", "pages", "Checkout.jsx")
+    assert re.search(r'case "session":\s*setNotice\("reload"\);', page)
 
 
 def test_decision_blocks_bot_session():

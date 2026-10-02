@@ -304,8 +304,9 @@ def rolling_windows(h):
     return out
 
 
-# Card, expiry and CVV fields plus an "Onayla" button, laid out like
-# frontend/src/pages/Demo.jsx.
+# Card, expiry and CVV fields plus an "Onayla" button, laid out like the former
+# demo page (frontend/src/pages/Demo.jsx, removed 2026-10-02). Not re-derived
+# for the store's checkout page.
 FIELD_CARD, SUGGESTION = (560.0, 300.0), (560.0, 348.0)
 FIELD_CVV, BUTTON_CONFIRM = (760.0, 372.0), (640.0, 470.0)
 

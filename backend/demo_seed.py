@@ -17,20 +17,28 @@ modality, in the reserved "demo" merchant namespace (spec 5.7) that no real
 merchant can claim. Nothing here is a person, and everything written says so:
 customer_profiles.is_synthetic, customer_profile_vectors.is_synthetic, the
 references' session ids ("sentetik-..."), the customer references themselves,
-and the Turkish labels on the Demo page and the SOC panel. No measurement reads
-any of it: profile_lab.py never opens the served database, and test_demo.py
-fails if an evaluation script starts to.
+and the Turkish labels in the SOC panel and in this tool's own output. No
+measurement reads any of it: profile_lab.py never opens the served database, and
+test_demo.py fails if an evaluation script starts to.
 
-WHAT A STEP-UP ON THESE CUSTOMERS DEMONSTRATES. A juror who pays as "Ayşe" is a
-real person compared with a simulator identity, and a real person differs from
-every simulator identity by construction -- so the step-up that follows shows the
+WHAT A STEP-UP ON THESE CUSTOMERS DEMONSTRATES. A real person who pays as "Ayşe"
+is compared with a simulator identity, and a real person differs from every
+simulator identity by construction -- so the step-up that follows shows the
 MECHANISM (a history-backed deviation asking for extra verification, never a
 block, never a score change), not the layer's accuracy on real people. That
 accuracy has not been measured, because it needs real customers.
-The contrast case, --simulate, runs a NEW session drawn from the SAME synthetic
-identity through the real HTTP path and is expected not to be challenged; on
-synthetic identities the same-person challenge rate was measured at 4.9% (full
-conformal, docs/profile-evaluation.md), which is a lower bound for real people.
+Only the former demo page (removed 2026-10-02) let a juror pay as a synthetic
+customer. The store checkout (apps/checkout) never names one of these: its
+server sends a fresh guest reference per session in its own merchant namespace
+(apps/checkout-server/main.py, customer_ref_for). So that act has no path in the
+current stack, and nothing here demonstrates it any more.
+What remains is the contrast case, --simulate: a NEW session drawn from the SAME
+synthetic identity, through the real HTTP path (/api/session, attestation,
+/api/analyze, then /api/demo/charge in the "demo" namespace), printed with its
+decision and shown in the SOC labelled synthetic. It is expected not to be
+challenged; on synthetic identities the same-person challenge rate was measured
+at 4.9% (full conformal, docs/profile-evaluation.md), which is a lower bound for
+real people.
 
 HOW THE HISTORY IS BUILT -- the same path a live session takes:
   1. train_model.simulate_identity_sessions() draws a session: ten flush
@@ -48,8 +56,8 @@ HOW THE HISTORY IS BUILT -- the same path a live session takes:
 The one departure is named where it happens (_learning_cap_lifted): the per-day
 learning cap is lifted for this process while it seeds.
 
-The profile row is created with the values the demo namespace uses when the Demo
-page names a customer for the first time (main._read_profile_context): consent
+The profile row is created with the values the demo namespace uses when a
+/api/demo/charge names a customer for the first time (main._read_profile_context): consent
 basis "demo", is_demo -- plus is_synthetic. No person consented to anything,
 because there is no person.
 """
@@ -84,13 +92,14 @@ from models import CustomerProfile, CustomerProfileVector, DecisionAudit, Sessio
 @dataclass(frozen=True)
 class SyntheticCustomer:
     key: str  # the --simulate argument
-    name: str  # Turkish display name; the Demo page and every label add "sentetik"
+    name: str  # Turkish display name; every label that shows it adds "sentetik"
     ref: str  # customer_ref in the demo namespace; says "sentetik" itself
     seed: int  # the identity: numpy default_rng(seed) -> train_model._identity_traits()
 
 
-# frontend/src/demoCustomers.js carries a copy for the Demo page's selector;
-# test_demo.py pins the two together. The seeds are arbitrary and fixed: an
+# The former demo page (removed 2026-10-02) carried a copy of this list for its
+# selector (frontend/src/demoCustomers.js, pinned to this one by test_demo.py);
+# no page lists these customers now. The seeds are arbitrary and fixed: an
 # identity is whatever _identity_traits() draws from them, not a chosen person.
 DEMO_CUSTOMERS = (
     SyntheticCustomer("ayse", "Ayşe", "sentetik-ayse", 20260919),
@@ -100,8 +109,8 @@ DEMO_CUSTOMERS = (
 
 # The simulator's modalities (train_model.IDENTITY_MODALITIES, restated so this
 # module imports without torch-heavy train_model): it has no model of a finger,
-# so there is no synthetic touch history, and a juror on a phone meets an
-# immature touch profile and is not compared at all.
+# so there is no synthetic touch history, and a touch session naming one of
+# these customers meets an immature touch profile and is not compared at all.
 SEED_MODALITIES = ("mouse", "keyboard")
 
 # One full reference buffer per modality: more than PROFILE_MIN_SESSIONS, so the
@@ -122,7 +131,8 @@ MAX_DRAWS_PER_MODALITY = 4 * SESSIONS_PER_MODALITY
 # every run, whatever else was simulated before it.
 _HISTORY_STREAM = {"mouse": 1, "keyboard": 2}
 
-# What the demo page charges (Demo.jsx ORDER: 1699.00 + 20% KDV).
+# The store cart's total (apps/checkout-server/main.py CART_ITEMS: 1699.00 +
+# 20% KDV), the same amount the former demo page charged.
 DEMO_AMOUNT = 2038.80
 
 # Chromium's documented clock clamp and the setTimeout(0) lag main.py measured
@@ -338,8 +348,8 @@ def _learning_cap_lifted():
 
 
 async def _create_profile(db, customer: SyntheticCustomer, profile_id: str) -> None:
-    """The row the demo namespace creates when the Demo page names a customer
-    for the first time (main._read_profile_context), plus is_synthetic."""
+    """The row the demo namespace creates when a /api/demo/charge names a
+    customer for the first time (main._read_profile_context), plus is_synthetic."""
     main = _main()
     now = main.utcnow()
     await db.execute(
@@ -395,7 +405,8 @@ async def store_customer(db, customer: SyntheticCustomer, history: dict) -> int:
 async def delete_profiles(db, profile_ids: list[str]) -> None:
     """Remove synthetic demo customers the way an erasure does
     (main.profile_erase, mode "erase"): lock the rows, delete the vectors --
-    including any a juror's session added -- unlink sessions and decision audit
+    including any a later session added (a --simulate run, or a juror's on the
+    former demo page, removed 2026-10-02) -- unlink sessions and decision audit
     rows, delete the profiles. The audit rows themselves stay: they are the
     record of decisions that were made, and they keep their is_synthetic."""
     main = _main()
@@ -422,7 +433,9 @@ class CustomerStatus:
     synthetic_flag: bool = False
     # modality -> seeded references stored (synthetic, not probation)
     seeded: dict | None = None
-    # vectors NOT written by the seed: a juror's session learned into the profile
+    # vectors NOT written by the seed: a later session learned into the profile
+    # (a --simulate run, or a juror's on the former demo page, removed
+    # 2026-10-02)
     foreign_vectors: int = 0
     escalations_used: int = 0
     intact: bool = False
@@ -572,7 +585,10 @@ async def print_status(db, *, customers=DEMO_CUSTOMERS, log=print) -> int:
 
 
 def configuration_warnings() -> list[str]:
-    """What stands between a seeded customer and a visible step-up."""
+    """What stands between a seeded customer and a profile comparison that
+    can ask for a step-up. No page names these customers any more (the
+    former demo page was removed on 2026-10-02); --simulate, through
+    /api/demo/charge, is the one path left that does."""
     main = _main()
     warnings = []
     if not main.PROFILE_ENABLED:
@@ -585,7 +601,7 @@ def configuration_warnings() -> list[str]:
             "PROFILE_ESCALATION=0: golge modu. SOC panosu sapmayi gosterir, fakat ek dogrulama istenmez."
         )
     if not main.DEMO_ENDPOINTS_ENABLED:
-        warnings.append("DEMO_ENDPOINTS kapali: demo sayfasi /api/demo/charge'a ulasamaz (404).")
+        warnings.append("DEMO_ENDPOINTS kapali: /api/demo/charge ve /api/demo/verify 404 doner; --simulate ve magazanin kod adimi calismaz.")
     return warnings
 
 

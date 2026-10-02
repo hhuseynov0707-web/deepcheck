@@ -41,8 +41,9 @@ from models import (
     Session,
 )
 
-# The session's *official* risk_score (the badge, the 40/60/80 gating
-# thresholds in the demo, the sessions list) is scorer.smooth_session_score():
+# The session's *official* risk_score (the 40/60/80 decision ladder, the
+# score the SOC lists, the /api/analyze reply the lab tools read) is
+# scorer.smooth_session_score():
 # the median of the last few flushes, with a level-shift exception so a
 # mid-session handover is not smoothed away. BehaviorData.risk_score (used by
 # the dashboard's history chart and the sequential test) stays the raw
@@ -237,8 +238,9 @@ SDK_NEW_EVIDENCE_PER_FLUSH = SDK_FLUSH_INTERVAL_MS / SDK_ROLLING_WINDOW_MS
 # not people): all 6 human-scenario runs allowed and none of the 8 attack runs
 # allowed, at either factor. 0.2 bought nothing against a bot and left seven
 # in eight typical form fills without a decision at the moment of payment,
-# which the Demo page answers with a "keep going" hint and then a step-up. So
-# the factor stays 1.0.
+# which the store's server answers by asking again (up to 3 times, 2 s apart;
+# decide_with_retry in apps/checkout-server/main.py) and then with a step-up.
+# So the factor stays 1.0.
 #
 # That comparison also shows what the factor is. Multiplying every term by 0.2
 # with the bounds fixed is the same rule as keeping the terms and moving both
@@ -526,8 +528,9 @@ MAX_TIMER_LAG_MS = 250.0
 # 30 minutes is CHOSEN, not measured -- there are no real checkouts to measure.
 # Expiring too early has a bounded but real cost: the SDK answers a 401 from
 # /api/analyze by registering a NEW session once and resending the window
-# (sdk/deepcheck.js, reregisterAndResend), and Demo.jsx awaits
-# DeepCheck.flush() before it charges, so the charge normally goes out under
+# (sdk/deepcheck.js, reregisterAndResend), and the store page awaits
+# DeepCheck.flush() before it pays (sessionCredentials in
+# apps/checkout/src/lib/sdk.js), so the payment normally goes out under
 # the new session -- but that session starts with no evidence (the decision
 # waits for MIN_FLUSHES_FOR_DECISION flushes) and without any step-up recorded
 # on the old one. So the TTL sits well past one checkout sitting: six times
@@ -645,11 +648,14 @@ def _check_runtime(runtime: "RuntimeMeasurements") -> None:
         )
 
 # The /api/demo/* endpoints are a demonstration of the merchant-side pattern,
-# not a payment integration. The step-up code is a fixed constant that the demo
-# page prints on screen, so anything the server answers `verify` for can be
-# upgraded to `allow` by anyone who reads it. That is the point in a demo and
-# unacceptable anywhere else, so they are enabled only in DEBUG unless someone
-# turns them on deliberately.
+# not a payment integration. The step-up code is a fixed constant that the
+# store's OTP dialog prints on screen (apps/checkout, VITE_DEMO_VERIFY_CODE;
+# the former demo page did the same), so anything the server answers `verify`
+# for can be upgraded to `allow` by anyone who reads it. That is the point in
+# a demo and unacceptable anywhere else, so they are enabled only in DEBUG
+# unless someone turns them on deliberately. The store's OTP step goes through
+# /api/demo/verify too (checkout-api, submit_step_up), so the store stand
+# needs them on.
 # Reads DEBUG from the environment rather than the module constant, which is
 # defined further down; the default is simply "whatever DEBUG says".
 DEMO_ENDPOINTS_ENABLED = (
@@ -669,6 +675,38 @@ DEMO_ENDPOINTS_ENABLED = (
 # Default off. Set SHAP_IN_ANALYZE=1 only for a walkthrough where showing the
 # reasoning live matters more than withholding it.
 SHAP_IN_ANALYZE = os.getenv("SHAP_IN_ANALYZE", "0").strip() == "1"
+
+# Whether /api/analyze tells the client being scored its score at all.
+#
+# The same argument as SHAP_IN_ANALYZE, one level coarser. The normal reply
+# carries the session's risk score and label, every 2 s, to the party under
+# assessment: send a window, read the score, change the behaviour, repeat. The
+# store (apps/checkout) has no use for it -- the page shows no score and the
+# store's server asks /api/decision itself -- so its nginx adds
+# `X-DeepCheck-Reply: ack` to every SDK call it forwards here, and the core
+# then answers {session_id, accepted} and nothing else. The flush is checked,
+# scored and stored exactly as without the header; only the reply shrinks.
+#
+# A header rather than a setting, because the core serves two kinds of caller
+# at once: the lab tools need the full reply (bot_lab.py, live_bot.py --legacy
+# and demo_seed.py --simulate read the per-window score, capture.py its
+# measured_features) from the same process that must withhold it from the
+# store's payers. They reach the core on its own port, never through the
+# store's nginx.
+#
+# Why trusting a header is safe here. It can only ever REMOVE information from
+# the reply, so a client that sends it itself gains nothing. What the store
+# needs is the opposite guarantee -- that a client behind it cannot get rid of
+# the header -- and that holds: nginx's proxy_set_header replaces whatever the
+# browser sent under that name, and the core's own port is published on
+# loopback only (docker-compose.yml, API_BIND_ADDR), so nothing on the LAN
+# reaches /api/analyze except through that nginx. It does NOT hold where the
+# core is reachable some other way: with API_BIND_ADDR=0.0.0.0, or from the
+# host itself on loopback port 8000, a client holding a session token can post
+# its window there and read the full reply. (The former demo's open /api/
+# proxy on loopback port 3200 was a second such way; it was removed on
+# 2026-10-02.)
+ANALYZE_ACK_REPLY = "ack"
 
 
 def _require_demo_endpoints() -> None:
@@ -810,8 +848,9 @@ def _client_ip(request: Request) -> str:
     FORWARDED_ALLOW_IPS (default 127.0.0.1).
 
     In the bundled deployment every browser request arrives through the
-    frontend's nginx (/api/ is proxied, frontend/nginx.conf), so the peer is
-    the nginx container. Unless FORWARDED_ALLOW_IPS is set to that
+    store's nginx (checkout-web proxies /deepcheck/api/ to the core,
+    apps/checkout/nginx.conf), so the peer is the nginx container. Unless
+    FORWARDED_ALLOW_IPS is set to that
     container's address, this returns nginx's address for every visitor and
     the per-IP minting limit is ONE bucket shared by all of them. nginx
     overwrites X-Forwarded-For with the address it saw, so trusting it does
@@ -855,7 +894,9 @@ _RETENTION_LOCK_KEY = 728_302
 #     a demo visitor leaves there -- a vector learned from their session, the
 #     implicit demo profile their typed reference created, the decision audit
 #     rows -- is deleted on the SESSION's clock, ROW_RETENTION_HOURS. Nobody
-#     consented to anything on the demo page and there is no erasure route
+#     consented to anything there (its callers today are the lab harness,
+#     demo_seed.py --simulate and live_bot.py --legacy; the former demo page
+#     was removed on 2026-10-02) and there is no erasure route
 #     into the reserved namespace (require_merchant never returns "demo"), so
 #     nothing there may outlive the session it came from. The seeded SYNTHETIC
 #     customers (demo_seed.py) are not a visitor's data and keep their
@@ -945,7 +986,8 @@ DASHBOARD_KEY = _load_secret("DASHBOARD_KEY", _DEV_DASHBOARD_KEY, "SOC panosu er
 # id:  ^[a-z0-9][a-z0-9_-]{0,31}$      key: >= 32 printable ASCII, no spaces
 _MERCHANT_ID_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 _MERCHANT_KEY_RE = re.compile(r"[\x21-\x7e]{32,}")
-# The demo page's profiles live in this namespace (spec 5.7), so no configured
+# The profiles /api/demo/charge names (and demo_seed.py's synthetic
+# customers) live in this namespace (spec 5.7), so no configured
 # merchant may claim it: a merchant called "demo" would share every demo
 # customer's pseudonym.
 DEMO_MERCHANT_ID = "demo"
@@ -984,7 +1026,7 @@ def _load_merchant_keys(env_name: str, *, reserved_ids=(DEMO_MERCHANT_ID,), othe
             )
         if merchant_id in reserved_ids:
             raise RuntimeError(
-                f"{env_name}: '{merchant_id}' kimligi demo sayfasi icin ayrilmistir."
+                f"{env_name}: '{merchant_id}' kimligi demo uc noktalari (/api/demo/*) icin ayrilmistir."
             )
         if merchant_id in keys:
             raise RuntimeError(f"{env_name}: '{merchant_id}' kimligi birden fazla kez tanimli.")
@@ -1182,7 +1224,8 @@ def _require_customer_ref(customer_ref: str) -> str:
 
 
 # The single place the 40/60/80 ladder turns into an enforcement decision.
-# It used to live in Demo.jsx, i.e. inside the attacker's own browser.
+# It used to live in Demo.jsx (the former demo page, since removed), i.e.
+# inside the attacker's own browser.
 ACTION_LADDER = (
     (40, "allow"),
     (60, "warn"),
@@ -1257,9 +1300,11 @@ PUBLIC_REASONS = {
     # Saying "too many decisions for this customer" would confirm that the
     # probing is being counted per customer, and when its window resets.
     "profile_rate_limited": "step_up",
-    # Not collapsed to step_up: the page must be able to say "a few more
-    # seconds" to a customer whose first flushes were thin, instead of opening
-    # an OTP box in the opening seconds of every checkout. What it reveals --
+    # Not collapsed to step_up: the merchant must be able to tell "a few more
+    # seconds" apart from a challenge for a customer whose first flushes were
+    # thin, instead of opening an OTP box in the opening seconds of every
+    # checkout (the store's server re-asks quietly: decide_with_retry in
+    # apps/checkout-server/main.py). What it reveals --
     # "fewer than three of your flushes were observed" -- is a one-bit signal
     # an adversarial review judged low-value: acting on it means producing
     # observed flushes, which is exactly what puts a session in front of the
@@ -1839,6 +1884,24 @@ class AnalyzeResponse(BaseModel):
     response_time_ms: float
 
 
+class AnalyzeAck(BaseModel):
+    """The reply to a caller that must not see its own score (ANALYZE_ACK_REPLY).
+
+    Nothing but the id the flush was filed under and that it was accepted: no
+    score, label, confidence, measured-feature count, provisional flag, SHAP or
+    timing. A flush the core refuses still gets its error status (401, 422,
+    429, 5xx), so "accepted" is never sent for a window that was not taken.
+    """
+
+    # Forbidding extras keeps the response_model union below unambiguous: a
+    # full AnalyzeResponse can never validate as this shape and lose its
+    # fields, and this shape lacks AnalyzeResponse's required ones.
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    accepted: Literal[True]
+
+
 class SessionCreateResponse(BaseModel):
     """Challenge only. The token is issued by /api/session/attest."""
 
@@ -1947,7 +2010,8 @@ class OutcomeRequest(BaseModel):
 # The lawful bases a merchant may record. Legitimate interest is deliberately
 # absent: a persistent identity-keyed record of how a person moves a pointer
 # is biometric data (GDPR Art. 4(14), KVKK Art. 6), for which it is not
-# available. "demo" is set only by the demo page and "objected" only by an
+# available. "demo" is set only by the demo namespace's implicit creation
+# (/api/demo/charge, _read_profile_context) and "objected" only by an
 # objection, so neither can be claimed here.
 #
 # The same argument is open against "contract_necessity" and is NOT settled
@@ -2018,15 +2082,20 @@ async def attest_session(payload: SessionAttestRequest, request: Request):
     )
 
 
-@app.post("/api/analyze", response_model=AnalyzeResponse)
+@app.post("/api/analyze", response_model=AnalyzeResponse | AnalyzeAck)
 async def analyze(
     payload: AnalyzeRequest,
     x_deepcheck_token: Annotated[str | None, Header()] = None,
+    # Set by the store's nginx, never by the SDK: see ANALYZE_ACK_REPLY.
+    x_deepcheck_reply: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_db),
 ):
     session_id = payload.session_id
     _require_session_token(session_id, x_deepcheck_token)
     _rate_limit("analyze", session_id)
+    # Exact value only. Anything else, or no header, is the full reply the
+    # lab tools have always had (and the former demo page had).
+    ack_only = x_deepcheck_reply == ANALYZE_ACK_REPLY
     started = time.perf_counter()
     # Read once, before any await: the offset check compares it with
     # client_sent_at, and time spent waiting on the database is not drift in
@@ -2051,6 +2120,10 @@ async def analyze(
     # or written.
     newest_event_at = _newest_event_ms(raw)
     if newest_event_at is None:
+        # The behaviourless reply exists only to show the stored score, so an
+        # acknowledgement skips even its read.
+        if ack_only:
+            return AnalyzeAck(session_id=session_id, accepted=True)
         return await _answer_without_behaviour(db, session_id, started)
 
     # 1, the stateless half: needs no database, so it rejects before any read.
@@ -2206,6 +2279,11 @@ async def analyze(
             detail="Bu davranis penceresi daha once gonderilmis (tekrar oynatma suphesi)",
         ) from None
 
+    # Only after the commit: everything above -- the replay checks, the score,
+    # the smoothing, the stored row with its response_time_ms -- is the same
+    # with or without the header.
+    if ack_only:
+        return AnalyzeAck(session_id=session_id, accepted=True)
     return AnalyzeResponse(
         session_id=session_id,
         risk_score=smoothed_score,
@@ -2305,8 +2383,8 @@ async def _decide(
 
     merchant_id and customer_ref are non-None only when the profile layer is
     enabled and the caller is entitled to name a customer: a merchant whose
-    credential checked out (_profile_request), or the demo page under the
-    reserved DEMO_MERCHANT_ID. The per-customer profile can then turn an
+    credential checked out (_profile_request), or a /api/demo/charge caller
+    under the reserved DEMO_MERCHANT_ID. The per-customer profile can then turn an
     allow or a warn into a verify, and nothing else (see the profile block in
     _decide_on_evidence). The verdict returned here carries the INTERNAL
     reason; the endpoints collapse it with _public_verdict.
@@ -2478,10 +2556,12 @@ async def _decide_on_evidence(
     # have three observed flushes).
     #
     # "insufficient_evidence" is a telemetry-state reason, returned as is: the
-    # page tells the customer "a few more seconds", and a second hint becomes a
-    # step-up (Demo.jsx). A real checkout -- typing a card, or moving the
-    # pointer to a stored card and the button -- is observed for about five
-    # flushes once it starts (the SDK ships a 10 s rolling window).
+    # store's server asks again while the SDK keeps sending (up to 3 times, 2 s
+    # apart), and only a verify that remains after that becomes a step-up
+    # (decide_with_retry in apps/checkout-server/main.py). A real checkout --
+    # typing a card, or moving the pointer to a stored card and the button --
+    # is observed for about five flushes once it starts (the SDK ships a 10 s
+    # rolling window).
     if len(per_flush) < MIN_FLUSHES_FOR_DECISION:
         logger.info(
             "observed-flush gate held session %s at verify: %d of %d flushes observed a generator",
@@ -2795,10 +2875,10 @@ async def _read_profile_context(
 ) -> ProfileContext:
     row = await _read_profile_row(db, profile_id)
     if row is None and merchant_id == DEMO_MERCHANT_ID:
-        # The ONLY implicit profile creation in the system (spec 5.7): the demo
-        # page's reserved namespace, which require_merchant can never return,
-        # so it cannot collide with a merchant's customer. is_demo rows are
-        # excluded from every reported measurement.
+        # The ONLY implicit profile creation in the system (spec 5.7): the
+        # reserved demo namespace (/api/demo/charge), which require_merchant
+        # can never return, so it cannot collide with a merchant's customer.
+        # is_demo rows are excluded from every reported measurement.
         now = utcnow()
         await db.execute(
             pg_insert(CustomerProfile)
@@ -3745,7 +3825,9 @@ async def demo_verify(
     the pattern is where the result lives: the browser used to decide for
     itself that verification had succeeded and then run the payment. Now the
     only thing it can do is submit a code; whether that unlocks anything is
-    decided here and read back by /api/demo/charge.
+    decided here and read back by the shared decision (_decide, behind both
+    /api/decision -- the store's server asks it after forwarding the code --
+    and /api/demo/charge).
     """
     _require_demo_endpoints()
     _require_session_token(payload.session_id, x_deepcheck_token)
@@ -3779,8 +3861,11 @@ async def demo_charge(
     A real merchant backend would call /api/decision and then its payment
     provider. Here both live in one endpoint so the demo proves the property
     a jury will test for: no sequence of browser actions produces a
-    "charged" response for a session the server would not allow. Deleting
-    every check in Demo.jsx changes nothing, because Demo.jsx has no checks.
+    "charged" response for a session the server would not allow. (Deleting
+    every check in the former demo page's Demo.jsx changed nothing, because it
+    had none; that page was removed on 2026-10-02.) Its callers now are the
+    lab harness (lab/harness.html), demo_seed.py --simulate and
+    live_bot.py --legacy; the store uses /api/decision through its own server.
 
     `customer_ref`, when present, names a customer in the reserved "demo"
     merchant namespace, where a profile is created on first use (consent
@@ -4176,7 +4261,10 @@ async def _last_decision(db: AsyncSession, session_id: str) -> dict | None:
     nothing while the layer is off (the table is the layer's, and like
     _profile_block this reads none of it then), and with it on, no plain allow
     that named no customer (_learn_and_audit returns before writing). The
-    dashboard says so rather than implying no decision was made.
+    dashboard says so rather than implying no decision was made. The store's
+    checkout always names one -- a fresh guest reference per session,
+    customer_ref_for in apps/checkout-server/main.py -- so with the layer on
+    its allows are recorded.
 
     Never the merchant, the profile id or the compared vector: those stay
     behind the per-operator review credential (T34)."""

@@ -1,0 +1,3 @@
+# Test-only, kept out of the image: the Dockerfile installs requirements.txt.
+-r requirements.txt
+pytest==8.2.2

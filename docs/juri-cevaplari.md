@@ -493,11 +493,18 @@ söylüyor.
 
 # Demo Prosedürü — Sentetik demo müşterileri
 
-> **Önce bunu söyleyin.** Jüri üyesinin sentetik bir müşteri adına ödemesi
-> katmanın **mekanizmasını** gösterir, gerçek kişilerdeki doğruluğunu değil.
-> Gerçek bir kişi, tanımı gereği hiçbir simülatör kimliğine benzemez; bu yüzden
-> ek doğrulama beklenir ve bu beklenti bir başarı ölçümü değildir. Gerçek
+> **Önce bunu söyleyin.** Sentetik müşterilerle yapılan her gösterim katmanın
+> **mekanizmasını** gösterir, gerçek kişilerdeki doğruluğunu değil. Gerçek
 > müşterilerde yanlış sorgulama ve yakalama oranı ölçülmedi.
+>
+> **2026-10-02'den beri bu gösterimin sayfası yok.** Bir kişinin sentetik bir
+> müşteri *adına* ödeyebildiği tek yer eski tek sayfalı demoydu
+> (`http://localhost:3200/demo`) ve o demo silindi. TechStore mağazası hiçbir
+> zaman sentetik bir müşteriyi adlandırmaz: mağaza sunucusu her ödeme oturumuna
+> kendi satıcı ad alanında yeni bir misafir referansı verir. Bugün çalışan
+> yalnızca komut satırındaki karşıt örnektir (`demo_seed.py --simulate`, aşağıda).
+> Gerçek bir kişinin sentetik geçmişten sapıp ek doğrulamaya düşmesi bugünkü
+> yapıda **gösterilemez**; aşağıdaki 2026-09-19 kaydı silinen sayfadandır.
 
 ## Neden sentetik müşteri
 
@@ -524,7 +531,7 @@ gerçek satıcının müşterisiyle eşleşemez.
 | Veritabanı | `customer_profiles.is_synthetic`, `customer_profile_vectors.is_synthetic`; sentetik bir profille verilen her karar için `decision_audit.is_synthetic`; `--simulate` oturumları için `sessions.is_synthetic` |
 | Müşteri referansı | `sentetik-ayse`, `sentetik-mehmet`, `sentetik-zeynep` |
 | Referans oturum kimlikleri | `sentetik-ayse-mouse-01` … (böyle bir oturum hiç yaşanmadı) |
-| Demo sayfası | Seçicide "Ayşe — sentetik geçmiş (fare 20, klavye 20)" ve altında "Ayşe, Mehmet ve Zeynep sentetik demo müşterileridir…" satırı |
+| `--simulate` çıktısı | "SİMÜLE EDİLMİŞ OTURUM — gerçek bir kişi değil" başlığı ve sentetik müşterinin adı, referansı |
 | SOC panosu | "Sentetik demo verisi" rozeti: simüle edilmiş oturumlarda ve sentetik profille verilen kararlarda. Metrik kartları simüle edilmiş oturumları saymaz ve kaç tanesinin dışarıda kaldığını yazar |
 | Ölçümler | Hiçbirine girmez. `profile_lab.py` sunulan veritabanını açmaz. `record_session.py` simüle edilmiş bir oturumu değerlendirme kümesine yazmaz. `backend/test_demo.py` ikisini de denetler |
 
@@ -545,11 +552,14 @@ PROFILE_ESCALATION=1
 DEMO_ENDPOINTS=1
 ```
 
-- Satıcı anahtarı demo ödemesinde kullanılmaz, ama katman en az bir satıcı
-  tanımlı olmadan açılmaz. `demo` kimliği ayrılmıştır, bir satıcıya verilemez.
+- Satıcı anahtarı sentetik müşterilerde kullanılmaz, ama katman en az bir
+  satıcı tanımlı olmadan açılmaz. İki bilgisayarlı demoda mağazanın kaydı
+  (`demo-magaza:...`, `docs/canli-demo.md`) bunu zaten karşılar. `demo` kimliği
+  ayrılmıştır, bir satıcıya verilemez.
 - `PROFILE_ESCALATION=1` **yalnızca bu demo içindir**. Zorunlu mod, gerçek
   bir kişi farklı oturum ve cihazlarda ölçülmeden üründe açılmamalıdır.
-  `0` bırakılırsa pencere açılmaz, ama pano sapmayı yine gösterir.
+  `0` bırakılırsa karşılaştırma yine yapılır ve gölge modda kaydedilir; kimseye
+  bir şey sorulmaz.
 
 ## Kurulum — tek komut
 
@@ -566,48 +576,45 @@ dizüstü bilgisayarda yaklaşık 20 saniye sürdü.
 
 ## Jüri önünde
 
-> Bu bölüm sentetik müşteri profili (hesap ele geçirme) gösterimidir. İki
-> bilgisayarlı canlı akış — bir ekip arkadaşının kendi bilgisayarından elle
-> ödemesi ve aynı bilgisayardan betikli bot saldırısı — `docs/canli-demo.md`
-> dosyasındadır.
+> Bu bölüm sentetik müşteri profili gösterimidir ve yalnızca sunum
+> bilgisayarında, komut satırından yapılır. İki bilgisayarlı canlı akış — bir
+> ekip arkadaşının kendi bilgisayarından elle ödemesi ve aynı bilgisayardan
+> betikli bot saldırısı — `docs/canli-demo.md` dosyasındadır.
 
-1. SOC panosu (`/dashboard`) ayrı bir sekmede açık tutulur.
-2. Demo sayfası **yeniden yüklenir**; her yükleme yeni bir oturumdur.
-   "Demo Müşterisi" seçicisinden bir sentetik müşteri seçilir (ör. Ayşe).
-   Altındaki referans alanında `sentetik-ayse` görünür.
-3. Jüri üyesi kart bilgilerini **fareyle** alanlara tıklayarak doldurur ve
-   hemen Onayla'ya basar. Klavyeyle ya da telefonla ödeme için aşağıdaki
-   sınırlara bakın.
-4. Beklenen sonuç doğrulama kodu penceresidir. Sayfa nedenini söylemez:
-   istemciye giden gerekçe, diğer kontrollerle aynı genel `step_up`'tır.
-   Risk skoru ve etiket değişmez.
-5. **Kod girilmeden önce** panoda bu oturum seçilir. "Müşteri Profili"
-   kartında şunlar görünür: "Sentetik demo verisi", "Değerlendirildi",
-   "Ek doğrulama istendi", "Fare: 20 / 19 — Olgun", p-değeri **0.0476** ve en
-   çok sapan üç özellik. 0.0476, 20 referansla ulaşılabilecek en küçük
-   p-değeridir (1/21). Yani bu oturum, geçmişteki 20 oturumun **hepsinden**
-   daha uçtur. Kartta "Ek doğrulama istendi" yoksa pencere profil yüzünden
-   değil, skor gibi başka bir kontrol yüzünden açılmıştır.
-6. Jüri üyesi kodu girer ve ödeme alınır. Katman yalnızca ek doğrulama
-   ister: engellemez, onaylamaz, skoru değiştirmez. Bu, "torun büyükannesi
-   adına ödüyor" durumudur: sapma bir hüküm değil, kanıt istemek için bir
-   nedendir.
-7. **Karşıt örnek:**
+1. SOC panosu (`http://localhost:3100`) açık tutulur, "Canlı takip" açıktır.
+2. **Karşıt örnek:**
    `docker compose exec backend python demo_seed.py --simulate ayse`.
-   Aynı sentetik kimlikten **yeni** bir oturum, gerçek HTTP yolundan geçer:
-   oturum açma, iş kanıtı, 10 `/api/analyze` akışı ve ödeme. Çıktı
-   "SİMÜLE EDİLMİŞ OTURUM — gerçek bir kişi değil" başlığını taşır. Beklenen
-   sonuç "ek doğrulama istenmedi" ve büyük bir p-değeridir. Panoda bu oturum
-   "Sentetik demo verisi" rozetiyle görünür ve metrik kartlarına katılmaz.
-   Aynı kimlik bile ara sıra sorgulanır: sentetik kimliklerde bu oran %4.9'dur
-   ve çıktı böyle bir durumda bunu yazar.
+   Aynı sentetik kimlikten **yeni** bir oturum, çekirdeğin gerçek HTTP
+   yolundan geçer: oturum açma, iş kanıtı, 10 `/api/analyze` akışı ve ayrılmış
+   `demo` ad alanında `/api/demo/charge` ile ödeme. Çıktı
+   "SİMÜLE EDİLMİŞ OTURUM — gerçek bir kişi değil" başlığını taşır ve kararı,
+   profil durumunu ve p-değerini yazar. Beklenen sonuç "ek doğrulama
+   istenmedi" ve büyük bir p-değeridir. Panoda bu oturum "Sentetik demo
+   verisi" rozetiyle görünür ve metrik kartlarına katılmaz. Aynı kimlik bile
+   ara sıra sorgulanır: sentetik kimliklerde bu oran %4.9'dur ve çıktı böyle
+   bir durumda bunu yazar.
+3. İsteğe bağlı: `--simulate zeynep --modality keyboard` katmanın kanıt
+   yetersizken sustuğunu gösterir (karşılaştırma yapılmaz; aşağıda "Giriş
+   türü").
+4. Söylenecek: "Katmanın tek çıktısı ek doğrulamadır; engellemez, onaylamaz,
+   skoru değiştirmez. Sapma bir hüküm değil, kanıt istemek için bir nedendir.
+   Büyükannesi adına ödeyen torun doğru kodu girip ödemeyi tamamlar."
+
+**Silinen sayfada ne vardı (kayıt için).** Eski demo sayfasında jüri üyesi
+"Demo Müşterisi" seçicisinden Ayşe'yi seçip kartı fareyle doldururdu; beklenen
+sonuç doğrulama kodu penceresiydi ve SOC'un "Müşteri Profili" kartı "Ek
+doğrulama istendi", "Fare: 20 / 19 — Olgun" ve p-değeri **0.0476** gösterirdi.
+0.0476, 20 referansla ulaşılabilecek en küçük p-değeridir (1/21): oturum,
+geçmişteki 20 oturumun **hepsinden** daha uçtur. Bu yol 2026-10-02'de sayfayla
+birlikte kalktı; bugün yeniden gösterilemez.
 
 ## 2026-09-19 doğrulaması
 
 Yalıtılmış bir Docker yığınında yapıldı: `DEBUG=0`, zorunlu mod ve sunulan
-model. "Jüri üyesi" satırları gerçek demo sayfasında, laboratuvarın insan
-hareket modeliyle (`lab/bot_lab.py`) sürülen bir Playwright oturumudur. Bu bir
-kişi değil, bir betiktir.
+model. "Jüri üyesi" satırları o tarihte var olan (2026-10-02'de silinen) demo
+sayfasında, laboratuvarın insan hareket modeliyle (`lab/bot_lab.py`) sürülen
+bir Playwright oturumudur. Bu bir kişi değil, bir betiktir. `--simulate`
+satırları bugün de aynı komutla çalışır.
 
 | Oturum | Oturum skoru | Karar | Profil katmanı |
 |---|---|---|---|
@@ -636,11 +643,11 @@ değerlendirildi:
 
 ## Sınırlar ve prova kuralları
 
-- **Giriş türü.** Fareyle ödeyin. Klavyeyle ödeme gösterilecekse Ayşe
-  seçilir. Zeynep'in klavye geçmişiyle karşılaştırma yapılamıyor ve bu,
-  katmanın kanıt yetersizken susmasını göstermek için kullanılabilir.
-  Telefonda (dokunmatik) sentetik geçmiş yoktur, katman karşılaştırma
-  yapmaz.
+- **Giriş türü.** `--simulate` varsayılan olarak fare oturumu üretir.
+  Klavye gösterilecekse `--modality keyboard` ile Ayşe seçilir. Zeynep'in
+  klavye geçmişiyle karşılaştırma yapılamıyor ve bu, katmanın kanıt
+  yetersizken susmasını göstermek için kullanılabilir. Dokunmatik için
+  sentetik geçmiş yoktur, katman karşılaştırma yapmaz.
 - **Sorgulama bütçesi yalnızca geçilen sorgulamaları sayar.** Bir müşteri 30
   gün içinde **3** ek doğrulamayı doğru kodla geçtiyse, profil o pencerede bir
   daha sormaz ve kart "Sorgulama bütçesi doldu" der. Kod girilmeden kapatılan
@@ -655,15 +662,19 @@ değerlendirildi:
   sınırı aşıldı — profil okunmadı" diye gösterir. Sınır bir müşterinin davranış
   zarfının deneme yanılmayla taranmasını önler. Diğer müşterileri etkilemez ve
   ödemeyi hiçbir zaman hata ile reddetmez. Bir provada aynı sentetik müşteriyle
-  bu kadar ödeme yapılmaz; kalabalık bir stantta `demo-musteri-1` için olabilir.
-- **Demo verisi 24 saat tutulur.** Demo ad alanında ziyaretçiden kalan her şey
-  (öğrenilen vektör, demo profili, karar kaydı) oturumla birlikte 24 saatte
-  silinir. Sayfadaki "KVKK Aydınlatma Metni" bağlantısı `docs/kvkk-aydinlatma.md`
-  taslağını uygulamanın içinde (`/kvkk`) açar; internet bağlantısı gerekmez.
-- **Karar anı.** Form doldurulunca beklemeden ödenir. Ödemeden sonra sayfa
-  açık kaldıkça oturum skoru değişebilir: doğrulamada bir oturumun skoru
-  ödemeden sonra 29.5'ten 78.8'e çıktı. Ödeme kararı ise verildiği andaki
-  kayıtla SOC'ta durur.
+  bu kadar `--simulate` çalıştırılmaz. Mağazada bu sınır provalarla dolmaz: her
+  ödeme kendi misafir referansıyla gelir, yani her ödemenin bütçesi
+  kendisinindir.
+- **Demo ad alanının saklama süresi.** Demo ad alanındaki karar kayıtları
+  (sentetik müşteriler adına simüle edilmiş oturumlarınkiler dahil) 24 saatte
+  silinir; yüklenen sentetik geçmiş ise `--reset`'e ya da en fazla 180 güne
+  kadar kalır. Ödeme sayfasından bu ad alanına hiçbir şey yazılmaz. Mağazanın
+  "Aydınlatma Metni" bağlantısı `docs/kvkk-aydinlatma.md` taslağını uygulamanın
+  içinde (`/gizlilik`) açar; internet bağlantısı gerekmez.
+- **Karar anı.** Silinen demo sayfasında ödemeden sonra sayfa açık kaldıkça
+  oturum skoru değişebiliyordu: 2026-09-19 doğrulamasında bir oturumun skoru
+  ödemeden sonra 29.5'ten 78.8'e çıktı. Mağaza sayfası ödeme alınınca SDK'yı
+  durdurur. Ödeme kararı her durumda verildiği andaki kayıtla SOC'ta durur.
 - **Sentetik müşteri öğrenmez.** Bu yüzden deneme (probation) kaydı ve üst
   üste 3 başarılı doğrulamayla kendi kendini onarma sentetik müşterilerle
   gösterilmez. Bu kurallar gerçek profiller için geçerlidir ve
@@ -691,13 +702,17 @@ referans, tam konformal sıralama):
 
 ## Bu demo neyi gösterir, neyi göstermez
 
-**Gösterir:**
+**Gösterir (bugün, komut satırından):**
 
-- Katmanın tek çıktısı ek doğrulamadır; skor, etiket ve engelleme değişmez.
-- Gerekçe istemciye söylenmez, yalnızca SOC panosunda ve denetim kaydında
-  durur.
-- Doğru kodu giren kişi ödemeyi tamamlar.
 - Profili oluşturan kimliğin yeni bir oturumu sorgulanmadan geçer.
+- Karşılaştırma ve gerekçe yalnızca SOC panosunda, denetim kaydında ve
+  komutun operatör çıktısında durur; skor ve etiket değişmez.
+- Kanıt yetersizken katman susar (klavye, Zeynep).
+
+**Artık göstermez (yalnızca silinen sayfada vardı, 2026-09-19 kaydı):**
+
+- Bir kişinin sentetik geçmişten sapıp ek doğrulamaya düşmesi ve doğru kodla
+  ödemeyi tamamlaması.
 
 **Göstermez:**
 
@@ -731,7 +746,7 @@ son 10 saniyelik pencereyi gönderir (`sdk/deepcheck.js`): işaretçi hareketi,
 tıklama zamanlaması, kaydırma, tuş **basma anları** (hangi tuş olduğu asla),
 odak kayıpları. Tuş içeriği, alan içeriği, DOM ve pano okunmaz. IP adresi
 veritabanına yazılmaz; uvicorn ve nginx erişim kayıtları kapalıdır
-(`backend/entrypoint.sh`, `frontend/nginx.conf`).
+(`backend/entrypoint.sh`, `apps/checkout/nginx.conf`, `apps/soc/nginx.conf`).
 
 **Akıştan 12 öznitelik çıkarılır** (`backend/lstm_model.py` `FEATURE_NAMES`) ve
 Random Forest her akışı skorlar. Buraya kadarı müşteriyi tanımaz; yalnızca
@@ -764,7 +779,8 @@ girince ödeme tamamlanır ve o oturum deneme vektörü olarak saklanır.
 ve yalnızca açık rızayla, satıcı tarafından açılır
 (`POST /api/profile/consent`). Silme ve itiraz için `POST /api/profile/erase`
 vardır; silme, takma adı denetim tablolarından da düşürür. Saklama süresi 180
-gün hareketsizliktir. Demo sayfasında bırakılan her şey **24 saatte** silinir.
+gün hareketsizliktir. Demo ad alanındaki karar kayıtları **24 saatte** silinir;
+ödeme sayfasından bu ad alanına yazılmaz.
 Ayrıntı: [`docs/kvkk-aydinlatma.md`](kvkk-aydinlatma.md),
 [`docs/dpia.md`](dpia.md).
 
@@ -856,7 +872,7 @@ Adımların tamamı, yük sözleşmesi ve hata yönetimiyle birlikte
 
 | ortam | bugün | not |
 |---|---|---|
-| web ödeme sayfası | **çalışıyor** | bu depodaki demo tam olarak bu desen |
+| web ödeme sayfası | **çalışıyor** | bu depodaki TechStore mağazası tam olarak bu desen |
 | WebView tabanlı e-cüzdan | **aynı SDK** | uçtan uca test edilmedi; dokunmatik için hiçbir oran ölçülmedi |
 | yerel Android / iOS | **yol haritası** | yerel SDK yok; API platformdan bağımsız REST, yükü uygulamanın kendisi üretmeli |
 | müşteri referansı olmayan misafir ödemesi | bot skoru çalışır | müşteri profili katmanına hiç ulaşmaz |

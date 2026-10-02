@@ -35,7 +35,7 @@ detector can be trained and graded on the distribution it actually faces.
 cd backend
 DATABASE_URL=postgresql+asyncpg://deepcheck:deepcheck@127.0.0.1:5432/deepcheck \
 DEEPCHECK_SECRET=lab DASHBOARD_KEY=lab DEBUG=0 DEMO_ENDPOINTS=1 \
-CORS_ORIGINS=http://127.0.0.1:3100 \
+CORS_ORIGINS=http://127.0.0.1:3300 \
 uvicorn main:app --port 8000
 
 # 2. Attack ladder (in another shell, from the repo root)
@@ -47,9 +47,9 @@ python lab/bot_lab.py --api http://127.0.0.1:8000
 python lab/capture.py --api http://127.0.0.1:8000 --repeats 8
 ```
 
-Both tools serve the harness on **127.0.0.1:3100** — 3000 is taken by the demo
-frontend container in this repository — so that is the origin `CORS_ORIGINS`
-must allow. Nothing else may be listening there.
+Both tools serve the harness on **127.0.0.1:3300** (3000 and 3100 are taken by
+the store and SOC containers in this repository), so that is the origin
+`CORS_ORIGINS` must allow. Nothing else may be listening there.
 
 `capture.py` reads `GET /api/score/{id}` to check the features the server
 stored against the ones it extracts locally from the same raw payload, so it
@@ -73,8 +73,14 @@ to PATH".) Exit codes: 0 not charged, 1 charged, 2 setup or network error (no
 result), 130 Ctrl+C.
 
 It speaks the SDK's protocol itself (session, proof of work, attest), posts a
-scripted form fill in the SDK's flush format, then asks `/api/demo/charge` for
-the payment. Its timeline is an almost exact copy of the model's own training
+scripted form fill in the SDK's flush format, then asks for the payment. By
+default it targets the store at `:3000`: the SDK calls go to `/deepcheck/api/...`
+and the payment to the store's own `POST /api/checkout`, whose server asks the
+core `POST /api/decision`; the bot is told paid, declined or requires_action and
+never a score. `--legacy` skips the store and talks to the core itself
+(default `http://localhost:8000`, loopback only), paying through
+`/api/demo/charge`. The former demo container on `:3200` was removed on
+2026-10-02. Its timeline is an almost exact copy of the model's own training
 "bot" generator (`train_model.py`: `_background_motion` + `_phase_bot`), so the
 model saw this behaviour in training, and how many real card-testing bots
 behave like it has not been measured. It is the easy case on purpose:
@@ -83,8 +89,10 @@ behave like it has not been measured. It is the easy case on purpose:
   2026-09-25): 200/200 blocked, lowest session score 93.2, median 94.8;
 - live, against the stack serving `backend/model-sklearn1.5.0.pkl` (the
   scikit-learn 1.5.0 build of the same training): 20/20 blocked at
-  `http://localhost:8000` (2026-10-01), and 3 later runs through the nginx
-  proxy at `:3000` and via cmd.exe, also blocked;
+  `http://localhost:8000` (2026-10-01), and 3 later runs through the former
+  demo's nginx proxy (then on `:3000`) and via cmd.exe, also blocked; these
+  are all the old `/api/demo/charge` path, and the store path's own live runs
+  are listed in the `live_bot.py` docstring;
 - the same timeline without the mousemove stream, 6 pointer-less settings x 20
   runs offline with the host bundle: approved in 111 of 120.
 
@@ -116,9 +124,12 @@ broke through at the end — which is exactly the outcome that matters.
 
 ## Honest scope
 
-- The harness is a minimal payment form, not the React demo page. The SDK and
-  the backend are what is under test; the React page adds styling on top of
-  this identical path, so driving it would exercise Vite rather than the
+- The harness is a minimal payment form, not the store's checkout page
+  (`apps/checkout`). The SDK and the backend are what is under test. The store
+  page adds styling and its own server (`checkout-api`, which asks
+  `/api/decision`) on top of the same SDK path, and its nginx asks the core for
+  an acknowledgement instead of the per-window score that A5 reads back, so
+  driving it would exercise Vite and the store's server rather than the
   detector.
 - The flush interval is left at the production 2000 ms. Shortening it to speed
   the lab up would change how much evidence each flush carries, and therefore

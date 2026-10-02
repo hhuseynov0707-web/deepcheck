@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Mirrors of the Tailwind tokens for the few places that need raw CSS
+       (scrollbars, selection, the focus ring). designTokens.js is the
+       source; these are generated from the same theme values. */
+    --canvas: theme("colors.canvas.DEFAULT");
+    --panel: theme("colors.panel.DEFAULT");
+    --line: theme("colors.line.DEFAULT");
+    --line-strong: theme("colors.line.strong");
+    --ink: theme("colors.ink.DEFAULT");
+    --accent: theme("colors.accent.DEFAULT");
+
+    /* Native widgets and scrollbars draw themselves light otherwise. */
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans text-body antialiased;
+    font-feature-settings: "kern" 1;
+  }
+
+  /* One focus treatment everywhere, and it cannot be switched off: a stray
+     `focus:outline-none` would otherwise win on order and specificity and
+     leave a keyboard user with no visible focus at all. */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--accent) !important;
+    outline-offset: 2px !important;
+  }
+
+  :where(button, input)::-moz-focus-inner {
+    border: 0;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    color: theme("colors.ink.DEFAULT");
+  }
+
+  * {
+    scrollbar-color: var(--line-strong) transparent;
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line-strong);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+
+  /* Motion here explains a change (a score moving, a session arriving).
+     Someone who asked their system not to animate still gets every state --
+     the end of the animation instead of the animation. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* Keyboard-only escape hatch past the top bar. Off-screen until focused,
+     never display:none, which would take it out of the tab order. */
+  .skip-link {
+    @apply absolute left-4 top-4 z-50 -translate-y-24 rounded-field bg-accent px-4 py-2 text-caption font-semibold text-accent-ink
+           transition-transform focus-visible:translate-y-0;
+  }
+}
+
+@layer utilities {
+  /* Figures read as data (scores, counts, latency, ids) line up column by
+     column: tabular figures so digits do not jitter as a value animates,
+     and Plex Mono so 1, l and 7 are unmistakable. */
+  .num {
+    @apply font-mono tabular-nums;
+    font-feature-settings: "tnum" 1, "zero" 1;
+  }
+
+  .eyebrow {
+    @apply text-eyebrow font-semibold uppercase tracking-[0.08em] text-ink-faint;
+  }
+}

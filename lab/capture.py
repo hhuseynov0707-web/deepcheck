@@ -300,8 +300,8 @@ def main():
         default=os.environ.get("DASHBOARD_KEY") or DEV_DASHBOARD_KEY,
         help="backend'in DASHBOARD_KEY degeri (GET /api/score icin)",
     )
-    # 3000 is taken by the demo frontend container in this repository.
-    parser.add_argument("--port", type=int, default=3100)
+    # 3000 and 3100 are the store and SOC containers.
+    parser.add_argument("--port", type=int, default=3300)
     parser.add_argument("--repeats", type=int, default=8, help="runs per scenario")
     parser.add_argument("--seed", type=int, default=21)
     parser.add_argument("--out", default=str(OUT_PATH))

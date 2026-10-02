@@ -35,7 +35,7 @@ Three properties make it usable in a payment flow rather than just a lab:
 flowchart LR
     subgraph Browser
         A[deepcheck.js SDK]
-        I[Payment demo]
+        I[Store checkout page]
         J[SOC dashboard]
     end
 
@@ -55,7 +55,7 @@ flowchart LR
     C --> D
     D --> G
     G --> H
-    G -->|score + label| A
+    G -->|"ack only on the store"| A
     A --> I
     H -->|score, SHAP, profile card| J
     I -->|session_id + token| M
@@ -65,7 +65,7 @@ flowchart LR
     M --> I
 ```
 
-The score the browser sees is for display. The decision that gates a payment is made by `POST /api/decision` on the server, from the score stored in Postgres — a control in the browser is a control the attacker can edit.
+On the store the payer's browser sees no score at all: the store's nginx adds `X-DeepCheck-Reply: ack` to the SDK's calls, so the core answers each behaviour window with `{session_id, accepted}` only. Callers that reach the core directly without that header (the lab tools) still get the full reply. The decision that gates a payment is made by `POST /api/decision` on the server, from the score stored in Postgres — a control in the browser is a control the attacker can edit.
 
 **What this evidence is worth.** Telemetry is submitted by the client, and the session token only proves the sender holds a token for that session — never that a human produced the behaviour. Against an adversarial harness written from motor-control first principles rather than from this project's own personas, the served model blocked straight-line automation 100% of the time and approved an independently written humanised bot 100% of the time (12 sessions per class, [docs/evaluation.md](docs/evaluation.md)). So behavioural risk belongs alongside device, network and card-level signals as one input to a decision, not as the sole gate on a payment. The demo gates on it alone because a demo has nothing else to gate on.
 
@@ -83,9 +83,29 @@ That's the whole thing. On first run the backend trains the models automatically
 
 | Surface | URL |
 |---|---|
-| Payment demo | http://localhost:3000/demo |
-| SOC dashboard | http://localhost:3000/dashboard |
-| API | http://localhost:8000 |
+| Store checkout (TechStore / DemoPay; shows no score) | http://localhost:3000 |
+| SOC dashboard (log in with `DASHBOARD_KEY`; loopback only) | http://localhost:3100 |
+| Core API (loopback only) | http://localhost:8000 |
+
+The store and the SOC are separate apps, each with its own server
+(`apps/`, design in [docs/architecture-two-apps.md](docs/architecture-two-apps.md)).
+The store needs `CHECKOUT_MERCHANT_ID` / `CHECKOUT_MERCHANT_KEY` /
+`CHECKOUT_CUSTOMER_REF_KEY`, the SOC needs `DASHBOARD_KEY` and
+`SOC_SESSION_SECRET` (see `.env.example`). The two-laptop jury flow is in
+[docs/canli-demo.md](docs/canli-demo.md).
+
+The store is a guest checkout: it asks for no e-mail address or account, and
+the browser sends the store's server only the session id, the SDK token and the
+card's display fields (last 4, brand, expiry). The store's server names each
+checkout by a per-session pseudonymous reference,
+`"misafir-" + HMAC-SHA256(CHECKOUT_CUSTOMER_REF_KEY, "session:" + session_id)[:24]`,
+so the core can record the decision for the SOC; no two checkouts share it.
+
+The legacy single-page demo that used to run beside them on port 3200
+(`frontend/`, with its live score badge and the synthetic-customer selector)
+was deleted on 2026-10-02, together with `docker-compose.dev.yml`.
+`docker compose` now runs six services: db, backend, checkout-api,
+checkout-web, soc-api, soc-web.
 
 To train the models ahead of time and skip the wait on first boot:
 
@@ -95,7 +115,7 @@ cd backend && python train_model.py
 
 ### Jury demo: synthetic customers
 
-The per-customer profile layer can only compare a customer with their own history once it holds 19 of their sessions in one input type, and the team has no customer base. The jury prototype therefore uses **synthetic demo customers**: Ayşe, Mehmet and Zeynep are simulator identities (`train_model.simulate_identity_sessions`), each seeded with 20 mouse and 20 keyboard sessions in the reserved `demo` merchant namespace. They are not people, and every place that shows them says so. The data is flagged `is_synthetic`, the customer references read `sentetik-…`, and the Demo page selector says "sentetik geçmiş". The SOC panel badges simulated sessions and decisions made against a synthetic profile "Sentetik demo verisi". It reads the flag from `GET /api/score` and `GET /api/sessions`, and where the server does not send it the badge is absent rather than wrong. The metric cards leave simulated sessions out. No evaluation script reads them.
+The per-customer profile layer can only compare a customer with their own history once it holds 19 of their sessions in one input type, and the team has no customer base. The jury prototype therefore uses **synthetic demo customers**: Ayşe, Mehmet and Zeynep are simulator identities (`train_model.simulate_identity_sessions`), each seeded with 20 mouse and 20 keyboard sessions in the reserved `demo` merchant namespace. They are not people, and every place that shows them says so. The data is flagged `is_synthetic`, the customer references read `sentetik-…`, and `demo_seed.py` prints every simulated session under a "SİMÜLE EDİLMİŞ OTURUM" banner. The SOC panel badges simulated sessions and decisions made against a synthetic profile "Sentetik demo verisi". It reads the flag from `GET /api/score` and `GET /api/sessions`, and where the server does not send it the badge is absent rather than wrong. The metric cards leave simulated sessions out. No evaluation script reads them.
 
 Add to `.env` (the full reasoning is in `.env.example`, section *Jury prototype*):
 
@@ -115,9 +135,9 @@ docker compose exec backend python demo_seed.py --reset      # delete and seed a
 docker compose exec backend python demo_seed.py --simulate ayse   # contrast case
 ```
 
-On `/demo`, pick a customer under **Demo Müşterisi**, fill in the card with the mouse and press Onayla. A person's session deviates from the simulator's history, so the page asks for the verification code and the SOC card shows "Ek doğrulama istendi" beside the maturity (`Fare: 20 / 19`) and the most deviating features. `--simulate` runs a new session of the *same* synthetic identity through the real HTTP path and is expected not to be challenged.
+There is no page for them any more: the only page that let a person pay *as* a synthetic customer was the legacy demo, deleted on 2026-10-02, and the store never names one (each checkout gets its own guest reference). The act runs from the CLI: `--simulate` sends a new session of the *same* synthetic identity through the core's real HTTP path (`/api/session`, attestation, `/api/analyze`, then `/api/demo/charge` in the `demo` namespace), prints the decision, and the SOC shows the session labelled "Sentetik demo verisi". It is expected not to be challenged. The opposite case — a real person deviating from a synthetic history and being asked for the code — has no path in the current stack; the record below is from the deleted page.
 
-Verified end to end on 2026-09-19 in an isolated Docker stack (DEBUG=0, enforcing, the served model). A Playwright session scripted with the lab's human motion model (`lab/bot_lab.py`, not a person) paid as Ayşe and as Mehmet. Both scored in the green band (29.5 and 23.0) and both were stepped up by the profile layer (`profile_deviation`, p = 1/21, 20 references), and the code then let the payment through. `--simulate` for Ayşe and Mehmet (mouse) was charged without a challenge (p 0.67 and 0.81). **That demonstrates the mechanism, not accuracy on real people.** A real person differs from every simulator identity by construction. The only same-person figure is the synthetic one in [docs/profile-evaluation.md](docs/profile-evaluation.md): 4.9% challenged, a lower bound. Use the mouse. For fresh sessions of the same identity, a keyboard-only session was compared in 30, 20 and 0 of 30 tries for Ayşe, Mehmet and Zeynep. A keyboard session measures only 6–7 of the 12 features, and below that the layer abstains rather than guess. Touch has no synthetic history at all. The step-by-step jury procedure (Turkish) is in [docs/juri-cevaplari.md](docs/juri-cevaplari.md#demo-prosedürü--sentetik-demo-müşterileri).
+Verified end to end on 2026-09-19 in an isolated Docker stack (DEBUG=0, enforcing, the served model), on the since-deleted demo page. A Playwright session scripted with the lab's human motion model (`lab/bot_lab.py`, not a person) paid as Ayşe and as Mehmet. Both scored in the green band (29.5 and 23.0) and both were stepped up by the profile layer (`profile_deviation`, p = 1/21, 20 references), and the code then let the payment through. `--simulate` for Ayşe and Mehmet (mouse) was charged without a challenge (p 0.67 and 0.81). **That demonstrates the mechanism, not accuracy on real people.** A real person differs from every simulator identity by construction. The only same-person figure is the synthetic one in [docs/profile-evaluation.md](docs/profile-evaluation.md): 4.9% challenged, a lower bound. `--simulate` draws a mouse session unless given `--modality keyboard`. For fresh sessions of the same identity, a keyboard-only session was compared in 30, 20 and 0 of 30 tries for Ayşe, Mehmet and Zeynep. A keyboard session measures only 6–7 of the 12 features, and below that the layer abstains rather than guess. Touch has no synthetic history at all. The step-by-step procedure (Turkish) is in [docs/juri-cevaplari.md](docs/juri-cevaplari.md#demo-prosedürü--sentetik-demo-müşterileri).
 
 ---
 
@@ -202,9 +222,9 @@ A session's reported score is the **median of its last 5 flushes**, not the inst
 |---|---|---|
 | `POST /api/session` | — | Open a session: returns a signed proof-of-work challenge, no token |
 | `POST /api/session/attest` | — | Exchange a solved challenge plus runtime measurements for the token |
-| `POST /api/analyze` | `X-DeepCheck-Token` | Score a behavior window |
+| `POST /api/analyze` | `X-DeepCheck-Token` | Score a behavior window. With `X-DeepCheck-Reply: ack` (set by the store's nginx) the reply is `{session_id, accepted}` only |
 | `POST /api/decision` | `X-DeepCheck-Token` | **The enforcement point.** Returns the action to take and why |
-| `POST /api/demo/charge` | `X-DeepCheck-Token` | Demo merchant backend: applies the decision and charges, or declines |
+| `POST /api/demo/charge` | `X-DeepCheck-Token` | Demo merchant backend: applies the decision and charges, or declines. Used by `demo_seed.py --simulate` and the lab tools; the store's page cannot reach it |
 | `POST /api/demo/verify` | `X-DeepCheck-Token` | Demo step-up: records a successful verification on the server |
 | `GET /api/score/{session_id}` | `X-Dashboard-Key` | Full history for one session |
 | `GET /api/sessions` | `X-Dashboard-Key` | All sessions, for the dashboard |
@@ -388,9 +408,11 @@ isteğiyle birlikte `DeepCheck.getSessionId()` ve `DeepCheck.getToken()`
 değerlerini kendi arka ucunuza gönderir; kararı arka ucunuz ister ve ödeme
 sağlayıcısını yalnızca `allow` veya `warn` geldiğinde çağırır. Risk skorunu
 tarayıcıda karşılaştırmayın ve ödemeyi tarayıcıdan başlatmayın: tarayıcıdaki
-her kontrol saldırganın düzenleyebileceği bir kontroldür. Bu depodaki
-`POST /api/demo/charge` bu deseni küçük ölçekte gösterir — karar ve tahsilat
-aynı sunucu çağrısında yapılır, sayfada hiçbir koşul yoktur.
+her kontrol saldırganın düzenleyebileceği bir kontroldür. Bu depodaki TechStore
+mağazası bu deseni gösterir: sayfa (`apps/checkout`) mağaza sunucusuna
+(`apps/checkout-server`) yalnızca oturum kimliğini, jetonu ve kartın görünen
+alanlarını gönderir; kararı mağaza sunucusu satıcı anahtarıyla
+`POST /api/decision`'a sorar, sayfada hiçbir koşul yoktur.
 
 ```js
 // Merchant backend (Node örneği) — tarayıcıdan gelen session_id ve token ile
@@ -425,8 +447,8 @@ deneyin" gösterin, OTP istemeyin), `stale` (son akış 30 saniyeden eski),
 kararını `allow`a yükseltmiş).
 
 **Ek doğrulama** sonucu tarayıcıda değil sunucuda tutulur: demo'daki
-`POST /api/demo/verify` kodu doğrular ve oturuma yazar, sonraki `charge`
-çağrısı bunu okur. Gerçek entegrasyonda bu adım SMS / 3-D Secure
+`POST /api/demo/verify` kodu doğrular ve oturuma yazar, sonraki karar çağrısı
+bunu okur. Gerçek entegrasyonda bu adım SMS / 3-D Secure
 sağlayıcınızdır. Doğrulama yalnızca `verify` kararını yükseltir; `block`
 kararı hiçbir kodla aşılamaz.
 
@@ -495,10 +517,14 @@ done: [`TECHNICAL_GUIDE.md` §20](TECHNICAL_GUIDE.md#20-saturation-of-real-brows
 
 ```bash
 cd backend && DEEPCHECK_SECRET=... DASHBOARD_KEY=... DEBUG=0 python -m pytest -q
-cd frontend && npm test && npm run build
+cd apps/checkout-server && python -m pytest -q
+cd apps/soc-server && python -m pytest -q
+cd apps/checkout && npm test && npm run build
+cd apps/soc && npm test && npm run build
+python -m pytest -q lab/test_live_bot.py
 ```
 
-**186 backend tests** (71 scoring and API, 97 profile layer, 18 synthetic demo) and **60 frontend tests**, all passing as of 2026-09-26. Most of them are a bug that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, a checkout approved because the score never arrived, a step-up that could be turned into an approval by pressing pay again. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
+**201 backend tests** (71 scoring and API, 100 profile layer, 17 synthetic demo, 13 for the store's score-free analyze reply), all passing as of 2026-10-02; the two app servers, the two app frontends and the stage bot have suites of their own (per-suite counts in `CLAUDE.md`), and the legacy demo's frontend suite was deleted with it on 2026-10-02. Most backend tests are a bug that actually happened and must not come back — a sparse typing session scored as high-risk, a bot that evaded detection by pausing once, a keyboard-injection session that scored as human, a checkout approved because the score never arrived, a step-up that could be turned into an approval by pressing pay again. They assert *behavior* rather than exact values, so a change to a feature formula or the training distribution fails loudly instead of silently degrading detection.
 
 The profile layer's central property is asserted directly rather than argued: one test sweeps 1,320 combinations over HTTP and checks that the layer never blocks and never moves the score or the label.
 
@@ -528,14 +554,17 @@ deepcheck/
 │   ├── record_session.py     Record a labelled real session to data/real/
 │   ├── evaluate.py           Score those recordings → docs/evaluation.md
 │   ├── test_scorer.py        71 tests — scoring, auth, enforcement, tokens
-│   ├── test_profiles.py      97 tests — the profile layer end to end
-│   ├── test_demo.py          18 tests — synthetic demo labelling
+│   ├── test_profiles.py      100 tests — the profile layer end to end
+│   ├── test_demo.py          17 tests — synthetic demo labelling
+│   ├── test_analyze_ack.py   13 tests — the store's score-free analyze reply
 │   └── models.py             SQLAlchemy schema (+ 4 profile tables)
-├── frontend/src/
-│   ├── pages/Demo.jsx        Payment demo with live scoring
-│   ├── pages/Dashboard.jsx   SOC dashboard, D3 charts, profile card
-│   └── pages/KvkkNotice.jsx  /kvkk, rendered from docs/kvkk-aydinlatma.md
-├── lab/                      Playwright capture and adversarial harness
+├── apps/
+│   ├── checkout/             TechStore guest checkout (React); shows no score;
+│   │                         /gizlilik renders docs/kvkk-aydinlatma.md
+│   ├── checkout-server/      Store server (FastAPI): asks /api/decision with the merchant key
+│   ├── soc/                  SOC dashboard (React): D3 chart, SHAP bars, profile card
+│   └── soc-server/           SOC backend-for-frontend (FastAPI): holds DASHBOARD_KEY
+├── lab/                      Playwright capture, adversarial harness, stage bot (live_bot.py)
 ├── data/real/                Recordings of real people — currently EMPTY
 └── docs/
     ├── evaluation.md         Browser-lab measurements
@@ -596,18 +625,21 @@ Copy `.env.example` to `.env` before deploying anywhere that is not a laptop.
 | Variable | Purpose |
 |---|---|
 | `DEEPCHECK_SECRET` | Signs session tokens (HMAC-SHA256) |
-| `DASHBOARD_KEY` | Guards the SOC endpoints. The analyst types it into the dashboard; it is never compiled into the bundle |
+| `DASHBOARD_KEY` | Guards the SOC endpoints. The analyst types it into the SOC login, which soc-api checks; it is never compiled into a bundle |
 | `DEBUG` | `1` allows fixed development secrets and warns on every boot. `0` makes the backend **refuse to start** without both values above |
 | `CORS_ORIGINS` | Browser origin allowlist. `*` is for a local demo only |
 | `DEMO_ENDPOINTS` | `/api/demo/*` on or off. Defaults to `DEBUG`. Their step-up code is a published constant, so anything scored `verify` can be upgraded to `allow` by anyone who reads the page |
 | `SHAP_IN_ANALYZE` | Return the SHAP breakdown to the scored client. Off by default: it is a tuning oracle |
 | `CLUSTER_ESCALATION` | Escalate sessions sharing a behaviour bucket. Off by default: measured to flag more legitimate users than bots |
-| `DEMO_VERIFY_CODE` | Step-up code for the demo's verification modal |
-| `VITE_API_URL` | Backend URL, compiled into the frontend at **build** time |
+| `DEMO_VERIFY_CODE` | Step-up code printed in the store's code dialog (compiled into the store's bundle at build time) |
+| `CHECKOUT_MERCHANT_ID` / `CHECKOUT_MERCHANT_KEY` | The store's merchant credential for `/api/decision`; must match one `DEEPCHECK_MERCHANT_KEYS` entry. No fallback in any mode |
+| `CHECKOUT_CUSTOMER_REF_KEY` | The store server's own HMAC key for the per-session guest reference; ≥ 32 characters, never the merchant key. No fallback in any mode |
+| `SOC_SESSION_SECRET` | Signs the SOC login cookie (8 h); ≥ 32 characters, not `DASHBOARD_KEY`. No fallback in any mode |
 | `RAW_RETENTION_HOURS` / `ROW_RETENTION_HOURS` | When raw telemetry is blanked (default 1 h) and whole rows deleted (default 24 h) |
 | `REAL_TELEMETRY_PATH` | Where training looks for `lab/real_telemetry.json`. The default assumes `lab/` sits beside `backend/`; docker-compose mounts it into the container so that holds there too |
 | `POW_DIFFICULTY_BITS` | Leading zero bits required of the session proof of work (default 12) |
-| `BIND_ADDR` | Host address the published ports listen on. `127.0.0.1` by default, which keeps them off the network |
+| `BIND_ADDR` | Host address the store's port 3000 listens on, and the only port it opens. `127.0.0.1` by default, which keeps it off the network; the SOC (3100) stays on loopback whatever it says |
+| `API_BIND_ADDR` | Host address the core's port 8000 listens on. `127.0.0.1` by default; browsers do not need it |
 | `UVICORN_WORKERS` | Worker processes (default 2). Each holds its own copy of the models, ~300–400 MB |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database credentials; docker-compose builds `DATABASE_URL` from them |
 | `PROFILE_RETENTION_DAYS` / `DECISION_AUDIT_RETENTION_DAYS` / `PROFILE_ACCESS_RETENTION_DAYS` | Profile-layer retention (180 / 90 / 365 days) |
@@ -623,12 +655,11 @@ And the per-customer profile layer, which is **off unless all of these are set**
 | `PROFILE_ESCALATION` | `1` additionally lets it ask for verification. Ignored while `PROFILE_LAYER` is off |
 | `PROFILE_REVIEW_KEYS` | Per-**operator** credentials for the human-review endpoint. Deliberately not `DASHBOARD_KEY`: a shared password cannot attribute a read to anyone |
 
-The frontend image builds the static bundle and serves it with nginx. For
-hot-reloading development use the override:
-
-```bash
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
-```
+The store and the SOC images each build their static bundle and serve it with
+nginx. There is no hot-reload compose override any more
+(`docker-compose.dev.yml` was deleted with the legacy demo); for UI work run
+`npm run dev` in `apps/checkout` or `apps/soc`, whose `vite.config.js` proxies
+`/api` the way their nginx does.
 
 ---
 

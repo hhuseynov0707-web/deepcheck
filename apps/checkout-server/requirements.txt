@@ -1,0 +1,7 @@
+# Runtime pins for checkout-api. Exact versions, the same policy as
+# backend/requirements.txt: the image a jury runs is the one the tests passed
+# on. fastapi/uvicorn/pydantic match the core's pins.
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+httpx==0.27.0
+pydantic==2.7.4

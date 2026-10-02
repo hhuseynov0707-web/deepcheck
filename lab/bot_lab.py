@@ -31,15 +31,15 @@ monotonically and would still look strong on a run where the attacker was
 caught early and then broke through at the end -- which is precisely the
 outcome that matters.
 
-Usage (lab/README.md has the full setup, including the docker variant):
+Usage (lab/README.md has the full setup):
     # 1. from backend/, with Postgres up and a trained model on disk.
     #    DEMO_ENDPOINTS=1 is required: /api/demo/charge answers 404 without it.
     DATABASE_URL=postgresql+asyncpg://deepcheck:deepcheck@127.0.0.1:5432/deepcheck \\
     DEEPCHECK_SECRET=lab DASHBOARD_KEY=lab DEBUG=0 DEMO_ENDPOINTS=1 \\
-    CORS_ORIGINS=http://127.0.0.1:3100 \\
+    CORS_ORIGINS=http://127.0.0.1:3300 \\
     uvicorn main:app --port 8000
 
-    # 2. run the lab; the harness is served on 127.0.0.1:3100
+    # 2. run the lab; the harness is served on 127.0.0.1:3300
     python lab/bot_lab.py --api http://127.0.0.1:8000
 """
 
@@ -385,8 +385,8 @@ def chromium_launch_args(headless: bool = True) -> dict:
 def main():
     parser = argparse.ArgumentParser(description="DeepCheck adversarial bot lab")
     parser.add_argument("--api", default="http://127.0.0.1:8000")
-    # 3000 is the demo frontend container's port; capture.py uses 3100 too.
-    parser.add_argument("--port", type=int, default=3100, help="harness origin port")
+    # 3000 and 3100 are the store and SOC containers; capture.py uses 3300 too.
+    parser.add_argument("--port", type=int, default=3300, help="harness origin port")
     parser.add_argument("--rounds", type=int, default=4, help="adaptive attack rounds")
     parser.add_argument("--repeat", type=int, default=1, help="repeats per scenario")
     parser.add_argument("--seed", type=int, default=7)

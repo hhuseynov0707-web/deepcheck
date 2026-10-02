@@ -1,0 +1,13 @@
+# Build context is this folder (apps/checkout-server). The image needs
+# requirements.txt and main.py; tests and local caches stay out.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+test_*.py
+conftest.py
+pytest.ini
+requirements-dev.txt
+.env
+.env.*

@@ -20,7 +20,7 @@ DeepCheck — istifadəçi davranışını real vaxtda analiz edərək bot və i
 | Real-time | REST API polling (hər 2 saniyə) | Frontend fetch ilə |
 | Deploy | Docker Compose | `docker-compose up` ilə hər şey qalxır |
 | Frontend | React + Vite | Müasir, sürətli |
-| Styling | Tailwind CSS | Dark theme, responsive |
+| Styling | Tailwind CSS | SOC tünd, mağaza açıq tema; responsive |
 | Qrafiklər | D3.js | Risk score vizualizasiyası |
 
 ---
@@ -32,7 +32,7 @@ deepcheck-mvp/
 ├── CLAUDE.md                  # Bu fayl
 ├── README.md                  # İşə salma, konfiqurasiya, sintetik demo
 ├── TECHNICAL_GUIDE.md         # Tam texniki izah (§17 kapasitet, §18-19 profil, §20 doyma)
-├── docker-compose.yml         # Bütün servisləri qaldırır
+├── docker-compose.yml         # 6 servis: db, backend, checkout-api, checkout-web, soc-api, soc-web
 ├── .env.example               # Hər dəyişən və səbəbi
 ├── sdk/
 │   └── deepcheck.js           # Brauzer SDK — davranış toplayır (34 KB, asılılıqsız)
@@ -55,29 +55,21 @@ deepcheck-mvp/
 │   ├── evaluate.py            # O sessionları real scoring yolundan keçirir
 │   ├── test_scorer.py         # 71 test — skor, auth, ladder, token, ardıcıl qayda
 │   ├── test_profiles.py       # 100 test — profil statistikası, endpointlər, retention
-│   └── test_demo.py           # 18 test — sentetik demo müştəriləri və etiketlənməsi
-├── frontend/
-│   ├── Dockerfile
-│   ├── nginx.conf             # access_log off; /api/ → backend (eyni origin)
-│   ├── nginx-security-headers.conf  # hər location-a daxil edilən 3 təhlükəsizlik başlığı
-│   ├── package.json
-│   ├── vite.config.js
-│   └── src/
-│       ├── main.jsx
-│       ├── App.jsx
-│       ├── apiBase.js         # API ünvanı: boş = eyni origin (nginx /api/-ni ötürür)
-│       ├── demoCustomers.js   # Sentetik demo müştərilərinin siyahısı
-│       ├── pages/
-│       │   ├── Demo.jsx       # Ödəmə formu demo səhifəsi
-│       │   ├── Dashboard.jsx  # SOC dashboard
-│       │   └── KvkkNotice.jsx # /kvkk — aydınlatma metni
-│       └── components/
-│           ├── RiskBadge.jsx
-│           ├── SessionTable.jsx
-│           ├── RiskChart.jsx      # D3.js qrafik
-│           ├── VerificationModal.jsx
-│           ├── ProfilePanel.jsx   # SOC "Müşteri Profili" kartı
-│           └── SyntheticBadge.jsx # "Sentetik demo verisi" nişanı
+│   ├── test_demo.py           # 17 test — sentetik demo müştəriləri və etiketlənməsi
+│   └── test_analyze_ack.py    # 13 test — mağaza üçün skorsuz "ack" cavabı
+├── apps/                      # İki ayrı münsif tətbiqi (docs/architecture-two-apps.md)
+│   ├── checkout/              # TechStore mağazası + "DemoPay" ödəniş səhifəsi (React, :3000). Skor GÖSTƏRMİR
+│   │   ├── nginx.conf         # /api/ → checkout-api; /deepcheck/api/ → çəkirdək (allow list, X-DeepCheck-Reply: ack)
+│   │   └── src/
+│   │       ├── pages/Checkout.jsx  # Misafir ödəniş formu (e-poçt yoxdur), OTP dialoqu, qəbz
+│   │       ├── pages/Privacy.jsx   # /gizlilik — docs/kvkk-aydinlatma.md-ni göstərir
+│   │       └── components/OrderSummary.jsx  # Yalnız məbləğlər: Ara toplam / KDV / Toplam
+│   ├── checkout-server/       # Mağaza serveri (FastAPI): /api/decision-a satıcı açarı ilə soruşur
+│   ├── soc/                   # SOC paneli (React, tünd, :3100), cookie ilə giriş
+│   │   └── src/
+│   │       ├── pages/Dashboard.jsx # Sessiya cədvəli, D3 qrafik, SHAP, profil kartı
+│   │       └── components/         # RiskChart (D3), SessionTable, ProfilePanel, SyntheticBadge ...
+│   └── soc-server/            # SOC serveri (FastAPI BFF): DASHBOARD_KEY yalnız burada
 ├── lab/
 │   ├── capture.py             # Real Chromium-u real SDK ilə sürür, telemetri yazır
 │   ├── bot_lab.py             # Adversarial ssenarilər
@@ -88,14 +80,20 @@ deepcheck-mvp/
     ├── profile-evaluation.md  # Profil qatı (profile_lab.py generasiya edir)
     ├── juri-cevaplari.md      # Münsiflər üçün türkcə cavablar
     ├── canli-demo.md          # İki kompüterli canlı demo runbook-u: insan ödənişi + bot
+    ├── architecture-two-apps.md  # Mağaza + SOC: komponentlər, kontraktlar, uğursuzluq halları
     ├── rapor-duzeltmeleri.md  # Ön-qiymətləndirmə raportundakı iddiaların düzəlişi
-    ├── kvkk-aydinlatma.md     # Aydınlatma metni (/kvkk səhifəsi bunu oxuyur)
+    ├── kvkk-aydinlatma.md     # Aydınlatma metni (mağazanın /gizlilik səhifəsi bunu oxuyur; uzun tire yox, "-")
     ├── dpia.md                # DPIA — pilot üçün ÖN ŞƏRT
     └── index.html             # Landing page
 ```
 
 > `backend/load_test.py` **yoxdur**. Heç bir yük testi işlədilməyib; kapasitet
 > yalnız kağız üzərində hesablanıb (TECHNICAL_GUIDE.md §17).
+
+> `frontend/` **yoxdur.** Köhnə tək səhifəli demo (canlı skor + sentetik
+> müştəri seçicisi, port 3200), `docker-compose.dev.yml` və onların CI job-u
+> 2026-10-02-də silinib (Docker yükünü azaltmaq üçün). Onun yerini `apps/`
+> tutur.
 
 ---
 
@@ -113,9 +111,10 @@ deepcheck-mvp/
 - `DeepCheck.getSessionId()`, `DeepCheck.getToken()`, `DeepCheck.ready()`,
   **`DeepCheck.flush()`**
   - `flush()` uçuşdakı göndərmə bitəndə həll olunan promise qaytarır və
-    **heç vaxt reject etmir**. Demo səhifəsi "Onayla"dan əvvəl onu gözləyir ki,
-    qərar indicə baş vermiş davranış üzərində verilsin. Göndərmələr üst-üstə
-    düşmür
+    **heç vaxt reject etmir**. Mağaza səhifəsi "Öde" basılanda, qərarı
+    istəməzdən əvvəl onu (məhdud müddət) gözləyir ki, qərar indicə baş vermiş
+    davranış üzərində verilsin (`apps/checkout/src/lib/sdk.js`). Göndərmələr
+    üst-üstə düşmür
 - Hər axışda **`client_sent_at`** (göndərənin öz saatı) gedir: server mütləq
   saat fərqini yox, hadisələrin **yaşını** və sessiya boyu saat fərqinin
   sabitliyini yoxlayır. Saatı 10 dəqiqə səhv olan istifadəçi bloklanmır
@@ -134,7 +133,11 @@ Endpointlər (cəmi 13):
   qarşılığında token verir. Bu token brauzer olduğunu **sübut etmir** — sadə
   bir Python skripti 50 dəfədən 50-sində token alıb
 - `POST /api/analyze` → davranış datasını alır, risk skoru qaytarır
-  (`X-DeepCheck-Token` başlığı məcburidir, yoxsa 401)
+  (`X-DeepCheck-Token` başlığı məcburidir, yoxsa 401). `X-DeepCheck-Reply: ack`
+  başlığı ilə (mağazanın nginx-i hər SDK çağırışına qoyur) cavab yalnız
+  `{session_id, accepted}`-dir: ödəyənin brauzeri skor almır. Başlıqsız tam
+  cavabı yalnız çəkirdəyin öz portuna (:8000, loopback) gələnlər alır — lab
+  alətləri
 - `POST /api/decision` → **tək icra nöqtəsi**: 40/60/80 pilləsini tətbiq edib
   `allow | warn | verify | block` qaytarır. Skor əldə edilə bilmirsə `verify`
   (heç vaxt `allow`).
@@ -142,7 +145,9 @@ Endpointlər (cəmi 13):
   `X-Merchant-Id` və `X-Merchant-Key` başlıqları **məcburidir** (yoxdursa 400,
   səhvdirsə 401)
 - `POST /api/demo/charge` → demo satıcı arxa ucu: qərarı işlədib ya tahsilat
-  edir, ya rədd edir. Səhifədə heç bir şərt yoxdur
+  edir, ya rədd edir. İndi yalnız `demo_seed.py --simulate` və lab alətləri
+  (`bot_lab.py`, `live_bot.py --legacy`) çəkirdəyə birbaşa çağırır; mağaza
+  səhifəsi ona çata bilmir (nginx allow list-də yoxdur)
 - `POST /api/demo/verify` → demo step-up: kodu yoxlayıb serverdə
   `sessions.verified_at` yazır. **Bir step-up = bir təsdiq:** doğrulama onun
   verdiyi təsdiqlə xərclənir (`main._consume_step_up`, compare-and-set,
@@ -343,10 +348,19 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
   **sintetik müştərilərlə** işləyir: Ayşe, Mehmet, Zeynep — hər biri 20 mouse
   və 20 keyboard sessiyası, ayrılmış `demo` satıcı ad sahəsində
 - Yazılan hər şey **görünür şəkildə sentetik işarələnir**: `is_synthetic`
-  bayrağı, `sentetik-...` müştəri referansları, Demo səhifəsində "sentetik
-  geçmiş", SOC panelində "Sentetik demo verisi" nişanı
+  bayrağı, `sentetik-...` müştəri referansları, `--simulate` çıxışında
+  "SİMÜLE EDİLMİŞ OTURUM" başlığı, SOC panelində "Sentetik demo verisi" nişanı
 - **Heç bir ölçməyə girmir** (`test_demo.py` girərsə pozulur)
-- `--status`, `--reset`, `--simulate <ad>`
+- `--status`, `--reset`, `--simulate <ad>` (`--modality mouse|keyboard`,
+  `--sim-seed`, `--api-url`)
+- **Səhifəsi yoxdur (2026-10-02).** Bir insanın sentetik müştəri *adına*
+  ödəyə bildiyi yeganə yer silinmiş köhnə demo idi; mağaza heç vaxt sentetik
+  müştərini adlandırmır. Qalan yalnız CLI-dir: `--simulate` **eyni** sentetik
+  kimlikdən yeni sessiyanı çəkirdəyin real HTTP yolundan (`/api/session`,
+  attestasiya, `/api/analyze`, sonra `demo` ad sahəsində `/api/demo/charge`)
+  keçirir, qərarı çap edir, SOC sessiyanı "Sentetik demo verisi" ilə göstərir;
+  gözlənən nəticə step-up olmamasıdır. Əksi — real insanın sentetik tarixçədən
+  sapıb kod istənməsi — indiki yığında **göstərilə bilmir**
 
 ### backend/record_session.py və backend/evaluate.py
 - `record_session.py` — etiketlənmiş **real** sessionu Postgres-dən
@@ -358,22 +372,55 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
   şəxs yanlış-müsbət nisbəti deyil. Daha çox adam (20-30 nəfər, hər biri bir
   neçə sessiya, fərqli cihazlar) yazmaq açıq qalan ən mühüm işdir
 
-### frontend/src/pages/Demo.jsx
-- Türkcə ödəmə formu (Kart Numarası, Tutar, Onayla)
-- SDK embedded
-- Sağ üst küncdə canlı risk skoru badge-i (hər 2 saniyə yenilənir) — **yalnız
-  göstərmək üçündür**, ödənişi bloklayan qərar deyil
-- "Onayla" düyməsi əvvəlcə `DeepCheck.flush()`-u gözləyir, sonra
-  `POST /api/demo/charge` çağırır və qayıdan `action`-a əməl edir.
-  Eşiklər brauzerdə müqayisə edilmir: brauzerdəki hər nəzarət saldırganın
-  redaktə edə biləcəyi nəzarətdir
-- "Müşteri Referansı (demo)" sahəsi və "Demo Müşterisi" seçicisi — seçicidəki
-  hər müştəri açıq şəkildə **sentetik** olaraq yazılıb. Boş buraxılanda profil
-  qatı işə düşmür
-- Etiketlər: 0-40 = "Gerçek Kullanıcı ✓", 40-60 = "Şüpheli ⚠", 60-80 = "Yüksek Risk 🔴", 80-100 = "Bot Tespit Edildi 🚫"
+### apps/ — mağaza və SOC, iki ayrı tətbiq (2026-10-01)
+Memarlıq, kontraktlar və uğursuzluq halları: `docs/architecture-two-apps.md`.
+- **`apps/checkout` + `apps/checkout-server`** — TechStore mağazası, uydurma
+  "DemoPay" ödəniş səhifəsi. Ödəyənə **heç bir skor, etiket, səbəb göstərmir**;
+  sadə ödəniş səhifəsidir. **Misafir ödənişidir: e-poçt, hesab və ya başqa
+  kimlik istəmir.** Brauzer mağaza serverinə yalnız `session_id`, SDK jetonu
+  və kartın son 4 rəqəmi/brendi/son istifadə tarixini göndərir (tam nömrə, CVV
+  və kart üzərindəki ad brauzerdən çıxmır). Mağaza serveri çəkirdəyin
+  **`POST /api/decision`** uc nöqtəsinə satıcı açarı ilə soruşur (real
+  inteqrasiya yolu), `allow/warn` → ödəniş, `verify` → OTP (`/api/demo/verify`
+  ilə), `block` → ümumi rədd; çəkirdək əlçatmazsa ödəniş **olmur**. Müştəri
+  referansı **sessiya başına** törədilir:
+  `"misafir-" + HMAC-SHA256(CHECKOUT_CUSTOMER_REF_KEY, "session:" + session_id)[:24]`
+  (`customer_ref_for`). Ödəyən haqqında heç nə daşımır; yalnız çəkirdəyin
+  sadə `allow`-u da `decision_audit`-ə yazması (`main._learn_and_audit`) və
+  SOC-un "Son kaydedilen karar"-ı üçün var. Hər ödənişin öz müştəri-başına
+  qərar bucket-i olur, yəni məşqlər səhnə ödənişinin büdcəsini tükədə bilmir.
+  `CHECKOUT_CUSTOMER_REF_KEY` məcburidir (≥ 32 simvol, satıcı açarına bərabər
+  ola bilməz). Sifariş xülasəsi yalnız məbləğləri göstərir (məhsul sətri və
+  şəkil yoxdur; səbətdə məhsul serverdə qalır). Kart üzərindəki ad sahəsi
+  rəqəm və simvolları yazılan anda atır ("İsimde rakam kullanılamaz.").
+  İstifadəçiyə görünən mətnlərdə uzun tire ("—", "–") yox, adi "-" işlədilir.
+  Port 3000, `BIND_ADDR` ilə LAN-a açıla bilən yeganə port
+- **`apps/soc` + `apps/soc-server`** — SOC paneli (köhnə `Dashboard.jsx`-in
+  bütün xüsusiyyətləri, yeni tünd dizayn). `DASHBOARD_KEY` yalnız SOC
+  serverindədir: brauzer açarı bir dəfə göndərir, imzalı httpOnly cookie alır
+  (8 saat). Port 3100, **həmişə loopback**
+- Köhnə tək səhifəli demo (`frontend/`, port 3200) 2026-10-02-də **silinib**;
+  6 compose servisi qalır: db, backend, checkout-api, checkout-web, soc-api,
+  soc-web
+- Səhnə botu `lab/live_bot.py` default olaraq mağaza yolunu vurur; mağaza
+  yolu ilə canlı 11/11 rədd (2026-10-01, `docs/canli-demo.md` "Ölçülenler").
+  `--legacy` rejimi indi çəkirdəyi birbaşa vurur (default
+  `http://localhost:8000`, yalnız A)
 
-### frontend/src/pages/Dashboard.jsx
-- Türkcə SOC dashboard — dark theme
+### apps/checkout — ödəniş səhifəsi (köhnə `frontend/src/pages/Demo.jsx`-in yerinə)
+- Yuxarıdakı `apps/` bölməsinə bax. Ödəyənə skor, etiket və ya badge
+  **göstərmir**; köhnə demonun canlı skor badge-i və "Müşteri Referansı" /
+  "Demo Müşterisi" seçicisi onunla birlikdə silinib
+- "Öde" basılanda səhifə SDK-nın `flush()`-unu gözləyir, sonra mağaza
+  serverinin `POST /api/checkout`-unu çağırır və yalnız `paid` /
+  `requires_action` / `declined` alır. Eşiklər brauzerdə müqayisə edilmir:
+  brauzerdəki hər nəzarət saldırganın redaktə edə biləcəyi nəzarətdir
+
+### apps/soc — SOC paneli (köhnə `frontend/src/pages/Dashboard.jsx`-in yerinə)
+- Türkcə SOC dashboard — dark theme; `http://localhost:3100`, həmişə loopback;
+  giriş `DASHBOARD_KEY` ilə, sonra imzalı httpOnly cookie (`apps/soc-server`)
+- Etiketlər: 0-40 "Gerçek Kullanıcı", 40-60 "Şüpheli", 60-80 "Yüksek Risk",
+  80-100 "Bot Tespit Edildi"
 - Session cədvəli: Session ID, Risk Skoru, Etiket, Zaman
 - Rəngli satırlar: yaşıl/sarı/narıncı/qırmızı
 - Seçilmiş session üçün D3.js ilə risk skoru qrafiki
@@ -391,7 +438,8 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
   (serverin qərar qapısı ilə eyni qayda), real insan ilk saniyələrdə qırmızı görünməsin
 - **"Son kaydedilen karar"**: `decision_audit`-in ən yeni sətri (`last_decision`), bant
   etiketi deyil. Yalnız profil qatı açıq olanda yazılır; müştəri referansı olmayan
-  `allow` yazılmır. Telemetrinin vəziyyətini bildirən `verify` (az pəncərə,
+  `allow` yazılmır (mağaza buna görə hər ödənişə sessiya başına `misafir-...`
+  referansı göndərir). Telemetrinin vəziyyətini bildirən `verify` (az pəncərə,
   köhnəlmiş, naməlum sessiya) **"Karar ertelendi"** kimi göstərilir, step-up kimi yox
 - **"Görünümü sıfırla"**: köhnə sessiyaları yalnız görünüşdən gizlədir, heç nə silmir.
   Sıfırlamadan sonra yenidən aktivləşən köhnə sessiya ~12 s sonra geri qayıdır
@@ -456,7 +504,8 @@ nisbətinə qarşı kalibrə etməyib, çünki kalibrə üçün etiketli real tr
 > Chromium-da pointer-siz yazan skript canlı serverdə 2/2 onaylanıb. Eyni zaman
 > xətti ~80 ms-lik nöqtəli pointer axını ilə birlikdə isə çevrimdışı 200/200
 > (ən aşağı skor 93,2, median 94,8), canlı 20/20 (`:8000`, qərar anında
-> 94,3–95,8) və nginx `:3000` / cmd.exe üzərindən daha 3/3 bloklanır. Səhnə
+> 94,3–95,8) və o vaxtkı köhnə demonun nginx-i (`:3000`, indi silinib) /
+> cmd.exe üzərindən daha 3/3 bloklanır. Səhnə
 > botu (`lab/live_bot.py`) budur: parametrləri modelin təlimdəki «bot»
 > generatorundan götürülüb (`_background_motion` + `_phase_bot`: 80±10 ms addım,
 > klikdən sonra 150±8 ms, headless variantın 1–4 ms düymə aralığı); pəncərə
@@ -510,11 +559,15 @@ yalnız canlı nümayiş üçündür.
 3. SHAP explanation hər `/api/analyze` cavabında **artıq qaytarılmır**. `/api/analyze` skorlanan tərəfə cavab verir və onu məhkum edən üç xüsusiyyəti adlandırmaq hücumçuya köklənmə siqnalı verir: göndər, səbəbi oxu, dəyiş, təkrarla. Bu, canlı detektora qarşı nəzarətli optimallaşdırma döngüsüdür və adversarial sınaqda məhz bundan istifadə edilib. İzah hər sətirdə saxlanılır və SOC panosu onu `GET /api/score/{id}`-dən (`X-Dashboard-Key` arxasında) oxuyur. Yalnız canlı nümayiş üçün `SHAP_IN_ANALYZE=1`
 4. Docker Compose ilə `docker-compose up --build` əmri ilə hər şey işləməlidir
 5. `train_model.py` ilk öncə run edilməlidir — `model.pkl` yaranır
-6. Frontend `http://localhost:3000`, backend `http://localhost:8000` portunda işləyir.
-   Brauzer API-yə **eyni origin**-dən, `:3000/api/...` ilə çatır (nginx ötürür), ona
-   görə bundle-a heç bir IP yazılmır. `BIND_ADDR=0.0.0.0` yalnız 3000-i şəbəkəyə açır;
-   8000 `API_BIND_ADDR` ilə idarə olunur və default loopback-dir. İki kompüterli
-   münsif demosu: `docs/canli-demo.md`
+6. **Mağaza** (TechStore/DemoPay, skor göstərmir) `http://localhost:3000`, **SOC**
+   `http://localhost:3100`, çəkirdək API `http://localhost:8000`. 3200 portunda
+   artıq heç nə yoxdur (köhnə demo 2026-10-02-də silinib). Hər brauzer öz
+   origin-indən danışır (nginx ötürür), bundle-a heç bir IP yazılmır.
+   `BIND_ADDR=0.0.0.0` yalnız mağazanın 3000-ni şəbəkəyə açır; SOC həmişə
+   loopback-dir, 8000 `API_BIND_ADDR` ilə idarə olunur. Memarlıq:
+   `docs/architecture-two-apps.md`; iki kompüterli münsif demosu:
+   `docs/canli-demo.md`. Hər iki tətbiqdə istifadəçiyə görünən mətndə uzun
+   tire ("—", "–") yox, adi "-" işlədilir
 7. **Ölçülməyən heç bir rəqəm yazılmır.** Hər rəqəmin yanında nəyin üzərində
    ölçüldüyü durmalıdır. Sentetik data ilə ölçülmüş hər "yanlış çağırış"
    nisbəti **aşağı hədd**dir: sintetik insan real insandan daha öz-özünə
@@ -533,21 +586,30 @@ cd backend && python train_model.py
 # 2. Hər şeyi qaldır
 docker-compose up --build
 
-# 3. Demo səhifəsi
-http://localhost:3000/demo
+# 3. Mağaza (ödəyənə skor göstərmir)
+http://localhost:3000
 
-# 4. SOC Dashboard
-http://localhost:3000/dashboard
+# 4. SOC Dashboard (DASHBOARD_KEY ilə giriş)
+http://localhost:3100
 ```
 
 ### Testlər
 
 ```bash
 cd backend && DEEPCHECK_SECRET=... DASHBOARD_KEY=... DEBUG=0 python -m pytest -q
-cd frontend && npm test && npm run build
+cd apps/checkout-server && python -m pytest -q
+cd apps/soc-server && python -m pytest -q
+cd apps/checkout && npm test && npm run build
+cd apps/soc && npm test && npm run build
+python -m pytest -q lab/test_live_bot.py
 ```
 
-189 backend testi, 93 frontend testi (2026-10-01).
+201 backend testi; `apps/checkout-server` 93, `apps/soc-server` 55,
+`apps/checkout` 59, `apps/soc` 72, `lab/test_live_bot.py` 26 (2026-10-02,
+hamısı keçir). Köhnə demonun frontend testləri onunla birlikdə silinib; onu
+oxuyan backend testləri (profil etiketləri, qərar etiketləri, token müddəti)
+indi birbaşa `apps/soc` və `apps/checkout`-u yoxlayır. `apps/soc/src/parity.test.js`
+(SOC nüsxəsini köhnə nüsxəyə bağlayırdı) silinib.
 
 ### Münsiflər üçün sentetik demo
 
@@ -561,7 +623,10 @@ docker compose exec backend python demo_seed.py --reset    # sıfırla
 docker compose exec backend python demo_seed.py --simulate ayse
 ```
 
-Demo səhifəsində **Demo Müşterisi** seçilir, kart mouse ilə doldurulur və
-"Onayla" basılır. Prosedurun addım-addım türkcəsi:
-`docs/juri-cevaplari.md`. Bu, **mexanizmi** göstərir, real insanlar üzərindəki
-dəqiqliyi yox.
+Səhifə yoxdur (köhnə demo 2026-10-02-də silinib). `--simulate` eyni sentetik
+kimlikdən yeni sessiyanı çəkirdəyin real HTTP yolundan keçirir, qərarı çap
+edir; SOC (`http://localhost:3100`) sessiyanı "Sentetik demo verisi" nişanı
+ilə göstərir. Gözlənən nəticə step-up olmamasıdır. Real insanın sentetik
+müştəri adına ödəyib sapma səbəbindən kod istənməsi indiki yığında göstərilə
+bilmir. Prosedurun türkcəsi: `docs/juri-cevaplari.md`. Bu, **mexanizmi**
+göstərir, real insanlar üzərindəki dəqiqliyi yox.

@@ -51,66 +51,109 @@ jobs:
           DEBUG: "0"
         run: python -m pytest -q
 
-  frontend:
-    name: Frontend build
+  # The two demo apps' servers (docs/architecture-two-apps.md). Their tests mock
+  # the core with httpx, so neither needs Postgres, the model or torch.
+  app-servers:
+    name: App server tests (${{ matrix.app }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [apps/checkout-server, apps/soc-server]
     steps:
       - uses: actions/checkout@v4
 
-      # Cache keyed on the lockfile, which is what `npm ci` installs. Keyed on
-      # package.json the cache survived dependency changes that only moved
-      # the lockfile.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ${{ matrix.app }}/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.app }}
+        run: pip install -r requirements-dev.txt
+
+      - name: Test
+        working-directory: ${{ matrix.app }}
+        run: python -m pytest -q
+
+  # The stage bot runs on a teammate's laptop with the standard library only;
+  # its tests use pytest and nothing else.
+  stage-bot:
+    name: Stage bot tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test
+        run: |
+          pip install pytest==8.2.2
+          python -m pytest -q lab/test_live_bot.py
+
+  app-webs:
+    name: App web build (${{ matrix.app }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [apps/checkout, apps/soc]
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
 
-      # `npm ci`, like the Docker image: exactly the lockfile, and a failure
-      # rather than a silent rewrite when it has drifted from package.json.
-      # `npm install` could pass CI on a dependency tree nobody committed.
       - name: Install dependencies
-        working-directory: frontend
+        working-directory: ${{ matrix.app }}
         run: npm ci --no-audit --no-fund
 
       - name: Test
-        working-directory: frontend
+        working-directory: ${{ matrix.app }}
         run: npm test
 
       - name: Build
-        working-directory: frontend
+        working-directory: ${{ matrix.app }}
         run: npm run build
 
-      # The dashboard key must never be compiled into the bundle: anything in
-      # here is served to every visitor, which would turn the header check on
-      # the SOC endpoints into decoration. Fail the build if it reappears.
-      - name: Assert no dashboard key in the bundle
-        working-directory: frontend
+      # Both apps call their own origin; an absolute core address compiled in
+      # would make laptop B's browser talk to itself. And no dashboard key may
+      # ever reach a bundle: the SOC key lives in soc-api only.
+      - name: Assert same-origin API and no key in the bundle
+        working-directory: ${{ matrix.app }}
         run: |
+          if grep -rIl 'localhost:8000' dist/assets/; then
+            echo "Absolute core address compiled into the bundle" >&2
+            exit 1
+          fi
           if grep -rIlE 'VITE_DASHBOARD_KEY|deepcheck-dev-pano-anahtari' dist/; then
             echo "Dashboard key found in the built bundle" >&2
             exit 1
           fi
-          echo "OK: no dashboard key in dist/"
+          echo "OK"
 
   compose:
-    name: Compose and frontend image
+    name: Compose and web images
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       # `docker-compose up --build` is the one command the README promises
       # works. A typo in an interpolation or a port mapping breaks it for
-      # everyone and no unit test would notice. Validates the default and the
-      # dev override, with no .env, the way a first-time reviewer runs it.
-      - name: Validate compose files
+      # everyone and no unit test would notice. Validated with no .env, the
+      # way a first-time reviewer runs it.
+      - name: Validate the compose file
         run: |
           docker compose config --quiet
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml config --quiet
 
-      # The frontend image is built from the lockfile with `npm ci` and a
-      # Dockerfile-specific ignore file; neither is exercised by `npm run
-      # build` on the runner. The backend image is left out: it installs
-      # torch, and the backend job already installs the same requirements.
-      - name: Build the frontend image
-        run: docker compose build frontend
+      # The two apps' images: their nginx configs, Dockerfile-specific ignore
+      # files and repo-root build contexts are exercised nowhere else, and the
+      # web images install from the lockfile with `npm ci`. The backend image
+      # is left out: it installs torch, and the backend job already installs
+      # the same requirements.
+      - name: Build the web and app images
+        run: docker compose build checkout-web checkout-api soc-web soc-api

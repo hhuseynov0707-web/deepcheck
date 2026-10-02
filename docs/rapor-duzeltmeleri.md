@@ -103,10 +103,10 @@ uymalıdır.
   - İnsanlaştırılmış botun da **%100'ü onaylandı** (ortalama skor 22,7;
     insanlara karşı AUC 0,92).
   - Özellikleri bilerek taklit eden bot da %100 onaylandı (AUC 0,08).
-- Ekran görüntüsündeki "%98.8 güven" türü değer, bugünkü panoda
-  "Son pencere model kesinliği" adıyla geçiyor. Bu değer modelin seçtiği sınıfa
+- Ekran görüntüsündeki "%98.8 güven" türü değer, bugünkü SOC panosunda
+  "Son pencere kesinliği" adıyla geçiyor. Bu değer modelin seçtiği sınıfa
   verdiği olasılıktır, yani max(p, 1−p). Doğruluk oranı değildir
-  (`frontend/src/pages/Dashboard.jsx` içindeki yorum).
+  (`apps/soc/src/pages/Dashboard.jsx` içindeki yorum).
 - **Yeniden kontrol edilmeli.** Yukarıdaki sayılar akış başına Random Forest
   skorunu ölçer; karar katmanı bu çalışmada değişti. Örneğin ardışık test (SPRT)
   artık bot sınırını aştığında düşük skorlu oturumu da en az ek doğrulamaya
@@ -184,12 +184,14 @@ bakınız."
   oturumluk sentetik bir geçmiş yüklenir. İşaretleri:
   - veritabanında `is_synthetic` bayrakları (oturum, profil, profil vektörü ve
     karar denetim kaydı; `backend/models.py`);
-  - müşteri referansları `sentetik-ayse` gibi, demo sayfasındaki seçicide
-    "sentetik geçmiş" yazıyor (`frontend/src/demoCustomers.js`);
+  - müşteri referansları `sentetik-ayse` gibi; `demo_seed.py --simulate`
+    çıktısı "SİMÜLE EDİLMİŞ OTURUM" başlığını taşıyor. (Seçicide "sentetik
+    geçmiş" yazan eski demo sayfası 2026-10-02'de silindi; sentetik müşteriler
+    bugün yalnızca komut satırından çalıştırılıyor.);
   - SOC panosunda "Sentetik demo verisi" rozeti
-    (`frontend/src/components/SyntheticBadge.jsx`); metrik kartları simüle
+    (`apps/soc/src/components/SyntheticBadge.jsx`); metrik kartları simüle
     edilmiş oturumları saymıyor ve kaç tanesini dışarıda bıraktığını yazıyor
-    (`frontend/src/pages/Dashboard.jsx`);
+    (`apps/soc/src/pages/Dashboard.jsx`);
   - hiçbir değerlendirme betiği bu müşterileri okumuyor ve `record_session.py`
     simüle edilmiş bir oturumu kaydetmeyi reddediyor (`backend/test_demo.py`).
 
@@ -384,7 +386,7 @@ sonucunda skordan çıkarıldı."
   ve kullanıcıya göre değişir.
 - SOC panosu 3 saniyede bir yenileniyor. "Ortalama Yanıt Süresi" kartı akış başına
   skorlama süresini (`response_time_ms`) gösteriyor, uçtan uca süreyi değil
-  (`frontend/src/pages/Dashboard.jsx`).
+  (`apps/soc/src/pages/Dashboard.jsx`).
 - **Kapasite değerlendirmesi yazıldı; yük testi hâlâ yok.** Bugünkü kodla
   eşzamanlı istek kapasitesi **ölçülmedi**. Var olan ölçümlerden aritmetikle
   çıkarılan kapasite, maliyet ve aşırı yük değerlendirmesi artık depoda:
@@ -444,8 +446,8 @@ kaldırılmalı.
 
 - SHAP (`shap.TreeExplainer`, `backend/scorer.py`) **tek bir akışın Random Forest
   olasılığını** açıklıyor. 12 özniteliğin her birinin katkısı hesaplanıyor. En büyük
-  üçü saklanıyor ve SOC panosunda "En Etkili 3 Özellik (SHAP)" başlığıyla
-  gösteriliyor (`frontend/src/pages/Dashboard.jsx`). Ağaç modellerinde bu hesap
+  üçü saklanıyor ve SOC panosunda "Kararı Taşıyan Özellikler" (SHAP) başlığıyla
+  gösteriliyor (`apps/soc/src/pages/Dashboard.jsx`). Ağaç modellerinde bu hesap
   kesin sonuç veriyor.
 - SHAP'ın **açıklamadığı** karar adımları:
   - **Oturum skoru.** Panodaki rozet, son 5 akışın medyanı ve sıçrama kuralıyla
@@ -468,7 +470,7 @@ kaldırılmalı.
   - **Müşteri profili katmanı.** Bu katmanın kendi açıklaması var: müşterinin kendi
     geçmişinden en çok sapan K=3 öznitelik (z değerleriyle) ve konformal p-değeri.
     SOC'taki "Müşteri Profili" kartında gösteriliyor
-    (`frontend/src/components/ProfilePanel.jsx`). Bu SHAP değil.
+    (`apps/soc/src/components/ProfilePanel.jsx`). Bu SHAP değil.
   - **Ek doğrulama (step-up).** Doğrulanmış bir oturumda `verify` kararının
     `allow`'a yükseltilmesi.
 - Bu adımların her biri kararla birlikte makinece okunabilir bir **gerekçe kodu**
@@ -619,7 +621,8 @@ SDK her 2 saniyede son 10 saniyelik pencereyi gönderir.
   `_client_ip`). Web sunucusu erişim günlükleri istemci IP'sini konteyner
   günlüklerine yazıyordu; ikisi de artık kapalı:
   - Uvicorn `--no-access-log` ile çalışıyor (`backend/entrypoint.sh`).
-  - Ön yüzdeki nginx'te `access_log off;` var (`frontend/nginx.conf`).
+  - Ön yüzlerin nginx'lerinde `access_log off;` var (`apps/checkout/nginx.conf`,
+    `apps/soc/nginx.conf`).
 
   nginx'in hata günlüğü açık ve bir hata satırında istemci adresini yazabilir. Bu
   yüzden "IP adresi veritabanına yazılmaz, erişim günlükleri kapalıdır" doğru; "hiçbir
@@ -656,9 +659,12 @@ SDK her 2 saniyede son 10 saniyelik pencereyi gönderir.
   (`backend/profiles.py`, `session_vector`).
 - **Profil kayıtlarının saklanması.** Profil 180 gün hareketsiz kalırsa silinir.
   Karar denetim kaydı 90 gün, profil erişim kaydı 365 gün saklanır
-  (`backend/main.py`). Demo ad alanında (demo sayfasındaki ödemeler) ziyaretçiden
-  kalan her şey, yani öğrenilen vektör, demo profili ve karar kaydı, oturumla aynı
-  sürede, 24 saatte silinir; orada kimse rıza vermedi ve silme yolu yok.
+  (`backend/main.py`). Demo ad alanındaki karar kayıtları ve sentetik olmayan bir
+  demo profiliyle onun öğrendiği vektörler oturumla aynı sürede, 24 saatte
+  silinir; orada kimse rıza vermedi ve silme yolu yok. Bu ad alanına bugün
+  ödeme sayfasından yazılmaz: içinde yalnızca `demo_seed.py`'nin sentetik
+  müşterileri bulunur (ziyaretçinin yazabildiği eski demo sayfası 2026-10-02'de
+  silindi).
 - **Silme ve itiraz.** `POST /api/profile/erase` uç noktası `erase` (silme) ve
   `object` (itiraz) modlarını destekler. İtiraz kaydı sonraki rıza denemelerini
   engeller (409). Silme; oturumlar, karar kayıtları ve inceleme erişim kayıtlarıyla
@@ -672,8 +678,8 @@ SDK her 2 saniyede son 10 saniyelik pencereyi gönderir.
 
 **Henüz olmayanlar (raporda iddia edilmemeli)**
 
-- **Hukuki metinler.** KVKK aydınlatma metni (`docs/kvkk-aydinlatma.md`; demo
-  sayfasındaki bağlantı onu uygulamanın `/kvkk` sayfasında gösterir) ve veri koruma
+- **Hukuki metinler.** KVKK aydınlatma metni (`docs/kvkk-aydinlatma.md`; mağaza
+  sayfasındaki bağlantı onu uygulamanın `/gizlilik` sayfasında gösterir) ve veri koruma
   etki değerlendirmesi (`docs/dpia.md`) artık **taslak** olarak var. İkisi de hukuki
   incelemeden geçmedi. Etki değerlendirmesi herhangi bir pilotun ön koşulu ve taslak
   kendi sonucunda bugünkü hâliyle bir pilotu desteklemediğini söylüyor. Raporda
@@ -739,17 +745,17 @@ GÜVENLİK (SOC) MERKEZİ", adres çubuğunda `localhost:8081` yazıyor. Görün
   `fingerprint`).
 - **Düğmeler:** "IP'yi Kara Listeye Al" ve "Oturumu Sonlandır".
 
-**Bugün doğru olan** (`frontend/src/pages/Dashboard.jsx`)
+**Bugün doğru olan** (`apps/soc/src/pages/Dashboard.jsx`)
 
-- Pano `http://localhost:3000/dashboard` adresinde çalışıyor ve açılışta erişim
-  anahtarı istiyor.
+- Pano `http://localhost:3100` adresinde, kendi sunucusuyla ayrı bir uygulama
+  olarak çalışıyor (`apps/soc`) ve açılışta erişim anahtarı istiyor.
 - Panoda şunlar var:
   - dört metrik kartı: Toplam Oturum, Ortalama Risk Skoru, Tespit Edilen Bot,
     Ortalama Yanıt Süresi;
   - renkli etiketli oturum listesi;
-  - seçili oturum için risk rozeti, "Son pencere model kesinliği" ve yanıt süresi;
-  - "En Etkili 3 Özellik (SHAP)" çubukları;
-  - "Müşteri Profili" kartı (`frontend/src/components/ProfilePanel.jsx`);
+  - seçili oturum için risk rozeti, "Son pencere kesinliği" ve yanıt süresi;
+  - "Kararı Taşıyan Özellikler" (SHAP) çubukları;
+  - "Müşteri Profili" kartı (`apps/soc/src/components/ProfilePanel.jsx`);
   - D3.js ile çizilen "Risk Skoru Geçmişi" grafiği;
   - sentetik veride mor "Sentetik demo verisi" rozeti: simüle edilmiş oturumlarda
     (oturum listesi ve seçili oturum) ve sentetik bir profille verilen kararlarda
@@ -785,8 +791,10 @@ bölümünde:
 1. Sistemi başlatın ve sentetik demo müşterilerini yükleyin
    (`docker compose up -d --build`, ardından
    `docker compose exec backend python demo_seed.py`).
-2. `/demo` sayfasında bir sentetik müşteri seçip fareyle ödeme yapın.
-3. `/dashboard` sayfasında bu oturumu seçip görüntüyü alın.
+2. `docker compose exec backend python demo_seed.py --simulate ayse` çalıştırın
+   (sentetik müşteri adına ödeme yapılan eski `/demo` sayfası 2026-10-02'de
+   silindi; bugün sentetik bir müşteri yalnızca bu komutla çalıştırılır).
+3. SOC'ta (`http://localhost:3100`) bu oturumu seçip görüntüyü alın.
 
 Sentetik bir müşteriyle verilen kararda rozet "Müşteri Profili" kartında çıkar;
 simüle edilmiş (`demo_seed.py --simulate`) oturumlarda ayrıca oturum listesinde
@@ -899,11 +907,11 @@ sütunu raporda da sayının yanında yazılmalı.
 | 10 | Skorlama 17,7 ms; karar uç noktası konteynerde p95 7,4 ms (profil kapalı), en fazla 37,9 ms (profil açık) | Bkz. bölüm 4 | `backend/scorer.py`, `docs/profile-evaluation.md` §11 | Ağ hariç; geçici PostgreSQL, sentetik oturumlar |
 | 11 | SDK 34 KB (gzip ile 12 KB) ve bağımlılıksız | Dosya boyutu | `sdk/deepcheck.js` | 2026-09-19 |
 | 12 | Tuş içeriği hiçbir zaman okunmuyor; ham telemetri 1 saatte boşaltılıyor, 24 saatte siliniyor; veritabanında IP ve User-Agent yok | `onKeyDown` yalnızca zaman damgası kaydeder; saklama varsayılanları | `sdk/deepcheck.js`, `backend/main.py`, `backend/models.py` | Kod (erişim günlüğü notuyla, bölüm 7) |
-| 13 | Açıklanabilirlik: akış başına SHAP ile en etkili 3 öznitelik, karar gerekçe kodları, profil kararlarında en çok sapan öznitelikler; açıklama skorlanan istemciye gönderilmiyor, altı iç gerekçe istemciye tek bir `step_up` olarak gidiyor | SOC panosu, `PUBLIC_REASONS` | `backend/scorer.py`, `backend/main.py`, `frontend/src/pages/Dashboard.jsx`, `frontend/src/components/ProfilePanel.jsx` | Kod |
+| 13 | Açıklanabilirlik: akış başına SHAP ile en etkili 3 öznitelik, karar gerekçe kodları, profil kararlarında en çok sapan öznitelikler; açıklama skorlanan istemciye gönderilmiyor, altı iç gerekçe istemciye tek bir `step_up` olarak gidiyor | SOC panosu, `PUBLIC_REASONS` | `backend/scorer.py`, `backend/main.py`, `apps/soc/src/pages/Dashboard.jsx`, `apps/soc/src/components/ProfilePanel.jsx` | Kod |
 | 14 | Müşteri profili yalnızca ek doğrulama istiyor; hiçbir zaman bloklamıyor ve skoru değiştirmiyor | 1.440 kombinasyonluk test | `backend/test_profiles.py` (`test_profile_layer_never_blocks_and_never_changes_the_score`) | Test |
 | 15 | Müşteri profili aynı kişiye yanlışlıkla ek doğrulamayı fare kullanıcılarında %4,9, klavye kullanıcılarında %3,8 oranında sordu (**alt sınır**). Farklı bir kişiyi fare kullanıcılarında %47,5, klavye kullanıcılarında %26,4 oranında ek doğrulamaya gönderdi. | 200 sentetik kimlik | `docs/profile-evaluation.md` §5 | **Sentetik kimlikler; gerçek müşteri verisi yok.** Katman kart deneme botlarına karşı hiçbir şey yapmaz; yalnızca insan eliyle hesap ele geçirmeyi hedefler |
 | 16 | Ek doğrulamayı geçen bir saldırganın oturumları profili zehirlemiyor: saldırganın 0 ile 6 arasında oturumu onay bekleyen olarak saklandığında, ek doğrulamaya gönderilme oranı her durumda %47,5 kaldı (düz eğri). Sınırı: kurum ödemeyi onaylarsa (`settled`) oturum referansa dönüşür ve koruma azalır; tek bir onaylı oturumla oran %25,5'e düştü. | Fare, alfa 0,05 | `docs/profile-evaluation.md` §7 | Sentetik kimlikler |
-| 17 | KVKK'ya göre tasarlandı: rıza olmadan profil yok, HMAC takma ad, silme ve itiraz, insan incelemesi, tanımlı saklama süreleri | Bkz. bölüm 7 | `backend/main.py`, `backend/profiles.py` | Kod. Aydınlatma metni (`docs/kvkk-aydinlatma.md`, uygulamada `/kvkk` sayfası) ve etki değerlendirmesi (`docs/dpia.md`) **taslak** hâlde var; hukuki incelemeden geçmedi ve taslak kendi sonucunda bugünkü hâliyle bir pilotu desteklemediğini söylüyor. "KVKK uyumlu" denmemeli |
+| 17 | KVKK'ya göre tasarlandı: rıza olmadan profil yok, HMAC takma ad, silme ve itiraz, insan incelemesi, tanımlı saklama süreleri | Bkz. bölüm 7 | `backend/main.py`, `backend/profiles.py` | Kod. Aydınlatma metni (`docs/kvkk-aydinlatma.md`, mağazada `/gizlilik` sayfası) ve etki değerlendirmesi (`docs/dpia.md`) **taslak** hâlde var; hukuki incelemeden geçmedi ve taslak kendi sonucunda bugünkü hâliyle bir pilotu desteklemediğini söylüyor. "KVKK uyumlu" denmemeli |
 | 18 | Ekip kendi sınırlarını ölçüp yazdı: bağımsız insanlaştırılmış bot durdurulamadı, profil katmanı kart denemesine karşı etkisiz, gerçek kişi ölçülmedi | Bölüm 1, 2 ve 15. satır | `docs/evaluation.md`, `docs/profile-evaluation.md` | Jüriye önce biz söyleyelim |
 | 19 | Entegrasyon sözleşmesi yazılı: script etiketi, `DeepCheck.init`, satıcının sunucusundan `POST /api/decision`, kapalı devre hata yönetimi, rıza/silme/sonuç uç noktaları ve yerel SDK'nın üretmesi gereken yük | Kod ve uç nokta sözleşmesi | `docs/entegrasyon.md`, `README.md`, `backend/main.py` | Kod. Web yolu çalışıyor; WebView yolu **test edilmedi**, yerel SDK **yok** |
 | 20 | Kapasite ve maliyet kâğıt üzerinde hesaplandı: vCPU başına ~87 eşzamanlı ödeme oturumu, ödeme başına 0,71 CPU-saniye, vCPU-saat başına ~5.000 ödeme, 1.000.000 müşteri profili için ≤32,7 GB | Ölçülen istek ve satır maliyetleri üzerinde aritmetik; yöntem tek gerçek eşzamanlılık ölçümüne %2,4 yaklaşıyor | `TECHNICAL_GUIDE.md` §17, `docs/entegrasyon.md` §9 | **Ölçümden türetilmiş hesap, yük testi değil.** Bu etiket olmadan rapora girmemeli |
